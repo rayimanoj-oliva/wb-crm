@@ -5,3 +5,4 @@ SQLAlchemy~=2.0.41
 passlib~=1.7.4
 requests~=2.32.3
 python-jose~=3.5.0
+python-dotenv~=1.1.0

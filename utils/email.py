@@ -2,13 +2,17 @@
 
 import requests
 import json
+from dotenv import load_dotenv
 import os
 
-TENANT_ID = 'e5a1ed1e-89cc-452d-8b50-88daaa995199'
-CLIENT_ID = '7e1f4311-5336-4bc2-8bb3-aefea8fc01c9'
-CLIENT_SECRET = '51x8Q~ddNXuzMzjE.Lnpkz9IKQBZbA2acdu5Ucaz'
-SCOPE = 'https://graph.microsoft.com/.default'
-SENDER_EMAIL = 'devops@olivaclinic.com'
+# Load .env variables
+load_dotenv()
+TENANT_ID = os.getenv("TENANT_ID")
+CLIENT_ID = os.getenv("CLIENT_ID")
+CLIENT_SECRET = os.getenv("CLIENT_SECRET")
+SCOPE = os.getenv("SCOPE")
+SENDER_EMAIL = os.getenv("SENDER_EMAIL")
+
 
 def get_access_token():
     url = f'https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token'
