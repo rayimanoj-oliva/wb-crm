@@ -1,14 +1,13 @@
 from datetime import timedelta, datetime
 from http.client import HTTPException
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 from database.db import get_db
-from service.crud import get_user_by_username, get_user_by_email
+from services.crud import get_user_by_username, get_user_by_email
 from utils.email import send_forgot_password_email
 from fastapi import APIRouter, HTTPException, Depends
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 from auth import pwd_context, SECRET_KEY, ALGORITHM
-from database.db import SessionLocal
 from models.models import User
 from schemas.ResetPasswordSchema import ResetPasswordRequest
 router = APIRouter()
