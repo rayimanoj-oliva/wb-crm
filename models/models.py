@@ -34,3 +34,12 @@ class User(Base):
     email = Column(String(100), unique=True, nullable=False)
 
     # created by,created date, updated by, updated date
+
+
+class Customer(Base):
+    __tablename__ = "customers"
+
+    id = Column(MySQLUUID, primary_key=True, default=uuid.uuid4,unique=True, nullable=False)
+    name = Column(String, nullable=False)
+    phone = Column(String, nullable=False)
+    email = Column(String, unique=True, nullable=True)
