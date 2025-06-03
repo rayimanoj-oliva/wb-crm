@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String
+from sqlalchemy import Column, String, Integer
 from sqlalchemy.dialects.mysql import CHAR
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.types import TypeDecorator, BINARY
@@ -39,7 +39,8 @@ class User(Base):
 class Customer(Base):
     __tablename__ = "customers"
 
-    id = Column(MySQLUUID, primary_key=True, default=uuid.uuid4,unique=True, nullable=False)
-    name = Column(String, nullable=False)
-    phone = Column(String, nullable=False)
-    email = Column(String, unique=True, nullable=True)
+    id = Column(MySQLUUID, primary_key=True, default=uuid.uuid4, unique=True, nullable=False)
+    name = Column(String(100), nullable=False)
+    phone = Column(String(20), nullable=False)
+    email = Column(String(100), unique=True, nullable=True)
+
