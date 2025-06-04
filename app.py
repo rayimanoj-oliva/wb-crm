@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from datetime import timedelta
 
 from auth import authenticate_user, create_access_token
-from controllers import user_controller, auth_controller, customer_controller
+from controllers import user_controller, auth_controller, customer_controller, web_hook
 from database.db import SessionLocal, engine, get_db
 from models import models
 from schemas.TokenSchema import Token  # <-- import your router module
@@ -27,4 +27,5 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
 app.include_router(user_controller.router, prefix="/user")
 app.include_router(auth_controller.router, prefix="/auth")
 app.include_router(customer_controller.router, prefix="/customer")
+app.include_router(web_hook.router, prefix="/wh")
 
