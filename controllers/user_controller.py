@@ -1,4 +1,3 @@
-
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from uuid import UUID
@@ -10,6 +9,11 @@ from auth import get_current_user
 from database.db import get_db
 
 router = APIRouter()
+
+@router.get("/users/me", response_model=UserRead)
+def read_current_user(current_user: User = Depends(get_current_user)):
+    """Get the current user's details based on the token"""
+    return current_user
 
 @router.post("/users/", response_model=UserRead)
 def create_user(user: UserCreate, db: Session = Depends(get_db)):
