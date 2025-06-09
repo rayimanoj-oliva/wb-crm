@@ -4,6 +4,8 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from datetime import timedelta
 
+from starlette.middleware.cors import CORSMiddleware
+
 from auth import authenticate_user, create_access_token
 from controllers import (
     user_controller,
@@ -19,6 +21,13 @@ models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:8080"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.post("/token", response_model=Token)
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
@@ -33,6 +42,5 @@ app.include_router(user_controller.router, prefix="/user")
 app.include_router(auth_controller.router, prefix="/auth")
 app.include_router(customer_controller.router, prefix="/customer")
 app.include_router(web_hook.router, prefix="/wh")
-
 app.include_router(web_socket.router, prefix="/ws")
 
