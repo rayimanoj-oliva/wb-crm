@@ -1,6 +1,7 @@
 # app.py
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.security import OAuth2PasswordRequestForm
+from pyexpat.errors import messages
 from sqlalchemy.orm import Session
 from datetime import timedelta
 
@@ -11,7 +12,7 @@ from controllers import (
     user_controller,
     auth_controller,
     customer_controller,
-    web_hook, web_socket
+    web_hook, web_socket, messages_controller
 )
 from database.db import SessionLocal, engine, get_db
 from models import models
@@ -43,4 +44,4 @@ app.include_router(auth_controller.router, prefix="/auth")
 app.include_router(customer_controller.router, prefix="/customer")
 app.include_router(web_hook.router, prefix="/wh")
 app.include_router(web_socket.router, prefix="/ws")
-
+app.include_router(messages_controller.router, prefix="/messages")
