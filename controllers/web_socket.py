@@ -1,7 +1,11 @@
+from http.client import HTTPException
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, APIRouter
 from fastapi.responses import JSONResponse
 from typing import List
 import asyncio
+
+from starlette.responses import PlainTextResponse
 
 router = APIRouter()
 
@@ -46,3 +50,15 @@ async def webhook_receiver(request: Request):
     await manager.broadcast(body)
     return JSONResponse(content={"status": "broadcasted", "data": body})
 
+VERIFY_TOKEN = "Oliva@123"
+@router.get("/webhook")
+async def verify_webhook(request: Request):
+    mode = request.query_params.get("hub.mode")
+    token = request.query_params.get("hub.verify_token")
+    challenge = request.query_params.get("hub.challenge")
+
+    if mode == "subscribe" and token == VERIFY_TOKEN:
+        print("WEBHOOK_VERIFIED")
+        return PlainTextResponse(content=challenge)
+    else:
+        raise HTTPException(status_code=403)
