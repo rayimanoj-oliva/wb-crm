@@ -1,8 +1,8 @@
 import uuid
-from sqlalchemy import Column, String, Integer
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import Column, Integer, String, JSON, DateTime, Text, BigInteger
 from sqlalchemy.ext.declarative import declarative_base
-
+from datetime import datetime
 Base = declarative_base()
 
 class User(Base):
@@ -27,3 +27,14 @@ class Customer(Base):
     phone = Column(String(20), nullable=False)
     email = Column(String(100), unique=True, nullable=True)
 
+
+
+class WhatsAppMessage(Base):
+    __tablename__ = "whatsapp_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    wa_id = Column(String, index=True)
+    sender_name = Column(String)
+    message_id = Column(String, unique=True)
+    message_text = Column(String)
+    timestamp = Column(DateTime, default=datetime.utcnow)
