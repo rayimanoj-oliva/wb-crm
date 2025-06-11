@@ -1,16 +1,26 @@
-from pydantic import BaseModel
 from datetime import datetime
 
-class MessageCreate(BaseModel):
-    wa_id: str
-    sender_name: str
-    message_id: str
-    message_text: str
-    timestamp: datetime
+from pydantic import BaseModel
 
-class MessageRead(MessageCreate):
+
+class MessageCreate(BaseModel):
+    message_id: str
+    from_wa_id: str
+    to_wa_id: str
+    type: str
+    body: str
+    timestamp: datetime
+    customer_id: int
+
+class MessageOut(BaseModel):
     id: int
+    message_id: str
+    from_wa_id: str
+    to_wa_id: str
+    type: str
+    body: str
+    timestamp: datetime
+    customer_id: int
 
     class Config:
         orm_mode = True
-

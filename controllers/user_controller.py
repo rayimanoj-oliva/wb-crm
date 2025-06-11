@@ -8,7 +8,9 @@ from services import crud
 from auth import get_current_user
 from database.db import get_db
 
-router = APIRouter()
+router = APIRouter(
+    tags=["users"]
+)
 
 @router.get("/users/me", response_model=UserRead)
 def read_current_user(current_user: User = Depends(get_current_user)):

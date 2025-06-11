@@ -1,23 +1,22 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from schemas.CustomerSchema import CustomerCreate, CustomerOut
+from services import customer_service
 from database.db import get_db
-from schemas.CustomerSchema import CustomerCreate, CustomerRead
-from services import customer_crud as crud
-from uuid import UUID
 
-router = APIRouter()
+router = APIRouter(prefix="/customers", tags=["Customers"])
 
-@router.post("/customers/", response_model=CustomerRead)
-def create_customer(customer: CustomerCreate, db: Session = Depends(get_db)):
-    return crud.create_customer(db, customer)
+@router.post("/", response_model=CustomerOut)
+def create_or_get_customer(data: CustomerCreate, db: Session = Depends(get_db)):
+    return customer_service.get_or_create_customer(db, data)
 
-@router.get("/customers/", response_model=list[CustomerRead])
-def list_customers(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
-    return crud.get_customers(db, skip=skip, limit=limit)
-
-@router.get("/customers/{customer_id}", response_model=CustomerRead)
-def get_customer(customer_id: UUID, db: Session = Depends(get_db)):
-    customer = crud.get_customer(db, customer_id)
+@router.get("/{customer_id}", response_model=CustomerOut)
+def read_customer(customer_id: int, db: Session = Depends(get_db)):
+    customer = customer_service.get_customer_by_id(db, customer_id)
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
     return customer
+
+@router.get("/", response_model=list[CustomerOut])
+def list_customers(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    return customer_service.get_all_customers(db, skip, limit)

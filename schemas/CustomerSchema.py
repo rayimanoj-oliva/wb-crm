@@ -2,16 +2,14 @@ from pydantic import BaseModel, EmailStr
 from typing import Optional
 from uuid import UUID
 
-class CustomerBase(BaseModel):
-    name: str
-    phone: str
-    email: Optional[EmailStr] = None
+class CustomerCreate(BaseModel):
+    wa_id: str
+    name: Optional[str] = None
 
-class CustomerCreate(CustomerBase):
-    pass
-
-class CustomerRead(CustomerBase):
-    id: UUID
+class CustomerOut(BaseModel):
+    id: int
+    wa_id: str
+    name: Optional[str] = None
 
     class Config:
         orm_mode = True

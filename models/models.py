@@ -1,8 +1,11 @@
 import uuid
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy import Column, Integer, String, JSON, DateTime, Text, BigInteger
+from sqlalchemy import Column, Integer, String, JSON, DateTime, Text, BigInteger, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
+
+from sqlalchemy.orm import relationship
+
 Base = declarative_base()
 
 class User(Base):
@@ -22,19 +25,21 @@ class User(Base):
 class Customer(Base):
     __tablename__ = "customers"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, unique=True, nullable=False)
-    name = Column(String(100), nullable=False)
-    phone = Column(String(20), nullable=False)
-    email = Column(String(100), unique=True, nullable=True)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    wa_id = Column(String, unique=True, nullable=False)
+    name = Column(String)
 
 
 
-class WhatsAppMessage(Base):
-    __tablename__ = "whatsapp_messages"
+
+class Message(Base):
+    __tablename__ = "messages"
 
     id = Column(Integer, primary_key=True, index=True)
-    wa_id = Column(String, index=True)
-    sender_name = Column(String)
-    message_id = Column(String, unique=True)
-    message_text = Column(String)
-    timestamp = Column(DateTime, default=datetime.utcnow)
+    message_id = Column(String)
+    from_wa_id = Column(String)
+    to_wa_id = Column(String)
+    type = Column(String)
+    body = Column(String)
+    timestamp = Column(DateTime)
+    customer_id = Column(UUID(as_uuid=True), ForeignKey("customers.id"))

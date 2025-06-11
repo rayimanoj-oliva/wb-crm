@@ -1,7 +1,9 @@
 from fastapi import FastAPI, Request, APIRouter
 from fastapi.responses import JSONResponse
 
-router = APIRouter()
+router = APIRouter(
+    tags=["Webhook"]
+)
 
 @router.post("/")
 async def echo_body(request: Request):

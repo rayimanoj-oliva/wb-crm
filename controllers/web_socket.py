@@ -11,8 +11,9 @@ from sqlalchemy.orm import Session
 from starlette.responses import PlainTextResponse
 
 from database.db import get_db
-from models.models import WhatsAppMessage
-
+from services import customer_service, message_service
+from schemas.CustomerSchema import CustomerCreate
+from schemas.MessageSchema import MessageCreate
 router = APIRouter()
 
 # Store connected WebSocket clients
@@ -60,35 +61,49 @@ VERIFY_TOKEN = "Oliva@123"
 
 @router.post("/webhook")
 async def receive_message(request: Request, db: Session = Depends(get_db)):
-    data = await request.json()
-
     try:
-        entry = data["entry"][0]
+        body = await request.json()
+
+        entry = body["entry"][0]
         change = entry["changes"][0]
         value = change["value"]
         contact = value["contacts"][0]
         message = value["messages"][0]
 
+        # Extract customer info
         wa_id = contact["wa_id"]
         sender_name = contact["profile"]["name"]
+
+        # Create or fetch customer
+        customer_data = CustomerCreate(wa_id=wa_id, name=sender_name)
+        customer = customer_service.get_or_create_customer(db, customer_data)
+
+        # Extract message info
         message_id = message["id"]
-        message_text = message["text"]["body"]
+        message_type = message["type"]
+        body_text = message[message_type]["body"] if "body" in message[message_type] else ""
+
+        from_wa_id = message["from"]
+        to_wa_id = value["metadata"]["display_phone_number"]
         timestamp = datetime.fromtimestamp(int(message["timestamp"]))
 
-        msg = WhatsAppMessage(
-            wa_id=wa_id,
-            sender_name=sender_name,
+        # Save message
+        message_data = MessageCreate(
             message_id=message_id,
-            message_text=message_text,
-            timestamp=timestamp
+            from_wa_id=from_wa_id,
+            to_wa_id=to_wa_id,
+            type=message_type,
+            body=body_text,
+            timestamp=timestamp,
+            customer_id=customer.id
         )
+        new_msg = message_service.create_message(db, message_data)
 
-        db.add(msg)
-        db.commit()
-        db.refresh(msg)
-        body = await request.json()
-        await manager.broadcast(body)
-        return {"status": "success", "id": msg.id}
+        # Optionally broadcast to websocket
+        # await manager.broadcast(body)
+
+        return {"status": "success", "message_id": new_msg.id}
+
     except Exception as e:
         print("Webhook error:", e)
         return {"status": "failed", "error": str(e)}

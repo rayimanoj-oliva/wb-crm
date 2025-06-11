@@ -10,7 +10,9 @@ from sqlalchemy.orm import Session
 from auth import pwd_context, SECRET_KEY, ALGORITHM
 from models.models import User
 from schemas.ResetPasswordSchema import ResetPasswordRequest
-router = APIRouter()
+router = APIRouter(
+    tags=["Auth"]
+)
 
 class ForgotPasswordRequest(BaseModel):
     identifier: str  # could be username or email
