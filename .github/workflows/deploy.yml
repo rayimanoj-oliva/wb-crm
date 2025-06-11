@@ -23,10 +23,10 @@ jobs:
       - name: Deploy via SSH
         run: |
           ssh -i ~/.ssh/id_rsa ubuntu@ec2-13-234-38-173.ap-south-1.compute.amazonaws.com << 'EOF'
-            source myenv/bin/activate                # 🔁 If using virtualenv
-            cd wb-crm  # 🔁 UPDATE THIS LINE
-            git pull origin main
-            pip install -r requirements.txt
-            pkill -f uvicorn
-            nohup uvicorn app:app --host 0.0.0.0 --port 8001 &
+            cd wb-crm                          # ✅ First, enter project folder
+            source ../myenv/bin/activate      # ✅ Then activate virtualenv (assuming it's outside project)
+            git pull origin main              # ✅ Pull latest code
+            pip install -r requirements.txt   # ✅ Make sure dependencies are up to date
+            pkill -f uvicorn || true          # ✅ Stop old server (no error if not running)
+            nohup uvicorn app:app --host 0.0.0.0 --port 8001 > logs.out 2>&1 &  # ✅ Start new server in background
           EOF
