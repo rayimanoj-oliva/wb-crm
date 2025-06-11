@@ -7,7 +7,6 @@ from services import message_service
 from database.db import get_db
 
 router = APIRouter(
-    prefix="/messages",
     tags=["Messages"]
 )
 

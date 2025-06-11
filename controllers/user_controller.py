@@ -12,18 +12,18 @@ router = APIRouter(
     tags=["users"]
 )
 
-@router.get("/users/me", response_model=UserRead)
+@router.get("/me", response_model=UserRead)
 def read_current_user(current_user: User = Depends(get_current_user)):
     """Get the current user's details based on the token"""
     return current_user
 
-@router.post("/users/", response_model=UserRead)
+@router.post("/", response_model=UserRead)
 def create_user(user: UserCreate, db: Session = Depends(get_db)):
     if crud.get_user_by_email(db, user.email):
         raise HTTPException(status_code=400, detail="Email already registered")
     return crud.create_user(db, user)
 
-@router.get("/users/", response_model=list[UserRead])
+@router.get("/", response_model=list[UserRead])
 def read_users(
     skip: int = 0,
     limit: int = 10,
@@ -32,7 +32,7 @@ def read_users(
 ):
     return crud.get_users(db, skip=skip, limit=limit)
 
-@router.get("/users/{user_id}", response_model=UserRead)
+@router.get("/{user_id}", response_model=UserRead)
 def read_user(
     user_id: UUID,
     db: Session = Depends(get_db),
@@ -43,7 +43,7 @@ def read_user(
         raise HTTPException(status_code=404, detail="User not found")
     return user
 
-@router.put("/users/{user_id}", response_model=UserRead)
+@router.put("/{user_id}", response_model=UserRead)
 def update_user(
     user_id: UUID,
     user: UserUpdate,
@@ -55,7 +55,7 @@ def update_user(
         raise HTTPException(status_code=404, detail="User not found")
     return updated
 
-@router.delete("/users/{user_id}")
+@router.delete("/{user_id}")
 def delete_user(
     user_id: UUID,
     db: Session = Depends(get_db),

@@ -4,7 +4,7 @@ from schemas.CustomerSchema import CustomerCreate, CustomerOut
 from services import customer_service
 from database.db import get_db
 
-router = APIRouter(prefix="/customers", tags=["Customers"])
+router = APIRouter(tags=["Customers"])
 
 @router.post("/", response_model=CustomerOut)
 def create_or_get_customer(data: CustomerCreate, db: Session = Depends(get_db)):
