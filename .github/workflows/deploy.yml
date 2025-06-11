@@ -28,5 +28,5 @@ jobs:
             git pull origin main
             pip install -r requirements.txt
             pkill -f uvicorn
-            nohup uvicorn main:app --host 0.0.0.0 --port 8001 &
+            nohup uvicorn app:app --host 0.0.0.0 --port 8001 &
           EOF
