@@ -100,7 +100,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         new_msg = message_service.create_message(db, message_data)
 
         # Optionally broadcast to websocket
-        # await manager.broadcast(body)
+        await manager.broadcast(body)
 
         return {"status": "success", "message_id": new_msg.id}
 
