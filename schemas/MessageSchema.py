@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from pydantic import BaseModel
-
+from uuid import UUID
 
 class MessageCreate(BaseModel):
     message_id: str
@@ -10,7 +10,7 @@ class MessageCreate(BaseModel):
     type: str
     body: str
     timestamp: datetime
-    customer_id: int
+    customer_id: UUID
 
 class MessageOut(BaseModel):
     id: int
