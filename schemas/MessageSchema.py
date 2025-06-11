@@ -20,7 +20,7 @@ class MessageOut(BaseModel):
     type: str
     body: str
     timestamp: datetime
-    customer_id: int
+    customer_id: UUID
 
     class Config:
         orm_mode = True
