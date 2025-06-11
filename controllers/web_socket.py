@@ -86,7 +86,8 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         db.add(msg)
         db.commit()
         db.refresh(msg)
-
+        body = await request.json()
+        await manager.broadcast(body)
         return {"status": "success", "id": msg.id}
     except Exception as e:
         print("Webhook error:", e)
