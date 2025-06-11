@@ -7,7 +7,7 @@ class CustomerCreate(BaseModel):
     name: Optional[str] = None
 
 class CustomerOut(BaseModel):
-    id: int
+    id: UUID
     wa_id: str
     name: Optional[str] = None
 
