@@ -10,7 +10,7 @@ from schemas.WhatsappToken import WhatsAppTokenCreate
 from database.db import get_db
 from services import customer_service, message_service, whatsapp_service
 from services.whatsapp_service import create_whatsapp_token
-
+from web_socket import manager
 router = APIRouter(tags=["WhatsApp Token"])
 
 @router.post("/token", status_code=201)
@@ -72,6 +72,17 @@ def send_whatsapp_message(
             customer_id=customer.id
         )
         message = message_service.create_message(db, message_data)
+
+
+        manager.broadcast(
+            {
+                "from": message.from_wa_id,
+                "to": message.to_wa_id,
+                "message": message.body,
+                "timestamp": message.timestamp,
+            }
+        )
+
 
         return {
             "status": "success",
