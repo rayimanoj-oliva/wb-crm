@@ -43,3 +43,11 @@ class Message(Base):
     body = Column(String)
     timestamp = Column(DateTime)
     customer_id = Column(UUID(as_uuid=True), ForeignKey("customers.id"))
+
+class WhatsAppToken(Base):
+    __tablename__ = "whatsapp_tokens"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    token = Column(String, unique=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

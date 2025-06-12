@@ -27,6 +27,7 @@ jobs:
             source ../myenv/bin/activate      # ✅ Then activate virtualenv (assuming it's outside project)
             git pull origin main              # ✅ Pull latest code
             pip install -r requirements.txt   # ✅ Make sure dependencies are up to date
+            alembic upgrade head
             pkill -f uvicorn || true          # ✅ Stop old server (no error if not running)
             nohup uvicorn app:app --host 0.0.0.0 --port 8001 > logs.out 2>&1 &  # ✅ Start new server in background
           EOF
