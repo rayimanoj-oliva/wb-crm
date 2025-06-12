@@ -8,3 +8,6 @@ def create_whatsapp_token(db: Session, token_data: WhatsAppTokenCreate):
     db.commit()
     db.refresh(token_entry)
     return token_entry
+
+def get_latest_token(db: Session):
+    return db.query(WhatsAppToken).order_by(WhatsAppToken.created_at.desc()).first()
