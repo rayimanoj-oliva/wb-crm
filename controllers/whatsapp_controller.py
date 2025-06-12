@@ -4,13 +4,14 @@ import requests
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from controllers.web_socket import manager
 from schemas.CustomerSchema import CustomerCreate
 from schemas.MessageSchema import MessageCreate
 from schemas.WhatsappToken import WhatsAppTokenCreate
 from database.db import get_db
 from services import customer_service, message_service, whatsapp_service
 from services.whatsapp_service import create_whatsapp_token
-from web_socket import manager
+
 router = APIRouter(tags=["WhatsApp Token"])
 
 @router.post("/token", status_code=201)
