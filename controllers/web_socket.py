@@ -103,7 +103,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             "from":new_msg.from_wa_id,
             "to":new_msg.to_wa_id,
             "message":new_msg.body,
-            "timestamp":new_msg.timestamp,
+            "timestamp":new_msg.timestamp.isoformat(),
         })
 
         return {"status": "success", "message_id": new_msg.message_id}

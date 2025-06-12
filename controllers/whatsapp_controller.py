@@ -25,7 +25,7 @@ def add_token(token_data: WhatsAppTokenCreate, db: Session = Depends(get_db)):
 WHATSAPP_API_URL = "https://graph.facebook.com/v22.0/367633743092037/messages"
 
 @router.post("/send-message")
-def send_whatsapp_message(
+async def send_whatsapp_message(
     wa_id: str,
     body: str,
     db: Session = Depends(get_db)
@@ -75,12 +75,12 @@ def send_whatsapp_message(
         message = message_service.create_message(db, message_data)
 
 
-        manager.broadcast(
+        await manager.broadcast(
             {
                 "from": message.from_wa_id,
                 "to": message.to_wa_id,
                 "message": message.body,
-                "timestamp": message.timestamp,
+                "timestamp": message.timestamp.isoformat(),
             }
         )
 
