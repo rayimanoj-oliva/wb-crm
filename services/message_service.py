@@ -59,3 +59,8 @@ def delete_message(db: Session, message_id: int):
         db.delete(message)
         db.commit()
     return message
+
+def get_messages_by_wa_id(db: Session, wa_id: str):
+    return db.query(Message).filter(
+        (Message.from_wa_id == wa_id) | (Message.to_wa_id == wa_id)
+    ).order_by(Message.timestamp.asc()).all()

@@ -5,6 +5,7 @@ from typing import List
 from schemas.MessageSchema import MessageCreate, MessageOut
 from services import message_service
 from database.db import get_db
+from services.message_service import get_messages_by_wa_id
 
 router = APIRouter(
     tags=["Messages"]
@@ -53,3 +54,10 @@ def delete_message(message_id: int, db: Session = Depends(get_db)):
     if not message:
         raise HTTPException(status_code=404, detail="Message not found")
     return {"status": "deleted", "message_id": message_id}
+
+@router.get("/chat/{wa_id}", response_model=List[MessageOut])
+def get_user_messages(wa_id: str, db: Session = Depends(get_db)):
+    messages = get_messages_by_wa_id(db, wa_id)
+    if not messages:
+        raise HTTPException(status_code=404, detail="No messages found for this wa_id")
+    return messages
