@@ -39,6 +39,17 @@ class ConnectionManager:
             self.disconnect(conn)
 
 manager = ConnectionManager()
+catalog_manager = ConnectionManager()
+
+@router.websocket("/catalog")
+async def catalog_endpoint(websocket: WebSocket):
+    await catalog_manager.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text()  # Keeping connection alive
+    except WebSocketDisconnect:
+        catalog_manager.disconnect(websocket)
+
 
 # WebSocket endpoint
 @router.websocket("/channel")
@@ -50,19 +61,15 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
-# Webhook endpoint
-# @router.post("/webhook")
-# async def webhook_receiver(request: Request):
-#     body = await request.json()
-#     await manager.broadcast(body)
-#     return JSONResponse(content={"status": "broadcasted", "data": body})
-
 VERIFY_TOKEN = "Oliva@123"
 
 @router.post("/webhook")
 async def receive_message(request: Request, db: Session = Depends(get_db)):
     try:
         body = await request.json()
+
+        await catalog_manager.broadcast(body)
+
         entry = body["entry"][0]
         change = entry["changes"][0]
         value = change["value"]
