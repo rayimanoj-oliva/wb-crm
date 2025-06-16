@@ -68,8 +68,6 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
     try:
         body = await request.json()
 
-        await catalog_manager.broadcast(body)
-
         entry = body["entry"][0]
         change = entry["changes"][0]
         value = change["value"]
@@ -87,31 +85,53 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         # Extract message info
         message_id = message["id"]
         message_type = message["type"]
-        body_text = message[message_type]["body"] if "body" in message[message_type] else ""
 
         from_wa_id = message["from"]
         to_wa_id = value["metadata"]["display_phone_number"]
         timestamp = datetime.fromtimestamp(int(message["timestamp"]))
 
-        # Save message
-        message_data = MessageCreate(
-            message_id=message_id,
-            from_wa_id=from_wa_id,
-            to_wa_id=to_wa_id,
-            type=message_type,
-            body=body_text,
-            timestamp=timestamp,
-            customer_id=customer.id
-        )
-        new_msg = message_service.create_message(db, message_data)
 
-        # Optionally broadcast to websocket
-        await manager.broadcast({
-            "from":new_msg.from_wa_id,
-            "to":new_msg.to_wa_id,
-            "message":new_msg.body,
-            "timestamp":new_msg.timestamp.isoformat(),
-        })
+        if message_type == "order":
+            order = message["order"]
+            catalog_body = {}
+            catalog_id = order["catalog_id"]
+            products = order["product_items"]
+
+            catalog_body["catalog_id"] = catalog_id
+            catalog_body["products"] = products
+
+            await manager.broadcast({
+                "from": from_wa_id,
+                "to": to_wa_id,
+                "timestamp": timestamp.isoformat(),
+                "type" : "order",
+                "catalog": catalog_body,
+            })
+
+        else:
+            body_text = message[message_type]["body"] if "body" in message[message_type] else ""
+
+
+
+            # Save message
+            message_data = MessageCreate(
+                message_id=message_id,
+                from_wa_id=from_wa_id,
+                to_wa_id=to_wa_id,
+                type=message_type,
+                body=body_text,
+                timestamp=timestamp,
+                customer_id=customer.id
+            )
+            new_msg = message_service.create_message(db, message_data)
+
+            # Optionally broadcast to websocket
+            await manager.broadcast({
+                "from":new_msg.from_wa_id,
+                "to":new_msg.to_wa_id,
+                "message":new_msg.body,
+                "timestamp":new_msg.timestamp.isoformat(),
+            })
 
         return {"status": "success", "message_id": new_msg.message_id}
 
