@@ -11,7 +11,8 @@ from sqlalchemy.orm import Session
 from starlette.responses import PlainTextResponse
 
 from database.db import get_db
-from services import customer_service, message_service
+from schemas.OrdersSchema import OrderItemCreate,OrderCreate
+from services import customer_service, message_service, order_service
 from schemas.CustomerSchema import CustomerCreate
 from schemas.MessageSchema import MessageCreate
 router = APIRouter()
@@ -92,19 +93,35 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
 
 
         if message_type == "order":
+
+
             order = message["order"]
-            catalog_body = {}
             catalog_id = order["catalog_id"]
             products = order["product_items"]
 
-            catalog_body["catalog_id"] = catalog_id
-            catalog_body["products"] = products
+            order_items = [
+                OrderItemCreate(
+                    product_retailer_id=prod["product_retailer_id"],
+                    quantity=prod["quantity"],
+                    item_price=prod["item_price"],
+                    currency=prod["currency"]
+                ) for prod in products
+            ]
+
+            order_data = OrderCreate(
+                customer_id=customer.id,
+                catalog_id=catalog_id,
+                timestamp=timestamp,
+                items=order_items
+            )
+            new_order = order_service.create_order(db, order_data)
 
             await manager.broadcast({
                 "from": from_wa_id,
                 "to": to_wa_id,
-                "type" : "order",
-                "catalog": catalog_body,
+                "type": "order",
+                "catalog_id": catalog_id,
+                "products": products,
                 "timestamp": timestamp.isoformat(),
             })
 
@@ -134,7 +151,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 "timestamp":new_msg.timestamp.isoformat(),
             })
 
-        return {"status": "success", "message_id": new_msg.message_id}
+        return {"status": "success", "message_id": message_id}
 
     except Exception as e:
         print("Webhook error:", e)

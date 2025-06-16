@@ -1,9 +1,15 @@
 import uuid
-from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy import Column, Integer, String, JSON, DateTime, Text, BigInteger, ForeignKey
-from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
-
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    DateTime,
+    ForeignKey,
+    Float,
+)
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 
 Base = declarative_base()
@@ -13,14 +19,11 @@ class User(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, unique=True, nullable=False)
     username = Column(String(100), unique=True, nullable=False)
-    password = Column(String(255), nullable=False)  # hash this in real apps
+    password = Column(String(255), nullable=False)
     first_name = Column(String(100), nullable=False)
     last_name = Column(String(100), nullable=False)
     phone_number = Column(String(20), nullable=False)
     email = Column(String(100), unique=True, nullable=False)
-
-    # created by,created date, updated by, updated date
-
 
 class Customer(Base):
     __tablename__ = "customers"
@@ -29,8 +32,7 @@ class Customer(Base):
     wa_id = Column(String, unique=True, nullable=False)
     name = Column(String)
 
-
-
+    orders = relationship("Order", back_populates="customer")
 
 class Message(Base):
     __tablename__ = "messages"
@@ -42,6 +44,7 @@ class Message(Base):
     type = Column(String)
     body = Column(String)
     timestamp = Column(DateTime)
+
     customer_id = Column(UUID(as_uuid=True), ForeignKey("customers.id"))
 
 class WhatsAppToken(Base):
@@ -51,3 +54,26 @@ class WhatsAppToken(Base):
     token = Column(String, unique=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class Order(Base):
+    __tablename__ = "orders"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    customer_id = Column(UUID(as_uuid=True), ForeignKey("customers.id"))
+    catalog_id = Column(String)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+
+    items = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
+    customer = relationship("Customer", back_populates="orders")
+
+class OrderItem(Base):
+    __tablename__ = "order_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id"))
+    product_retailer_id = Column(String)
+    quantity = Column(Integer)
+    item_price = Column(Float)
+    currency = Column(String)
+
+    order = relationship("Order", back_populates="items")
