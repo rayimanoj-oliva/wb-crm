@@ -103,9 +103,9 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             await manager.broadcast({
                 "from": from_wa_id,
                 "to": to_wa_id,
-                "timestamp": timestamp.isoformat(),
                 "type" : "order",
                 "catalog": catalog_body,
+                "timestamp": timestamp.isoformat(),
             })
 
         else:
@@ -129,6 +129,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             await manager.broadcast({
                 "from":new_msg.from_wa_id,
                 "to":new_msg.to_wa_id,
+                "type": "text",
                 "message":new_msg.body,
                 "timestamp":new_msg.timestamp.isoformat(),
             })
