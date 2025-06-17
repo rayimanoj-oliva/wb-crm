@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session
 from models.models import Customer
 from schemas.CustomerSchema import CustomerCreate
-
+from uuid import UUID
 
 # Create a new customer or return existing if wa_id matches
 def get_or_create_customer(db: Session, customer_data: CustomerCreate) -> Customer:
@@ -16,7 +16,7 @@ def get_or_create_customer(db: Session, customer_data: CustomerCreate) -> Custom
 
 
 # Get customer by ID
-def get_customer_by_id(db: Session, customer_id: int) -> Customer:
+def get_customer_by_id(db: Session, customer_id: UUID) -> Customer:
     return db.query(Customer).filter(Customer.id == customer_id).first()
 
 
