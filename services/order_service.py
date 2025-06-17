@@ -29,5 +29,5 @@ def get_order(db: Session, order_id: int):
     return db.query(Order).filter(Order.id == order_id).first()
 
 
-def get_orders_by_customer(db: Session, customer_id: int):
+def get_orders_by_customer(db: Session, customer_id: str):
     return db.query(Order).filter(Order.customer_id == customer_id).all()
