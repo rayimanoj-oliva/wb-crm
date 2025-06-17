@@ -33,7 +33,7 @@ app.add_middleware(
 @app.get("/test-this")
 def test():
     return {
-        "test":"this should work work"
+        "test":"this should work"
     }
 @app.post("/token", response_model=Token)
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
