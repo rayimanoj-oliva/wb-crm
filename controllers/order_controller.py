@@ -1,5 +1,6 @@
 # routers/order.py
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic.v1 import UUID1
 from sqlalchemy.orm import Session
 from typing import List
 from database.db import get_db
@@ -22,5 +23,5 @@ def get_order(order_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/customer/{customer_id}", response_model=List[OrderOut])
-def get_orders_by_customer(customer_id: int, db: Session = Depends(get_db)):
+def get_orders_by_customer(customer_id: str, db: Session = Depends(get_db)):
     return order_service.get_orders_by_customer(db, customer_id)
