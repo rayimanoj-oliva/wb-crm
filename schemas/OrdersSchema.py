@@ -24,7 +24,7 @@ class OrderItemOut(OrderItemCreate):
 
 class OrderOut(BaseModel):
     id: int
-    customer_id: int
+    customer_id: UUID
     catalog_id: str
     timestamp: datetime
     items: List[OrderItemOut]

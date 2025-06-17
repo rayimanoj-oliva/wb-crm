@@ -1,8 +1,10 @@
 # services/order_service.py
+from pydantic import UUID1
+
 from models.models import Order, OrderItem
 from schemas.OrdersSchema import OrderCreate
 from sqlalchemy.orm import Session
-
+from uuid import UUID
 def create_order(db: Session, order_data: OrderCreate):
     order = Order(
         customer_id=order_data.customer_id,
@@ -30,4 +32,5 @@ def get_order(db: Session, order_id: int):
 
 
 def get_orders_by_customer(db: Session, customer_id: str):
-    return db.query(Order).filter(Order.customer_id == customer_id).all()
+    customer_uuid = UUID(customer_id)
+    return db.query(Order).filter(Order.customer_id == customer_uuid).all()
