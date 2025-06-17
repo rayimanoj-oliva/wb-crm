@@ -30,6 +30,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/test-this")
+def test():
+    return {
+        "test":"this should work work"
+    }
 @app.post("/token", response_model=Token)
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = authenticate_user(db, form_data.username, form_data.password)
