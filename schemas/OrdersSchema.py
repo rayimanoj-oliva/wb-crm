@@ -1,7 +1,7 @@
 from uuid import UUID
 
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 from datetime import datetime
 
 class OrderItemCreate(BaseModel):
@@ -16,16 +16,18 @@ class OrderCreate(BaseModel):
     timestamp: datetime
     items: List[OrderItemCreate]
 
-class OrderItemOut(OrderItemCreate):
-    id: int
+class OrderItemOut(BaseModel):
+    product_retailer_id: str
+    quantity: int
+    item_price: float
+    currency: str
 
     class Config:
         orm_mode = True
 
 class OrderOut(BaseModel):
-    id: int
-    customer_id: UUID
-    catalog_id: str
+    id: UUID
+    catalog_id: Optional[str]
     timestamp: datetime
     items: List[OrderItemOut]
 

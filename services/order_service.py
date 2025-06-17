@@ -35,8 +35,10 @@ def get_order(db: Session, order_id: int):
 
 
 def get_orders_by_customer(db: Session, customer_id: str):
-    customer_uuid = uuid.UUID(customer_id)
+    try:
+        customer_uuid = uuid.UUID(customer_id)
+    except ValueError:
+        raise ValueError("Invalid customer UUID")
+
     orders = db.query(Order).filter(Order.customer_id == customer_uuid).all()
-    if not orders:
-        raise HTTPException(status_code=404, detail="No orders found for customer")
     return orders

@@ -24,4 +24,12 @@ def get_order(order_id: int, db: Session = Depends(get_db)):
 
 @router.get("/customer/{customer_id}", response_model=List[OrderOut])
 def get_orders_by_customer(customer_id: str, db: Session = Depends(get_db)):
-    return order_service.get_orders_by_customer(db, customer_id)
+    try:
+        orders = order_service.get_orders_by_customer(db, customer_id)
+        if not orders:
+            raise HTTPException(status_code=404, detail="No orders found for customer")
+        return orders
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid UUID format")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
