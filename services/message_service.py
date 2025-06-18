@@ -13,12 +13,17 @@ def create_message(db: Session, message_data: MessageCreate) -> Message:
         type=message_data.type,
         body=message_data.body,
         timestamp=message_data.timestamp or datetime.utcnow(),
-        customer_id=message_data.customer_id
+        customer_id=message_data.customer_id,
+        media_id=message_data.media_id,
+        caption=message_data.caption,
+        filename=message_data.filename,
+        mime_type=message_data.mime_type,
     )
     db.add(new_message)
     db.commit()
     db.refresh(new_message)
     return new_message
+
 
 
 # Get a message by its ID

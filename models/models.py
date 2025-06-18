@@ -34,6 +34,9 @@ class Customer(Base):
 
     orders = relationship("Order", back_populates="customer")
 
+from sqlalchemy import Column, String, DateTime, ForeignKey, Integer
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+
 class Message(Base):
     __tablename__ = "messages"
 
@@ -41,11 +44,18 @@ class Message(Base):
     message_id = Column(String)
     from_wa_id = Column(String)
     to_wa_id = Column(String)
-    type = Column(String)
+    type = Column(String)  # "text", "image", "document", etc.
     body = Column(String)
     timestamp = Column(DateTime)
 
-    customer_id = Column(UUID(as_uuid=True), ForeignKey("customers.id"))
+    customer_id = Column(PG_UUID(as_uuid=True), ForeignKey("customers.id"))
+
+    # Optional fields for media
+    media_id = Column(String, nullable=True)
+    caption = Column(String, nullable=True)
+    filename = Column(String, nullable=True)
+    mime_type = Column(String, nullable=True)
+
 
 class WhatsAppToken(Base):
     __tablename__ = "whatsapp_tokens"

@@ -1,7 +1,7 @@
-from datetime import datetime
-
 from pydantic import BaseModel
 from uuid import UUID
+from datetime import datetime
+from typing import Optional
 
 class MessageCreate(BaseModel):
     message_id: str
@@ -12,6 +12,12 @@ class MessageCreate(BaseModel):
     timestamp: datetime
     customer_id: UUID
 
+    # Optional media fields
+    media_id: Optional[str] = None
+    caption: Optional[str] = None
+    filename: Optional[str] = None
+    mime_type: Optional[str] = None
+
 class MessageOut(BaseModel):
     id: int
     message_id: str
@@ -21,6 +27,12 @@ class MessageOut(BaseModel):
     body: str
     timestamp: datetime
     customer_id: UUID
+
+    # Optional media fields
+    media_id: Optional[str] = None
+    caption: Optional[str] = None
+    filename: Optional[str] = None
+    mime_type: Optional[str] = None
 
     class Config:
         orm_mode = True
