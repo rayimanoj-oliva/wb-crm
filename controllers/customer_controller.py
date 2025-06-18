@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from schemas.CustomerSchema import CustomerCreate, CustomerOut
+from schemas.CustomerSchema import CustomerCreate, CustomerOut, CustomerUpdate
 from services import customer_service
 from database.db import get_db
 from uuid import UUID
@@ -20,3 +20,7 @@ def read_customer(customer_id: UUID, db: Session = Depends(get_db)):
 @router.get("/", response_model=list[CustomerOut])
 def list_customers(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     return customer_service.get_all_customers(db, skip, limit)
+
+@router.put("/{customer_id}")
+def update_customer(customer_id: UUID, update_data: CustomerUpdate, db: Session = Depends(get_db)):
+    return customer_service.update_customer_name(db, customer_id, update_data)

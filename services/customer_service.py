@@ -1,6 +1,8 @@
+from http.client import HTTPException
+
 from sqlalchemy.orm import Session
 from models.models import Customer
-from schemas.CustomerSchema import CustomerCreate
+from schemas.CustomerSchema import CustomerCreate, CustomerUpdate
 from uuid import UUID
 
 # Create a new customer or return existing if wa_id matches
@@ -25,14 +27,14 @@ def get_all_customers(db: Session, skip: int = 0, limit: int = 100):
     return db.query(Customer).offset(skip).limit(limit).all()
 
 
-# Update a customer
-def update_customer(db: Session, customer_id: int, updated_data: CustomerCreate) -> Customer:
-    customer = get_customer_by_id(db, customer_id)
-    if customer:
-        customer.wa_id = updated_data.wa_id
-        customer.name = updated_data.name
-        db.commit()
-        db.refresh(customer)
+def update_customer_name(db: Session, customer_id: UUID, update_data: CustomerUpdate):
+    customer = db.query(Customer).filter(Customer.id == customer_id).first()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    customer.name = update_data.name
+    db.commit()
+    db.refresh(customer)
     return customer
 
 

@@ -117,8 +117,8 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             new_order = order_service.create_order(db, order_data)
 
             await manager.broadcast({
-                "from": from_wa_id,
-                "to": to_wa_id,
+                "from_wa_id": from_wa_id,
+                "to_wa_id": to_wa_id,
                 "type": "order",
                 "catalog_id": catalog_id,
                 "products": products,
@@ -144,8 +144,8 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
 
             # Optionally broadcast to websocket
             await manager.broadcast({
-                "from":new_msg.from_wa_id,
-                "to":new_msg.to_wa_id,
+                "from_wa_id":new_msg.from_wa_id,
+                "to_wa_id":new_msg.to_wa_id,
                 "type": "text",
                 "message":new_msg.body,
                 "timestamp":new_msg.timestamp.isoformat(),

@@ -13,3 +13,6 @@ class CustomerOut(BaseModel):
 
     class Config:
         orm_mode = True
+
+class CustomerUpdate(BaseModel):
+    name: str
