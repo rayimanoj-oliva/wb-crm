@@ -6,7 +6,7 @@ from sqlalchemy import (
     String,
     DateTime,
     ForeignKey,
-    Float,
+    Float, PrimaryKeyConstraint,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.declarative import declarative_base
@@ -87,3 +87,15 @@ class OrderItem(Base):
     currency = Column(String)
 
     order = relationship("Order", back_populates="items")
+
+class TemplateMessage(Base):
+    __tablename__ = "template_messages"
+
+    message_id = Column(String, nullable=False)      # e.g., WhatsApp message ID
+    template_id = Column(String, nullable=False)     # e.g., "nps_temp1"
+    var_name = Column(String, nullable=False)        # e.g., "name", "link"
+    var_val = Column(String, nullable=False)         # e.g., "Manoj Rayi"
+
+    __table_args__ = (
+        PrimaryKeyConstraint("message_id", "template_id", "var_name", name="template_message_pk"),
+    )

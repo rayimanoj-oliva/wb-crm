@@ -5,10 +5,11 @@ from starlette.responses import StreamingResponse
 from controllers.web_socket import manager
 from schemas.CustomerSchema import CustomerCreate
 from schemas.MessageSchema import MessageCreate
+from schemas.TemplateSchema import SendTemplateRequest
 from schemas.WhatsappToken import WhatsAppTokenCreate
 from database.db import get_db
 from services import customer_service, message_service, whatsapp_service
-from services.whatsapp_service import create_whatsapp_token
+from services.whatsapp_service import create_whatsapp_token, get_latest_token
 
 from fastapi import UploadFile, File, Form, Depends, HTTPException
 from typing import Optional, Literal
@@ -177,3 +178,45 @@ def get_image(media_id: str, db: Session = Depends(get_db)):
 
     # 4. Return the media as a streamed response
     return StreamingResponse(media_res.raw, media_type=content_type)
+
+@router.post("/send-template")
+def send_template(payload: SendTemplateRequest, db: Session = Depends(get_db)):
+    token_entry = get_latest_token(db)
+    if not token_entry:
+        raise HTTPException(status_code=404, detail="WhatsApp token not found")
+
+    url = f"{WHATSAPP_API_URL}"
+    headers = {
+        "Authorization": f"Bearer {token_entry.token}",
+        "Content-Type": "application/json"
+    }
+
+    data = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": payload.to,
+        "type": "template",
+        "template": {
+            "name": payload.template_name,
+            "language": {"code": "en"},
+            "components": [
+                {
+                    "type": "body",
+                    "parameters": [param.dict() for param in payload.parameters]
+                }
+            ]
+        }
+    }
+
+    response = requests.post(url, headers=headers, json=data)
+
+    if response.status_code != 200:
+        return {
+            "status": "failed",
+            "message": response.json()
+        }
+
+    return {
+        "status": "success",
+        "response": response.json()
+    }
