@@ -25,9 +25,10 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://connect.olivaclinic.com",
-        "https://whatsapp.olivaclinic.com",
-        "http://localhost:8080"
+        "*"
+        # "https://connect.olivaclinic.com",
+        # "https://whatsapp.olivaclinic.com",
+        # "http://localhost:8080"
     ],
     allow_credentials=True,
     allow_methods=["*"],
