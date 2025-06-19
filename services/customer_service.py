@@ -24,7 +24,9 @@ def get_customer_by_id(db: Session, customer_id: UUID) -> Customer:
 
 # List all customers
 def get_all_customers(db: Session, skip: int = 0, limit: int = 100):
-    return db.query(Customer).offset(skip).limit(limit).all()
+    return (db.query(Customer).offset(skip)
+            # .limit(limit)
+            .all())
 
 
 def update_customer_name(db: Session, customer_id: UUID, update_data: CustomerUpdate):
