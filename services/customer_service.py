@@ -47,3 +47,8 @@ def delete_customer(db: Session, customer_id: int):
         db.delete(customer)
         db.commit()
     return customer
+
+# get customer_id using wa_id
+def get_customer_by_wa_id(db: Session, wa_id:str):
+    customer = db.query(Customer).filter(Customer.wa_id == wa_id).first()
+    return customer.id

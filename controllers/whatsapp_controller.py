@@ -1,5 +1,6 @@
 
 from fastapi import APIRouter
+from sqlalchemy import nullsfirst
 from starlette.responses import StreamingResponse
 
 from controllers.web_socket import manager
@@ -209,6 +210,17 @@ def send_template(payload: SendTemplateRequest, db: Session = Depends(get_db)):
     }
 
     response = requests.post(url, headers=headers, json=data)
+
+    message_data = MessageCreate(
+        message_id=response.json()['messages'][0]["id"],
+        from_wa_id="917729992376",
+        to_wa_id=payload.to,
+        type="template",
+        body=payload.template_name,
+        timestamp=datetime.now(),
+        customer_id=customer_service.get_customer_by_wa_id(db,payload.to),
+    )
+    message = message_service.create_message(db, message_data)
 
     if response.status_code != 200:
         return {
