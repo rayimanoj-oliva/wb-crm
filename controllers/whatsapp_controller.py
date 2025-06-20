@@ -35,7 +35,7 @@ MEDIA_URL = "https://graph.facebook.com/v22.0/367633743092037/media"
 @router.post("/send-message")
 async def send_whatsapp_message(
     wa_id: str = Form(...),
-    type: Literal["text", "image", "document"] = Form(...),
+    type: Literal["text", "image", "document", "interactive"] = Form(...),
     body: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db)
@@ -100,7 +100,36 @@ async def send_whatsapp_message(
                 "caption": caption,
                 "filename": filename
             }
-
+        elif type == "interactive":
+            payload["interactive"] = {
+                    "type": "product_list",
+                    "header": {
+                      "type": "text",
+                      "text": "Oliva Skin Solutions"
+                    },
+                    "body": {
+                      "text": "Here are some products just for you"
+                    },
+                    "footer": {
+                      "text": "Tap to view each product"
+                    },
+                    "action": {
+                      "catalog_id": "1093353131080785",
+                      "sections": [
+                        {
+                          "title": "Skin Care Combos",
+                          "product_items": [
+                            { "product_retailer_id": "39302163202202" },
+                            { "product_retailer_id": "39531958435994" },
+                            { "product_retailer_id": "35404294455450" },
+                            { "product_retailer_id": "35411030081690" },
+                            { "product_retailer_id": "40286295392410" }
+                          ]
+                        }
+                      ]
+                    }
+                  }
+            body = "5 Products"
         # Step 4: Send message via WhatsApp
         res = requests.post(
             WHATSAPP_API_URL,
