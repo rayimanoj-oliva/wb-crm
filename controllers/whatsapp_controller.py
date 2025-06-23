@@ -210,7 +210,7 @@ def get_image(media_id: str, db: Session = Depends(get_db)):
     return StreamingResponse(media_res.raw, media_type=content_type)
 
 @router.post("/send-template")
-def send_template(payload: SendTemplateRequest, db: Session = Depends(get_db)):
+async def send_template(payload: SendTemplateRequest, db: Session = Depends(get_db)):
     token_entry = get_latest_token(db)
     if not token_entry:
         raise HTTPException(status_code=404, detail="WhatsApp token not found")
@@ -291,7 +291,17 @@ def send_template(payload: SendTemplateRequest, db: Session = Depends(get_db)):
         customer_id=customer_service.get_customer_by_wa_id(db,payload.to),
     )
     message = message_service.create_message(db, message_data)
-
+    await manager.broadcast({
+        "from": message.from_wa_id,
+        "to": message.to_wa_id,
+        "type": message.type,
+        "message": message.body,
+        "timestamp": message.timestamp.isoformat(),
+        "media_id": message.media_id,
+        "caption": message.caption,
+        "filename": message.filename,
+        "mime_type": message.mime_type
+    })
     if response.status_code != 200:
         return {
             "status": "failed",
