@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 from schemas.CampainSchema import BulkTemplateRequest
 from services import whatsapp_service
 
-router = APIRouter()
+router = APIRouter(tags=["Campaign"])
 
 @router.post("/send-template")
 def send_bulk_template(req: BulkTemplateRequest):
