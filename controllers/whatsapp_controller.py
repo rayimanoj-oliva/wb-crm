@@ -220,23 +220,64 @@ def send_template(payload: SendTemplateRequest, db: Session = Depends(get_db)):
         "Authorization": f"Bearer {token_entry.token}",
         "Content-Type": "application/json"
     }
-
-    data = {
-        "messaging_product": "whatsapp",
-        "recipient_type": "individual",
-        "to": payload.to,
-        "type": "template",
-        "template": {
-            "name": payload.template_name,
-            "language": {"code": "en"},
-            "components": [
-                {
-                    "type": "body",
-                    "parameters": [param.dict() for param in payload.parameters]
-                }
-            ]
+    data = {}
+    if payload.template_name == "nps_temp1":
+        data = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": payload.to,
+            "type": "template",
+            "template": {
+                "name": payload.template_name,
+                "language": {"code": "en"},
+                "components": [
+                    {
+                        "type": "body",
+                        "parameters": [param.dict() for param in payload.parameters]
+                    }
+                ]
+            }
         }
-    }
+    elif payload.template_name == "nps_zenoti_one":
+        data = {
+                  "messaging_product": "whatsapp",
+                  "to": payload.to,
+                  "type": "template",
+                  "template": {
+                    "name": "nps_zenoti_one",
+                    "language": {
+                      "code": "en_IN"
+                    },
+                    "components": [
+                      {
+                        "type": "header",
+                        "parameters": [
+                          {
+                            "type": "image",
+                            "image": {
+                              "id": "2499081017126786"
+                            }
+                          }
+                        ]
+                      },
+                        {
+                            "type": "body",
+                            "parameters": [param.dict() for param in payload.parameters]
+                        },
+                      {
+                        "type": "button",
+                        "sub_type": "url",
+                        "index": "0",
+                        "parameters": [
+                          {
+                            "type": "text",
+                            "text": "t?t=123456"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                }
 
     response = requests.post(url, headers=headers, json=data)
 
