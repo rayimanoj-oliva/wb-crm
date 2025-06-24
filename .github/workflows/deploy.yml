@@ -10,9 +10,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # 1. Checkout code from GitHub
       - name: Checkout Code
         uses: actions/checkout@v3
 
+      # 2. Set up SSH access
       - name: Set up SSH
         run: |
           mkdir -p ~/.ssh
@@ -20,14 +22,38 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan ec2-13-234-38-173.ap-south-1.compute.amazonaws.com >> ~/.ssh/known_hosts
 
-      - name: Deploy via SSH
+      # 3. Pull latest code on EC2
+      - name: Pull Latest Code on EC2
         run: |
           ssh -i ~/.ssh/id_rsa ubuntu@ec2-13-234-38-173.ap-south-1.compute.amazonaws.com << 'EOF'
-            cd wb-crm                          # ✅ First, enter project folder
-            source ../myenv/bin/activate      # ✅ Then activate virtualenv (assuming it's outside project)
-            git pull origin main              # ✅ Pull latest code
-            pip install -r requirements.txt   # ✅ Make sure dependencies are up to date
-            alembic upgrade head
-            pkill -f uvicorn || true          # ✅ Stop old server (no error if not running)
-            nohup uvicorn app:app --host 0.0.0.0 --port 8001 > logs.out 2>&1 &  # ✅ Start new server in background
+          cd wb-crm
+          git pull origin main
+          EOF
+
+      # 4. Install Python dependencies on EC2
+      - name: Install Dependencies on EC2
+        run: |
+          ssh -i ~/.ssh/id_rsa ubuntu@ec2-13-234-38-173.ap-south-1.compute.amazonaws.com << 'EOF'
+          source ~/myenv/bin/activate
+          cd wb-crm
+          pip install -r requirements.txt
+          EOF
+
+      # 5. Apply database migrations
+      - name: Run Alembic Migrations on EC2
+        run: |
+          ssh -i ~/.ssh/id_rsa ubuntu@ec2-13-234-38-173.ap-south-1.compute.amazonaws.com << 'EOF'
+          source ~/myenv/bin/activate
+          cd wb-crm
+          alembic upgrade head
+          EOF
+
+      # 6. Restart FastAPI server
+      - name: Restart FastAPI Server
+        run: |
+          ssh -i ~/.ssh/id_rsa ubuntu@ec2-13-234-38-173.ap-south-1.compute.amazonaws.com << 'EOF'
+          source ~/myenv/bin/activate
+          cd wb-crm
+          pkill -f uvicorn || true
+          nohup uvicorn app:app --host 0.0.0.0 --port 8001 > logs.out 2>&1 &
           EOF
