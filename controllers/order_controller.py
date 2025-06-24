@@ -4,7 +4,7 @@ from pydantic.v1 import UUID1
 from sqlalchemy.orm import Session
 from typing import List
 from database.db import get_db
-from schemas.OrdersSchema import OrderOut, OrderCreate
+from schemas.orders_schema import OrderOut, OrderCreate
 from services import order_service
 
 router = APIRouter(tags=["Orders"])

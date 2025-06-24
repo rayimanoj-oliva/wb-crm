@@ -6,9 +6,9 @@ from sqlalchemy import (
     String,
     DateTime,
     ForeignKey,
-    Float, PrimaryKeyConstraint,
+    Float, PrimaryKeyConstraint, Table,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB, ENUM
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 
@@ -33,6 +33,11 @@ class Customer(Base):
     name = Column(String)
 
     orders = relationship("Order", back_populates="customer")
+    campaigns = relationship("Campaign", secondary="campaign_customers", back_populates="customers")
+
+    def __str__(self):
+        return f"{self.wa_id} {self.name} {self.id}"
+
 
 from sqlalchemy import Column, String, DateTime, ForeignKey, Integer
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
@@ -99,3 +104,33 @@ class TemplateMessage(Base):
     __table_args__ = (
         PrimaryKeyConstraint("message_id", "template_id", "var_name", name="template_message_pk"),
     )
+
+campaign_type_enum = ENUM(
+    "text", "image", "document", "template", "interactive",
+    name="campaign_type_enum",
+    create_type=False  # Alembic will manage this
+)
+
+class Campaign(Base):
+    __tablename__ = "campaigns"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(255), nullable=False)
+    description = Column(String(1000), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    updated_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+
+    # Many-to-many relationship with customers
+    customers = relationship("Customer", secondary="campaign_customers", back_populates="campaigns")
+    content = Column(JSONB, nullable=True)
+    type = Column(campaign_type_enum, nullable=False)
+
+campaign_customers = Table(
+    "campaign_customers",
+    Base.metadata,
+    Column("campaign_id", UUID(as_uuid=True), ForeignKey("campaigns.id"), primary_key=True),
+    Column("customer_id", UUID(as_uuid=True), ForeignKey("customers.id"), primary_key=True),
+)

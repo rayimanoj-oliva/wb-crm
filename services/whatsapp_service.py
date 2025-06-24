@@ -3,7 +3,7 @@ import json
 import pika
 from sqlalchemy.orm import Session
 from models.models import WhatsAppToken
-from schemas.WhatsappToken import WhatsAppTokenCreate
+from schemas.whatsapp_token_schema import WhatsAppTokenCreate
 
 def create_whatsapp_token(db: Session, token_data: WhatsAppTokenCreate):
     token_entry = WhatsAppToken(token=token_data.token)

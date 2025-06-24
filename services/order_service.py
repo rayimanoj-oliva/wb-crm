@@ -4,7 +4,7 @@ from http.client import HTTPException
 from pydantic import UUID1
 
 from models.models import Order, OrderItem
-from schemas.OrdersSchema import OrderCreate
+from schemas.orders_schema import OrderCreate
 from sqlalchemy.orm import Session
 import uuid
 

@@ -7,7 +7,7 @@ from controllers.whatsapp_controller import WHATSAPP_API_URL
 from database.db import SessionLocal
 from services import customer_service, message_service
 from services.whatsapp_service import get_latest_token
-from schemas.MessageSchema import MessageCreate
+from schemas.message_schema import MessageCreate
 
 
 def callback(ch, method, properties, body):

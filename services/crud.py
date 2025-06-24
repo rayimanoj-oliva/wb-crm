@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session
 from models.models import User
-from schemas.UserSchema import UserCreate, UserUpdate
+from schemas.user_schema import UserCreate, UserUpdate
 import uuid
 
 from utils.utils import get_password_hash

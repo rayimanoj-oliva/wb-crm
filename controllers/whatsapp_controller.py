@@ -4,10 +4,11 @@ from sqlalchemy import nullsfirst
 from starlette.responses import StreamingResponse
 
 from controllers.web_socket import manager
-from schemas.CustomerSchema import CustomerCreate
-from schemas.MessageSchema import MessageCreate
-from schemas.TemplateSchema import SendTemplateRequest
-from schemas.WhatsappToken import WhatsAppTokenCreate
+from schemas.campaign_schema import CampaignOut
+from schemas.customer_schema import CustomerCreate
+from schemas.message_schema import MessageCreate
+from schemas.template_schema import SendTemplateRequest
+from schemas.whatsapp_token_schema import WhatsAppTokenCreate
 from database.db import get_db
 from services import customer_service, message_service, whatsapp_service
 from services.whatsapp_service import create_whatsapp_token, get_latest_token
@@ -312,3 +313,17 @@ async def send_template(payload: SendTemplateRequest, db: Session = Depends(get_
         "status": "success",
         "response": response.json()
     }
+
+@router.get("/templates")
+def get_templates(db: Session = Depends(get_db)):
+    token_entry = get_latest_token(db)
+    if not token_entry:
+        raise HTTPException(status_code=404, detail="WhatsApp token not found")
+
+    url = "https://graph.facebook.com/v23.0/286831244524604/message_templates"
+    headers = {
+        "Authorization": f"Bearer {token_entry.token}",
+        "Content-Type": "application/json"
+    }
+    response = requests.get(url, headers=headers)
+    return response.json()

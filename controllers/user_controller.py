@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from uuid import UUID
 
-from schemas.UserSchema import UserCreate, UserRead, UserUpdate
+from schemas.user_schema import UserCreate, UserRead, UserUpdate
 from models.models import User
 from services import crud
 from auth import get_current_user

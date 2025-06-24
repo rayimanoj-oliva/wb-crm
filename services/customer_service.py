@@ -2,7 +2,7 @@ from http.client import HTTPException
 
 from sqlalchemy.orm import Session
 from models.models import Customer
-from schemas.CustomerSchema import CustomerCreate, CustomerUpdate
+from schemas.customer_schema import CustomerCreate, CustomerUpdate
 from uuid import UUID
 
 # Create a new customer or return existing if wa_id matches

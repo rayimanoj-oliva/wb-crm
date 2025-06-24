@@ -16,7 +16,7 @@ from controllers import (
 )
 from database.db import SessionLocal, engine, get_db
 from models import models
-from schemas.TokenSchema import Token  # <-- import your router module
+from schemas.token_schema import Token  # <-- import your router module
 
 models.Base.metadata.create_all(bind=engine)
 

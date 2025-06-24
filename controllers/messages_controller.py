@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List
 
-from schemas.MessageSchema import MessageCreate, MessageOut
+from schemas.message_schema import MessageCreate, MessageOut
 from services import message_service
 from database.db import get_db
 from services.message_service import get_messages_by_wa_id

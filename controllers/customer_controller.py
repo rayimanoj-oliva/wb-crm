@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from schemas.CustomerSchema import CustomerCreate, CustomerOut, CustomerUpdate
+from schemas.customer_schema import CustomerCreate, CustomerOut, CustomerUpdate
 from services import customer_service
 from database.db import get_db
 from uuid import UUID

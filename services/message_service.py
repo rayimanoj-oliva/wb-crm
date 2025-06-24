@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session
 from models.models import Message
-from schemas.MessageSchema import MessageCreate
+from schemas.message_schema import MessageCreate
 from datetime import datetime
 
 

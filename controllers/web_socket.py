@@ -11,10 +11,10 @@ from sqlalchemy.orm import Session
 from starlette.responses import PlainTextResponse
 
 from database.db import get_db
-from schemas.OrdersSchema import OrderItemCreate,OrderCreate
+from schemas.orders_schema import OrderItemCreate,OrderCreate
 from services import customer_service, message_service, order_service
-from schemas.CustomerSchema import CustomerCreate
-from schemas.MessageSchema import MessageCreate
+from schemas.customer_schema import CustomerCreate
+from schemas.message_schema import MessageCreate
 router = APIRouter()
 
 # Store connected WebSocket clients

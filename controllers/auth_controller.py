@@ -9,7 +9,7 @@ from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 from auth import pwd_context, SECRET_KEY, ALGORITHM
 from models.models import User
-from schemas.ResetPasswordSchema import ResetPasswordRequest
+from schemas.reset_password_schema import ResetPasswordRequest
 router = APIRouter(
     tags=["Auth"]
 )
