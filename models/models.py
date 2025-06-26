@@ -134,3 +134,14 @@ campaign_customers = Table(
     Column("campaign_id", UUID(as_uuid=True), ForeignKey("campaigns.id"), primary_key=True),
     Column("customer_id", UUID(as_uuid=True), ForeignKey("customers.id"), primary_key=True),
 )
+
+
+class Template(Base):
+    __tablename__ = 'templates'
+
+    template_name = Column(String, primary_key=True)
+    template_body = Column(JSONB, nullable=False)
+    template_vars = Column(JSONB, nullable=False)
+
+    def __repr__(self):
+        return f"<Template(template_name='{self.template_name}')>"
