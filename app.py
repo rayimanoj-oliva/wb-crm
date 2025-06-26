@@ -13,7 +13,7 @@ from controllers import (
     auth_controller,
     customer_controller,
     web_hook, web_socket, messages_controller, whatsapp_controller, order_controller, campaign_controller,
-    template_controller
+    template_controller, files_controller
 )
 from database.db import SessionLocal, engine, get_db
 from models import models
@@ -60,3 +60,4 @@ app.include_router(whatsapp_controller.router,prefix="/secret")
 app.include_router(order_controller.router,prefix="/orders")
 app.include_router(campaign_controller.router, prefix="/campaign")
 app.include_router(template_controller.router, prefix="/templates")
+app.include_router(files_controller.router, prefix="/files")

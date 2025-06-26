@@ -1,3 +1,4 @@
+from sqlalchemy.sql import func
 import uuid
 from datetime import datetime
 from sqlalchemy import (
@@ -145,3 +146,10 @@ class Template(Base):
 
     def __repr__(self):
         return f"<Template(template_name='{self.template_name}')>"
+class File(Base):
+    __tablename__ = "files"
+
+    id = Column(String, primary_key=True, index=True)  # media_id from Meta
+    name = Column(String, nullable=False)
+    mimetype = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
