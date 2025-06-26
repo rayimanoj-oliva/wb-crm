@@ -12,9 +12,9 @@ from services.whatsapp_service import get_latest_token
 from utils.json_placeholder import fill_placeholders
 
 def union_dict(dic1,dic2):
-    for i in dic2:
-        dic1[i] = dic2[i]
-    return dic1
+    for i in dic1:
+        dic2[i] = dic1[i]
+    return dic2
 def send_template_to_customer(template_name,extra, db: Session = Depends(get_db)):
     token_entry = get_latest_token(db)
     if not token_entry:
@@ -27,6 +27,8 @@ def send_template_to_customer(template_name,extra, db: Session = Depends(get_db)
     }
 
     template = db.query(Template).filter(Template.template_name == template_name).first()
+    print(extra)
+    print(template.template_vars)
     new_vars = union_dict(extra, template.template_vars)
     new_body = fill_placeholders(template.template_body, new_vars)
     print(new_body)
