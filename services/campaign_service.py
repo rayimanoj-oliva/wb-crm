@@ -1,3 +1,6 @@
+import json
+
+import pika
 import requests
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -57,45 +60,40 @@ def delete_campaign(db: Session, campaign_id: UUID):
     db.delete(campaign)
     db.commit()
     return {"detail": "Campaign deleted"}
+import json
+import uuid
 
-def run_campaign(campaign: Campaign,db: Session):
-    token_obj = whatsapp_service.get_latest_token(db)
-    if not token_obj:
-        raise HTTPException(status_code=400, detail="Token not available")
+class EnhancedJSONEncoder(json.JSONEncoder):
+    def default(self, o):
+        if isinstance(o, uuid.UUID):
+            return str(o)
+        return super().default(o)
 
-    token = token_obj.token
-    headers = {"Authorization": f"Bearer {token}"}
-    for customer in campaign.customers:
-        extra = {
-            "customer_id": str(customer.id),
-            "customer_name": customer.name,
-            "customer_phone": customer.wa_id,
-        }
-        if campaign.type != "template":
-            payload = {
-                "messaging_product": "whatsapp",
-                "to": customer.wa_id,
-                "recipient_type": "individual",
-                "type": campaign.type,
-                campaign.type:campaign.content
-            }
-        else:
-            template_name = campaign.content['template_name']
-            template = db.query(Template).filter(Template.template_name == template_name).first()
-
-            new_vars = union_dict(extra, template.template_vars)
-            new_body = fill_placeholders(template.template_body, new_vars)
-            payload = {
-                "messaging_product": "whatsapp",
-                "recipient_type": "individual",
-                "to": extra["customer_phone"],
-                "type": "template",
-                "template": new_body
-            }
-        res = requests.post(
-            WHATSAPP_API_URL,
-            json=payload,
-            headers={**headers, "Content-Type": "application/json"}
+def publish_to_queue(message: dict, queue_name: str = "campaign_queue"):
+    connection = pika.BlockingConnection(pika.ConnectionParameters("localhost"))
+    channel = connection.channel()
+    channel.queue_declare(queue=queue_name, durable=True)
+    channel.basic_publish(
+        exchange='',
+        routing_key=queue_name,
+        body=json.dumps(message,cls=EnhancedJSONEncoder),
+        properties=pika.BasicProperties(
+            delivery_mode=2,
         )
-        print(res)
-    return {}
+    )
+    connection.close()
+
+def run_campaign(campaign: Campaign, db: Session):
+    for customer in campaign.customers:
+        task = {
+            "campaign_id": campaign.id,
+            "customer": {
+                "id": str(customer.id),
+                "name": customer.name,
+                "wa_id": customer.wa_id
+            },
+            "content": campaign.content,
+            "type": campaign.type
+        }
+        publish_to_queue(task)
+    return {"status": "queued","count": len(campaign.customers)}

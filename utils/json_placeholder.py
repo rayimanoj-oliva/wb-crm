@@ -78,6 +78,6 @@ values_json = {
     }
 
 filled_json = fill_placeholders(template_json, values_json)
-
-print(json.dumps(filled_json, indent=2))
-print(extract_placeholders(template_json))
+if __name__ == "__main__":
+    print(json.dumps(filled_json, indent=2))
+    print(extract_placeholders(template_json))
