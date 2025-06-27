@@ -60,6 +60,7 @@ def delete_campaign(db: Session, campaign_id: UUID):
     db.delete(campaign)
     db.commit()
     return {"detail": "Campaign deleted"}
+
 import json
 import uuid
 

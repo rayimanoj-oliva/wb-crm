@@ -129,6 +129,12 @@ class Campaign(Base):
     customers = relationship("Customer", secondary="campaign_customers", back_populates="campaigns")
     content = Column(JSONB, nullable=True)
     type = Column(campaign_type_enum, nullable=False)
+    jobs = relationship(
+        "Job",
+        back_populates="campaign",
+        cascade="all, delete-orphan",
+        passive_deletes=True
+    )
 
 campaign_customers = Table(
     "campaign_customers",
@@ -159,10 +165,11 @@ class Job(Base):
     __tablename__ = "jobs"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    campaign_id = Column(UUID(as_uuid=True), ForeignKey("campaigns.id"), nullable=False)
+    campaign_id = Column(UUID(as_uuid=True), ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    campaign = relationship("Campaign", backref="jobs")
+    campaign = relationship("Campaign", back_populates="jobs")
+
 
 
 
@@ -171,8 +178,8 @@ job_status_enum = Enum("pending", "success", "failure", name="job_status_enum", 
 class JobStatus(Base):
     __tablename__ = "job_status"
 
-    job_id = Column(UUID(as_uuid=True), ForeignKey("jobs.id"), nullable=False)
-    customer_id = Column(UUID(as_uuid=True), ForeignKey("customers.id"), nullable=False)
+    job_id = Column(UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False)
+    customer_id = Column(UUID(as_uuid=True), ForeignKey("customers.id", ondelete="CASCADE"), nullable=False)
     status = Column(job_status_enum, nullable=False, default="pending")
 
     __table_args__ = (
@@ -181,3 +188,4 @@ class JobStatus(Base):
 
     job = relationship("Job", backref="statuses")
     customer = relationship("Customer")
+
