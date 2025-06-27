@@ -13,11 +13,11 @@ from controllers import (
     auth_controller,
     customer_controller,
     web_hook, web_socket, messages_controller, whatsapp_controller, order_controller, campaign_controller,
-    template_controller, files_controller, job_controller
+    template_controller, files_controller, job_controller, dashboard_controller
 )
 from database.db import SessionLocal, engine, get_db
 from models import models
-from schemas.token_schema import Token  # <-- import your router module
+from schemas.token_schema import Token
 
 models.Base.metadata.create_all(bind=engine)
 
@@ -62,3 +62,4 @@ app.include_router(campaign_controller.router, prefix="/campaign")
 app.include_router(template_controller.router, prefix="/templates")
 app.include_router(files_controller.router, prefix="/files")
 app.include_router(job_controller.router, prefix="/job")
+app.include_router(dashboard_controller.router, prefix="/dashboard")

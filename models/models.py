@@ -33,9 +33,9 @@ class Customer(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     wa_id = Column(String, unique=True, nullable=False)
     name = Column(String)
-
     orders = relationship("Order", back_populates="customer")
     campaigns = relationship("Campaign", secondary="campaign_customers", back_populates="customers")
+    created_at = Column(DateTime, default=datetime.utcnow)
 
     def __str__(self):
         return f"{self.wa_id} {self.name} {self.id}"
