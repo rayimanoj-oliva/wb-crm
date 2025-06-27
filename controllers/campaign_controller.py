@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from auth import get_current_user
 from database.db import get_db
 from schemas.campaign_schema import BulkTemplateRequest, CampaignOut, CampaignCreate, CampaignUpdate
-from services import whatsapp_service
+from services import whatsapp_service, job_service
 from services.campaign_service import create_campaign, get_all_campaigns
 import services.campaign_service as campaign_service
 from uuid import UUID
@@ -44,5 +44,6 @@ def delete_campaign(campaign_id: UUID, db: Session = Depends(get_db), current_us
 
 @router.post("/run/{campaign_id}")
 def run_campaign(campaign_id:UUID,db :Session = Depends(get_db),):
+    job = job_service.create_job(db, campaign_id)
     campaign = campaign_service.get_campaign(db,campaign_id)
-    return campaign_service.run_campaign(campaign,db)
+    return campaign_service.run_campaign(campaign,job,db)

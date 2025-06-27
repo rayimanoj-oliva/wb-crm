@@ -1,3 +1,4 @@
+from sqlalchemy import Enum
 from sqlalchemy.sql import func
 import uuid
 from datetime import datetime
@@ -153,3 +154,30 @@ class File(Base):
     name = Column(String, nullable=False)
     mimetype = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class Job(Base):
+    __tablename__ = "jobs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    campaign_id = Column(UUID(as_uuid=True), ForeignKey("campaigns.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    campaign = relationship("Campaign", backref="jobs")
+
+
+
+job_status_enum = Enum("pending", "success", "failure", name="job_status_enum", create_type=False)
+
+class JobStatus(Base):
+    __tablename__ = "job_status"
+
+    job_id = Column(UUID(as_uuid=True), ForeignKey("jobs.id"), nullable=False)
+    customer_id = Column(UUID(as_uuid=True), ForeignKey("customers.id"), nullable=False)
+    status = Column(job_status_enum, nullable=False, default="pending")
+
+    __table_args__ = (
+        PrimaryKeyConstraint("job_id", "customer_id", name="job_status_pk"),
+    )
+
+    job = relationship("Job", backref="statuses")
+    customer = relationship("Customer")

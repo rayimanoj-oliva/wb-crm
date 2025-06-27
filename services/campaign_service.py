@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from controllers.whatsapp_controller import WHATSAPP_API_URL
-from models.models import Campaign, Customer, Template
+from models.models import Campaign, Customer, Template, Job
 from schemas.campaign_schema import CampaignCreate, CampaignUpdate
 from uuid import UUID
 
@@ -83,9 +83,10 @@ def publish_to_queue(message: dict, queue_name: str = "campaign_queue"):
     )
     connection.close()
 
-def run_campaign(campaign: Campaign, db: Session):
+def run_campaign(campaign: Campaign,job:Job, db: Session):
     for customer in campaign.customers:
         task = {
+            "job_id":job.id,
             "campaign_id": campaign.id,
             "customer": {
                 "id": str(customer.id),
@@ -96,4 +97,4 @@ def run_campaign(campaign: Campaign, db: Session):
             "type": campaign.type
         }
         publish_to_queue(task)
-    return {"status": "queued","count": len(campaign.customers)}
+    return job
