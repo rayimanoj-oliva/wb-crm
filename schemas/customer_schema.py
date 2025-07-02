@@ -10,7 +10,7 @@ class CustomerOut(BaseModel):
     id: UUID
     wa_id: str
     name: Optional[str] = None
-
+    unread_count: int = 0
     class Config:
         orm_mode = True
 

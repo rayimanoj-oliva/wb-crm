@@ -1,8 +1,9 @@
 from sqlalchemy.orm import Session
+
+from cache.service import increment_unread, reset_unread
 from models.models import Message
 from schemas.message_schema import MessageCreate
 from datetime import datetime
-
 
 # Create a new message
 def create_message(db: Session, message_data: MessageCreate) -> Message:
@@ -19,6 +20,7 @@ def create_message(db: Session, message_data: MessageCreate) -> Message:
         filename=message_data.filename,
         mime_type=message_data.mime_type,
     )
+    increment_unread(message_data.from_wa_id)
     db.add(new_message)
     db.commit()
     db.refresh(new_message)
@@ -66,6 +68,7 @@ def delete_message(db: Session, message_id: int):
     return message
 
 def get_messages_by_wa_id(db: Session, wa_id: str):
+    reset_unread(wa_id)
     return db.query(Message).filter(
         (Message.from_wa_id == wa_id) | (Message.to_wa_id == wa_id)
     ).order_by(Message.timestamp.asc()).all()
