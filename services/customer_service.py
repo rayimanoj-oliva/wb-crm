@@ -30,7 +30,7 @@ def get_unread_count(wa_id: str) -> int:
     return int(count) if count else 0
 
 def get_all_customers(db: Session, skip: int = 0, limit: int = 100):
-    customers = db.query(Customer).offset(skip).limit(limit).all()
+    customers = db.query(Customer).offset(skip).all()
     for customer in customers:
         customer.unread_count = get_unread_count(customer.wa_id)  # Inject attribute dynamically
     return customers
