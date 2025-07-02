@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session
 
 from cache.service import increment_unread, reset_unread
-from models.models import Message
+from models.models import Message, Customer
 from schemas.message_schema import MessageCreate
 from datetime import datetime
 
@@ -20,6 +20,11 @@ def create_message(db: Session, message_data: MessageCreate) -> Message:
         filename=message_data.filename,
         mime_type=message_data.mime_type,
     )
+    customer = db.query(Customer).filter(Customer.id == message_data.customer_id).first()
+    if customer:
+        customer.last_message_at = new_message.timestamp
+
+
     increment_unread(message_data.from_wa_id)
     db.add(new_message)
     db.commit()

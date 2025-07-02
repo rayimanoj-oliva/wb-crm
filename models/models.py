@@ -36,7 +36,7 @@ class Customer(Base):
     orders = relationship("Order", back_populates="customer")
     campaigns = relationship("Campaign", secondary="campaign_customers", back_populates="customers")
     created_at = Column(DateTime, default=datetime.utcnow)
-
+    last_message_at = Column(DateTime, nullable=True)
     def __str__(self):
         return f"{self.wa_id} {self.name} {self.id}"
 
