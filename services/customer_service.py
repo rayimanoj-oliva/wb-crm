@@ -29,8 +29,8 @@ def get_unread_count(wa_id: str) -> int:
     count = redis_client.get(f"unread:{wa_id}")
     return int(count) if count else 0
 
-def get_all_customers(db: Session, skip: int = 0, limit: int = 100):
-    customers = db.query(Customer).order_by(Customer.last_message_at.desc().nullslast()).offset(skip).limit(limit).all()
+def get_all_customers(db: Session):
+    customers = db.query(Customer).order_by(Customer.last_message_at.desc().nullslast()).all()
     for customer in customers:
         customer.unread_count = get_unread_count(customer.wa_id)  # Inject attribute dynamically
     return customers

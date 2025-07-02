@@ -18,8 +18,8 @@ def read_customer(customer_id: UUID, db: Session = Depends(get_db)):
     return customer
 
 @router.get("/", response_model=list[CustomerOut])
-def list_customers(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    return customer_service.get_all_customers(db, skip, limit)
+def list_customers(db: Session = Depends(get_db)):
+    return customer_service.get_all_customers(db)
 
 @router.put("/{customer_id}")
 def update_customer(customer_id: UUID, update_data: CustomerUpdate, db: Session = Depends(get_db)):
