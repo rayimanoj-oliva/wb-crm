@@ -13,10 +13,14 @@ class CustomerOut(BaseModel):
     wa_id: str
     name: Optional[str] = None
     unread_count: int = 0
-    last_message_at: Optional[datetime] = None  # ✅ added this line
+    last_message_at: Optional[datetime] = None
+    user_id: Optional[UUID] = None
 
     class Config:
         orm_mode = True
 
 class CustomerUpdate(BaseModel):
     name: str
+
+class AssignUserRequest(BaseModel):
+    user_id: Optional[UUID] = None

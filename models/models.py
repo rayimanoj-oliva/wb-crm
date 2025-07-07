@@ -13,7 +13,8 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ENUM
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
-
+from sqlalchemy import Column, String, DateTime, ForeignKey, Integer
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 Base = declarative_base()
 
 class User(Base):
@@ -27,6 +28,7 @@ class User(Base):
     phone_number = Column(String(20), nullable=False)
     email = Column(String(100), unique=True, nullable=False)
 
+    customers = relationship("Customer", back_populates="user")
 class Customer(Base):
     __tablename__ = "customers"
 
@@ -37,12 +39,15 @@ class Customer(Base):
     campaigns = relationship("Campaign", secondary="campaign_customers", back_populates="customers")
     created_at = Column(DateTime, default=datetime.utcnow)
     last_message_at = Column(DateTime, nullable=True)
+    # foreign key
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+
+    # Relationship to User
+    user = relationship("User", back_populates="customers")
     def __str__(self):
         return f"{self.wa_id} {self.name} {self.id}"
 
 
-from sqlalchemy import Column, String, DateTime, ForeignKey, Integer
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 
 class Message(Base):
     __tablename__ = "messages"
@@ -161,6 +166,8 @@ class Template(Base):
 
     def __repr__(self):
         return f"<Template(template_name='{self.template_name}')>"
+
+
 class File(Base):
     __tablename__ = "files"
 

@@ -1,9 +1,11 @@
 from http.client import HTTPException
+from typing import List
 
 from sqlalchemy.orm import Session
+from starlette import status
 
 from cache.redis_connection import redis_client
-from models.models import Customer
+from models.models import Customer, User
 from schemas.customer_schema import CustomerCreate, CustomerUpdate
 from uuid import UUID
 
@@ -59,3 +61,47 @@ def delete_customer(db: Session, customer_id: int):
 def get_customer_by_wa_id(db: Session, wa_id:str):
     customer = db.query(Customer).filter(Customer.wa_id == wa_id).first()
     return customer.id
+
+def assign_user_to_customer(db: Session, customer_id: UUID, user_id: UUID | None) -> Customer:
+    # 1. Get the customer
+    customer = db.query(Customer).filter(Customer.id == customer_id).one_or_none()
+    if not customer:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Customer with id {customer_id} not found."
+        )
+
+    # 2. Unassign user if user_id is None
+    if user_id is None:
+        customer.user_id = None
+        db.commit()
+        db.refresh(customer)
+        return customer
+
+    # 3. Get the user
+    user = db.query(User).filter(User.id == user_id).one_or_none()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User with id {user_id} not found."
+        )
+
+    # 4. Assign user to customer
+    customer.user_id = user.id
+    db.commit()
+    db.refresh(customer)
+
+    return customer
+
+def get_customers_for_user(db: Session, user_id: UUID) -> List[Customer]:
+    # Optional: Validate that the user exists
+    user = db.query(User).filter(User.id == user_id).one_or_none()
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail=f"User with id {user_id} not found."
+        )
+
+    # Fetch all customers assigned to this user
+    customers = db.query(Customer).filter(Customer.user_id == user_id).all()
+    return customers

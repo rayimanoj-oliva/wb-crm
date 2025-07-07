@@ -1,12 +1,16 @@
+from typing import List
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from uuid import UUID
 
+from schemas.customer_schema import CustomerOut
 from schemas.user_schema import UserCreate, UserRead, UserUpdate
-from models.models import User
+from models.models import User, Customer
 from services import crud
 from auth import get_current_user
 from database.db import get_db
+from services.customer_service import get_customers_for_user
 
 router = APIRouter(
     tags=["users"]
@@ -65,3 +69,7 @@ def delete_user(
     if not deleted:
         raise HTTPException(status_code=404, detail="User not found")
     return {"ok": True}
+
+@router.get("/{user_id}/customers", response_model=List[CustomerOut])
+def get_user_customers(user_id: UUID, db: Session = Depends(get_db)):
+    return get_customers_for_user(db, user_id)
