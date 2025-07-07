@@ -3,7 +3,7 @@ from http.client import HTTPException
 from pydantic import BaseModel
 from database.db import get_db
 from services.crud import get_user_by_username, get_user_by_email
-from utils.email import send_forgot_password_email
+from utils.email_utils import send_forgot_password_email
 from fastapi import APIRouter, HTTPException, Depends
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
