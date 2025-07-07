@@ -327,3 +327,4 @@ def get_templates(db: Session = Depends(get_db)):
     }
     response = requests.get(url, headers=headers)
     return response.json()
+

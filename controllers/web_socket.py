@@ -15,6 +15,8 @@ from schemas.orders_schema import OrderItemCreate,OrderCreate
 from services import customer_service, message_service, order_service
 from schemas.customer_schema import CustomerCreate
 from schemas.message_schema import MessageCreate
+from utils.whatsapp import send_message_to_waid
+
 router = APIRouter()
 
 # Store connected WebSocket clients
@@ -124,7 +126,28 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 "products": products,
                 "timestamp": timestamp.isoformat(),
             })
+            send_message_to_waid(from_wa_id,
+                                 """
+                                 📌 Please enter your full delivery address in the format below:
 
+Full Name:  
+
+House No. + Street:  
+
+Area / Locality:  
+
+City:  
+
+State:  
+
+Pincode:  
+
+Landmark (Optional):  
+
+Phone Number:
+
+
+                                 """)
         else:
             body_text = message[message_type]["body"] if "body" in message[message_type] else ""
 
