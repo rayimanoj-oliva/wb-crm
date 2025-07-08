@@ -44,6 +44,7 @@ class Customer(Base):
     wa_id = Column(String, unique=True, nullable=False)
     name = Column(String)
     orders = relationship("Order", back_populates="customer")
+    address = Column(String, nullable=True)
     campaigns = relationship("Campaign", secondary="campaign_customers", back_populates="customers")
     created_at = Column(DateTime, default=datetime.utcnow)
     last_message_at = Column(DateTime, nullable=True)

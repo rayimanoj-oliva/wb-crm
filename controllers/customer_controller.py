@@ -6,6 +6,7 @@ from schemas.customer_schema import CustomerCreate, CustomerOut, CustomerUpdate,
 from services import customer_service
 from database.db import get_db
 from uuid import UUID
+
 router = APIRouter(tags=["Customers"])
 
 @router.post("/", response_model=CustomerOut)
@@ -34,3 +35,27 @@ def assign_user_to_customer_route(
     db: Session = Depends(get_db)
 ):
     return customer_service.assign_user_to_customer(db, customer_id, request.user_id)
+
+# GET address by customer ID
+@router.get("/{customer_id}/address")
+def get_customer_address(customer_id: UUID, db: Session = Depends(get_db)):
+    customer = customer_service.get_customer_by_id(db, customer_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    return {"address": customer.address}
+
+@router.post("/{customer_id}/address")
+def update_customer_address_route(
+    customer_id: UUID,
+    update_data: CustomerUpdate,  # ✅ Reuse this
+    db: Session = Depends(get_db)
+):
+    if update_data.address is None:
+        raise HTTPException(status_code=400, detail="Address is required")
+
+    customer = customer_service.update_customer_address(db, customer_id, update_data.address)
+    return {
+        "message": "Address updated successfully",
+        "customer_id": str(customer.id),
+        "address": customer.address
+    }

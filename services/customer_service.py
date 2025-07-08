@@ -92,6 +92,18 @@ def assign_user_to_customer(db: Session, customer_id: UUID, user_id: UUID | None
     db.refresh(customer)
 
     return customer
+    #5. Update customer address
+def update_customer_address(db: Session, customer_id: UUID, address: str) -> Customer:
+    customer = db.query(Customer).filter(Customer.id == customer_id).first()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    customer.address = address
+    db.commit()
+    db.refresh(customer)
+    return customer
+
+
 
 def get_customers_for_user(db: Session, user_id: UUID) -> List[Customer]:
     # Optional: Validate that the user exists
