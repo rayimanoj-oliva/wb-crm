@@ -1,4 +1,6 @@
 from sqlalchemy import Enum
+
+from sqlalchemy.dialects.postgresql import JSONB, ENUM
 from sqlalchemy.sql import func
 import uuid
 from datetime import datetime
