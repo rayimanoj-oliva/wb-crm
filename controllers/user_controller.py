@@ -22,9 +22,18 @@ def read_current_user(current_user: User = Depends(get_current_user)):
     return current_user
 
 @router.post("/", response_model=UserRead)
-def create_user(user: UserCreate, db: Session = Depends(get_db)):
+def create_user(
+    user: UserCreate,
+    db: Session = Depends(get_db),
+    # current_user: User = Depends(get_current_user)  # Authenticated user
+):
     if crud.get_user_by_email(db, user.email):
         raise HTTPException(status_code=400, detail="Email already registered")
+
+    # # Optional: only admins can assign the ADMIN role
+    # if user.role == "ADMIN" and current_user.role != "ADMIN":
+    #     raise HTTPException(status_code=403, detail="Only admins can create admin users")
+
     return crud.create_user(db, user)
 
 @router.get("/", response_model=list[UserRead])
@@ -73,3 +82,15 @@ def delete_user(
 @router.get("/{user_id}/customers", response_model=List[CustomerOut])
 def get_user_customers(user_id: UUID, db: Session = Depends(get_db)):
     return get_customers_for_user(db, user_id)
+
+
+@router.get("/role/{role}", response_model=list[UserRead])
+def get_users_by_role(
+        role: str,
+        db: Session = Depends(get_db),
+        current_user: User = Depends(get_current_user)
+):
+    if current_user.role != "ADMIN":
+        raise HTTPException(status_code=403, detail="Admins only")
+
+    return db.query(User).filter(User.role == role.upper()).all()

@@ -27,11 +27,13 @@ def create_user(db: Session, user: UserCreate):
         first_name=user.first_name,
         last_name=user.last_name,
         phone_number=user.phone_number,
+        role=user.role
     )
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
     return db_user
+
 
 
 def update_user(db: Session, user_id: uuid.UUID, user: UserUpdate):

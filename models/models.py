@@ -15,8 +15,14 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from sqlalchemy import Column, String, DateTime, ForeignKey, Integer
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+
 Base = declarative_base()
 
+user_role_enum = Enum(
+    "ADMIN", "AGENT",
+    name="user_role_enum",
+    create_type=False  # Let Alembic handle enum creation
+)
 class User(Base):
     __tablename__ = "users"
 
@@ -27,8 +33,10 @@ class User(Base):
     last_name = Column(String(100), nullable=False)
     phone_number = Column(String(20), nullable=False)
     email = Column(String(100), unique=True, nullable=False)
-
+    role = Column(user_role_enum, nullable=False, default="AGENT")
     customers = relationship("Customer", back_populates="user")
+
+
 class Customer(Base):
     __tablename__ = "customers"
 
