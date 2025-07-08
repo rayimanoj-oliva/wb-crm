@@ -212,3 +212,4 @@ class JobStatus(Base):
     job = relationship("Job", backref="statuses")
     customer = relationship("Customer")
 
+#jobstatus
