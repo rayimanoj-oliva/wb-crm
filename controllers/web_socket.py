@@ -123,7 +123,24 @@ Phone Number:
 
                 try:
                     customer_service.update_customer_address(db, customer.id, body_text)
-                    await send_message_to_waid(customer.wa_id,body_text,db)
+                    message_data = MessageCreate(
+                        message_id=message_id,
+                        from_wa_id="917729992376",
+                        to_wa_id=wa_id,
+                        type="text",
+                        body=body_text or "",
+                        timestamp=datetime.now(),
+                        customer_id=customer.id,
+
+                    )
+                    new_msg = message_service.create_message(db, message_data)
+                    await manager.broadcast({
+                        "from": new_msg.from_wa_id,
+                        "to": new_msg.to_wa_id,
+                        "type": "text",
+                        "message": new_msg.body,
+                        "timestamp": new_msg.timestamp.isoformat(),
+                    })
                     new_msg = await send_message_to_waid(from_wa_id, "✅ Your address has been saved successfully!", db)
                 except Exception as e:
                     print("Address save error:", e)
