@@ -94,8 +94,8 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 "products": products,
                 "timestamp": timestamp.isoformat(),
             })
-            send_message_to_waid(from_wa_id,"📌 Please enter your full delivery address in the format below:",db)
-            send_message_to_waid(from_wa_id,
+            await send_message_to_waid(from_wa_id,"📌 Please enter your full delivery address in the format below:",db)
+            await send_message_to_waid(from_wa_id,
                                  """
 Full Name:  
 
@@ -125,10 +125,10 @@ Phone Number:
                 print("this is inside",body_text)
                 try:
                     customer_service.update_customer_address(db, customer.id, body_text)
-                    new_msg = send_message_to_waid(from_wa_id, "✅ Your address has been saved successfully!", db)
+                    new_msg = await send_message_to_waid(from_wa_id, "✅ Your address has been saved successfully!", db)
                 except Exception as e:
                     print("Address save error:", e)
-                    new_msg = send_message_to_waid(from_wa_id, "❌ Failed to save your address. Please try again.", db)
+                    new_msg = await send_message_to_waid(from_wa_id, "❌ Failed to save your address. Please try again.", db)
             else:
                 # Save message
                 message_data = MessageCreate(
