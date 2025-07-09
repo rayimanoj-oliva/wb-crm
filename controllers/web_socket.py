@@ -61,7 +61,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         to_wa_id = value["metadata"]["display_phone_number"]
         timestamp = datetime.fromtimestamp(int(message["timestamp"]))
 
-
+        print(from_wa_id, to_wa_id)
         if message_type == "order":
 
 
@@ -135,8 +135,8 @@ Phone Number:
                     )
                     new_msg = message_service.create_message(db, message_data)
                     await manager.broadcast({
-                        "from": new_msg.from_wa_id,
-                        "to": new_msg.to_wa_id,
+                        "from": new_msg.to_wa_id,
+                        "to": new_msg.from_wa_id,
                         "type": "text",
                         "message": new_msg.body,
                         "timestamp": new_msg.timestamp.isoformat(),
