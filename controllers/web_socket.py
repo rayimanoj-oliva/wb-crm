@@ -68,6 +68,7 @@ VERIFY_TOKEN = "Oliva@123"
 
 @router.post("/webhook")
 async def receive_message(request: Request, db: Session = Depends(get_db)):
+
     try:
         body = await request.json()
 
@@ -150,7 +151,11 @@ Phone Number:
             body_text = message[message_type]["body"] if "body" in message[message_type] else ""
 
             # Simple heuristic to detect address message
-            if body_text.count("\n") >= 4 and "City" not in body_text and len(body_text) > 30:
+            print("this is out side",body_text)
+            if any(keyword in body_text for keyword in
+                   ["Full Name:", "House No.", "Pincode:", "Phone Number:"]) and len(body_text) > 30:
+
+                print("this is inside",body_text)
                 try:
                     customer_service.update_customer_address(db, customer.id, body_text)
                     send_message_to_waid(from_wa_id, "✅ Your address has been saved successfully!", db)
