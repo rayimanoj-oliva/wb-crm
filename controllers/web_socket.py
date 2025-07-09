@@ -126,10 +126,9 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 "products": products,
                 "timestamp": timestamp.isoformat(),
             })
+            send_message_to_waid(from_wa_id,"📌 Please enter your full delivery address in the format below:",db)
             send_message_to_waid(from_wa_id,
                                  """
-                                 📌 Please enter your full delivery address in the format below:
-
 Full Name:  
 
 House No. + Street:  

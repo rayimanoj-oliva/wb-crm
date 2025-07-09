@@ -1,12 +1,19 @@
 from sqlalchemy import Column, String, Integer, ForeignKey, DateTime
 from sqlalchemy.dialects.postgresql import UUID, JSONB
-from sqlalchemy.orm import relationship, declarative_base
+from sqlalchemy.orm import relationship
 import uuid
-from datetime import datetime
-from .enums import reply_material_type_enum, keyword_matching_enum, routing_type_enum
+from models.models import Base
+from sqlalchemy.dialects.postgresql import ENUM
 
-Base = declarative_base()
+reply_material_type_enum = ENUM(
+    "text", "image", "template", "document", "video", "audio", name="reply_material_type_enum", create_type=True
+)
 
+keyword_matching_enum = ENUM(
+    "exact", "fuzzy", "contains", name="keyword_matching_enum", create_type=True
+)
+
+routing_type_enum = ENUM("user", "team", name="routing_type_enum", create_type=True)
 class ReplyMaterial(Base):
     __tablename__ = "reply_materials"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
