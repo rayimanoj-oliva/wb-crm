@@ -149,7 +149,14 @@ Phone Number:
         else:
             body_text = message[message_type]["body"] if "body" in message[message_type] else ""
 
-
+            # Simple heuristic to detect address message
+            if body_text.count("\n") >= 4 and "City" not in body_text and len(body_text) > 30:
+                try:
+                    customer_service.update_customer_address(db, customer.id, body_text)
+                    send_message_to_waid(from_wa_id, "✅ Your address has been saved successfully!", db)
+                except Exception as e:
+                    print("Address save error:", e)
+                    send_message_to_waid(from_wa_id, "❌ Failed to save your address. Please try again.", db)
 
             # Save message
             message_data = MessageCreate(
