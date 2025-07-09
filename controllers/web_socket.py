@@ -16,42 +16,9 @@ from services import customer_service, message_service, order_service
 from schemas.customer_schema import CustomerCreate
 from schemas.message_schema import MessageCreate
 from utils.whatsapp import send_message_to_waid
+from utils.ws_manager import manager
 
 router = APIRouter()
-
-# Store connected WebSocket clients
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: List[WebSocket] = []
-
-    async def connect(self, websocket: WebSocket):
-        await websocket.accept()
-        self.active_connections.append(websocket)
-
-    def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
-
-    async def broadcast(self, message: dict):
-        disconnected = []
-        for connection in self.active_connections:
-            try:
-                await connection.send_json(message)
-            except WebSocketDisconnect:
-                disconnected.append(connection)
-        for conn in disconnected:
-            self.disconnect(conn)
-
-manager = ConnectionManager()
-catalog_manager = ConnectionManager()
-
-@router.websocket("/catalog")
-async def catalog_endpoint(websocket: WebSocket):
-    await catalog_manager.connect(websocket)
-    try:
-        while True:
-            await websocket.receive_text()  # Keeping connection alive
-    except WebSocketDisconnect:
-        catalog_manager.disconnect(websocket)
 
 
 # WebSocket endpoint
@@ -158,24 +125,24 @@ Phone Number:
                 print("this is inside",body_text)
                 try:
                     customer_service.update_customer_address(db, customer.id, body_text)
-                    send_message_to_waid(from_wa_id, "✅ Your address has been saved successfully!", db)
+                    new_msg = send_message_to_waid(from_wa_id, "✅ Your address has been saved successfully!", db)
                 except Exception as e:
                     print("Address save error:", e)
-                    send_message_to_waid(from_wa_id, "❌ Failed to save your address. Please try again.", db)
+                    new_msg = send_message_to_waid(from_wa_id, "❌ Failed to save your address. Please try again.", db)
+            else:
+                # Save message
+                message_data = MessageCreate(
+                    message_id=message_id,
+                    from_wa_id=from_wa_id,
+                    to_wa_id=to_wa_id,
+                    type=message_type,
+                    body=body_text,
+                    timestamp=timestamp,
+                    customer_id=customer.id
+                )
+                new_msg = message_service.create_message(db, message_data)
 
-            # Save message
-            message_data = MessageCreate(
-                message_id=message_id,
-                from_wa_id=from_wa_id,
-                to_wa_id=to_wa_id,
-                type=message_type,
-                body=body_text,
-                timestamp=timestamp,
-                customer_id=customer.id
-            )
-            new_msg = message_service.create_message(db, message_data)
-
-            # Optionally broadcast to websocket
+                # Optionally broadcast to websocket
             await manager.broadcast({
                 "from":new_msg.from_wa_id,
                 "to":new_msg.to_wa_id,
