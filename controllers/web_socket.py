@@ -135,8 +135,8 @@ Phone Number:
                     )
                     new_msg = message_service.create_message(db, message_data)
                     await manager.broadcast({
-                        "from": new_msg.to_wa_id,
-                        "to": new_msg.from_wa_id,
+                        "from": from_wa_id,
+                        "to": "917729992376",
                         "type": "text",
                         "message": new_msg.body,
                         "timestamp": new_msg.timestamp.isoformat(),
