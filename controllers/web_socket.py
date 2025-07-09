@@ -125,8 +125,8 @@ Phone Number:
                     customer_service.update_customer_address(db, customer.id, body_text)
                     message_data = MessageCreate(
                         message_id=message_id,
-                        from_wa_id="917729992376",
-                        to_wa_id=wa_id,
+                        from_wa_id=from_wa_id,
+                        to_wa_id="917729992376",
                         type="text",
                         body=body_text or "",
                         timestamp=datetime.now(),
