@@ -118,13 +118,12 @@ Phone Number:
             body_text = message[message_type]["body"] if "body" in message[message_type] else ""
 
             # Simple heuristic to detect address message
-            print("this is out side",body_text)
             if any(keyword in body_text for keyword in
                    ["Full Name:", "House No.", "Pincode:", "Phone Number:"]) and len(body_text) > 30:
 
-                print("this is inside",body_text)
                 try:
                     customer_service.update_customer_address(db, customer.id, body_text)
+                    await send_message_to_waid(customer.wa_id,body_text,db)
                     new_msg = await send_message_to_waid(from_wa_id, "✅ Your address has been saved successfully!", db)
                 except Exception as e:
                     print("Address save error:", e)
@@ -141,9 +140,6 @@ Phone Number:
                     customer_id=customer.id
                 )
                 new_msg = message_service.create_message(db, message_data)
-
-                # Optionally broadcast to websocket
-
 
         return {"status": "success", "message_id": message_id}
 
