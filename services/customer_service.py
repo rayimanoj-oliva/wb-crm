@@ -102,6 +102,18 @@ def update_customer_address(db: Session, customer_id: UUID, address: str) -> Cus
     db.commit()
     db.refresh(customer)
     return customer
+    #6. Update customer email
+
+
+def update_customer_email(db: Session, customer_id: UUID, email: str) -> Customer:
+    customer = db.query(Customer).filter(Customer.id == customer_id).first()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    customer.email = email
+    db.commit()
+    db.refresh(customer)
+    return customer
 
 
 
@@ -117,3 +129,4 @@ def get_customers_for_user(db: Session, user_id: UUID) -> List[Customer]:
     # Fetch all customers assigned to this user
     customers = db.query(Customer).filter(Customer.user_id == user_id).all()
     return customers
+

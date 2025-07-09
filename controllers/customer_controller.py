@@ -2,10 +2,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from models.models import Customer, User
-from schemas.customer_schema import CustomerCreate, CustomerOut, CustomerUpdate, AssignUserRequest
+from schemas.customer_schema import CustomerCreate, CustomerOut, CustomerUpdate, AssignUserRequest, CustomerEmailUpdate
 from services import customer_service
 from database.db import get_db
 from uuid import UUID
+
+
 
 router = APIRouter(tags=["Customers"])
 
@@ -59,3 +61,26 @@ def update_customer_address_route(
         "customer_id": str(customer.id),
         "address": customer.address
     }
+
+@router.get("/{customer_id}/email")
+def get_customer_email(customer_id: UUID, db: Session = Depends(get_db)):
+    customer = customer_service.get_customer_by_id(db, customer_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    return {"email": customer.email}
+
+
+@router.post("/{customer_id}/email")
+def update_customer_email_route(
+    customer_id: UUID,
+    update_data: CustomerEmailUpdate,  # ✅ Use the correct schema
+    db: Session = Depends(get_db)
+):
+    customer = customer_service.update_customer_email(db, customer_id, update_data.email)
+    return {
+        "message": "Email updated successfully",
+        "customer_id": str(customer.id),
+        "email": customer.email
+    }
+
+

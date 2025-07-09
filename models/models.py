@@ -45,6 +45,7 @@ class Customer(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     wa_id = Column(String, unique=True, nullable=False)
     name = Column(String)
+    email = Column(String, nullable=True)
     orders = relationship("Order", back_populates="customer")
     address = Column(String, nullable=True)
     campaigns = relationship("Campaign", secondary="campaign_customers", back_populates="customers")
