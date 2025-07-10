@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from datetime import timedelta
 from zenoti.zenoti_controller import router as zenoti_router
 from starlette.middleware.cors import CORSMiddleware
+from clients.controller import router as clients_router
 
 from auth import authenticate_user, create_access_token
 from controllers import (
@@ -66,3 +67,4 @@ app.include_router(job_controller.router, prefix="/job")
 app.include_router(dashboard_controller.router, prefix="/dashboard")
 app.include_router(automation_router)
 app.include_router(zenoti_router)
+app.include_router(clients_router, prefix="/clients")
