@@ -18,3 +18,9 @@ class SalesQuery(BaseModel):
     end_date: date
     item_type: Optional[str] = None
     status: Optional[str] = None
+
+class Lead(BaseModel):
+    Last_Name: Optional[str]
+    Email: Optional[str]
+    Mobile: Optional[str]
+    Phone: Optional[str]

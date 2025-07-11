@@ -1,5 +1,4 @@
 import requests
-
 from clients.schema import AppointmentQuery, CollectionQuery, SalesQuery
 
 ZENOTI_API_KEY = "f5bd053c34de47c686d2a0f35e68c136e7539811437e4749915b48e725d40eca"
@@ -24,7 +23,7 @@ def fetch_walkins(appointment_id: str):
     params = {
         "view_context": 1,
         "version_no": 0,
-        "tag_id":None
+        "tag_id": None
     }
     response = requests.get(url, headers=headers, params=params)
     return response.json()
@@ -49,12 +48,44 @@ def fetch_collections(query: CollectionQuery):
 def fetch_sales(query: SalesQuery):
     url = "https://api.zenoti.com/v1/sales/salesreport"
     headers = {
-        "Authorization": "apikey <your api key>",
+        "Authorization": f"apikey {ZENOTI_API_KEY}",
         "accept": "application/json"
     }
     response = requests.get(url, headers=headers, params=query.dict())
     return response.json()
 
 def fetch_leads():
-    # Placeholder: logic for Zoho or CRM system to be implemented
-    return {"message": "Lead fetching not yet implemented."}
+    url = "https://www.zohoapis.in/crm/v2.1/coql"
+    headers = {
+        "Authorization": "Bearer 1000.1c48bdba152aab531a673befba522b62.3928034f990cce01333a60ff69459c66",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "select_query": """
+            select Last_Name, Email, Mobile, Phone 
+            from Leads 
+            where (Created_Time between '2022-01-24T01:56:37+05:30' and '2022-01-24T03:56:37+05:30') 
+            ORDER BY id ASC LIMIT 1,200
+        """
+    }
+
+    response = requests.post(url, json=payload, headers=headers)
+
+    if response.status_code != 200:
+        return {
+            "error": "Failed to fetch leads",
+            "status_code": response.status_code,
+            "details": response.text
+        }
+
+    try:
+        result = response.json()
+        data = result.get("data", [])  # return only the list of leads
+        response = []
+        for item in data:
+            if item.get("Mobile") or item.get("Phone"):
+                response.append(item)
+
+        return response
+    except Exception as e:
+        return {"error": "Failed to parse leads", "details": str(e)}
