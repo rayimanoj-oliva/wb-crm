@@ -1,6 +1,7 @@
+from datetime import datetime , date
 from pydantic import BaseModel
 from typing import Optional
-from datetime import date
+
 
 class AppointmentQuery(BaseModel):
     center_id: str
@@ -24,3 +25,6 @@ class Lead(BaseModel):
     Email: Optional[str]
     Mobile: Optional[str]
     Phone: Optional[str]
+class LeadQuery(BaseModel):
+    from_datetime: datetime
+    to_datetime: datetime

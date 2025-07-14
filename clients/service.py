@@ -1,5 +1,8 @@
+from datetime import timezone
+
 import requests
-from clients.schema import AppointmentQuery, CollectionQuery, SalesQuery
+from clients.schema import AppointmentQuery, CollectionQuery, SalesQuery , LeadQuery
+from utils.zoho_auth import get_valid_access_token
 
 ZENOTI_API_KEY = "f5bd053c34de47c686d2a0f35e68c136e7539811437e4749915b48e725d40eca"
 COLLECTION_BASE_URL = "https://oliva.zenoti.com/api/v100/services/integration/collectionsapi.aspx"
@@ -54,30 +57,36 @@ def fetch_sales(query: SalesQuery):
     response = requests.get(url, headers=headers, params=query.dict())
     return response.json()
 
-def fetch_leads():
+
+
+
+def fetch_leads(query: LeadQuery):
+    token = get_valid_access_token()
+
     url = "https://www.zohoapis.in/crm/v2.1/coql"
     headers = {
-        "Authorization": "Bearer 1000.1c48bdba152aab531a673befba522b62.3928034f990cce01333a60ff69459c66",
+        "Authorization": f"Zoho-oauthtoken {token}",
         "Content-Type": "application/json"
     }
+    from_str = query.from_datetime.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    to_str = query.to_datetime.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
     payload = {
-        "select_query": """
+        "select_query": f"""
             select Last_Name, Email, Mobile, Phone 
             from Leads 
-            where (Created_Time between '2022-01-24T01:56:37+05:30' and '2022-01-24T03:56:37+05:30') 
+            where (Created_Time between '{from_str}' and '{to_str}') 
             ORDER BY id ASC LIMIT 1,200
         """
     }
 
     response = requests.post(url, json=payload, headers=headers)
-
     if response.status_code != 200:
         return {
             "error": "Failed to fetch leads",
             "status_code": response.status_code,
             "details": response.text
         }
-
     try:
         result = response.json()
         data = result.get("data", [])  # return only the list of leads
@@ -89,3 +98,6 @@ def fetch_leads():
         return response
     except Exception as e:
         return {"error": "Failed to parse leads", "details": str(e)}
+
+
+
