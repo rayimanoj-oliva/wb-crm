@@ -1,4 +1,4 @@
-# app.py
+
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.security import OAuth2PasswordRequestForm
 from pyexpat.errors import messages
@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from datetime import timedelta
 from zenoti.zenoti_controller import router as zenoti_router
 from starlette.middleware.cors import CORSMiddleware
+#from service_booking.controller import router as service_booking_router
 
 from auth import authenticate_user, create_access_token
 from controllers import (
@@ -66,3 +67,4 @@ app.include_router(job_controller.router, prefix="/job")
 app.include_router(dashboard_controller.router, prefix="/dashboard")
 app.include_router(automation_router)
 app.include_router(zenoti_router)
+#app.include_router(service_booking_router)

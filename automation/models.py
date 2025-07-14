@@ -47,13 +47,7 @@ class KeywordReply(Base):
     keyword = relationship("Keyword", back_populates="replies")
     material = relationship("ReplyMaterial")
 
-class RoutingRule(Base):
-    __tablename__ = "routing_rules"
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    type = Column(routing_type_enum, nullable=False)
-    material_id = Column(UUID(as_uuid=True), ForeignKey("reply_materials.id"), nullable=False)
-    target_name = Column(String(255), nullable=False)
-    material = relationship("ReplyMaterial")
+
 
 class WorkingHour(Base):
     __tablename__ = "working_hours"
@@ -62,7 +56,3 @@ class WorkingHour(Base):
     open = Column(Integer, default=1)
     intervals = Column(JSONB, nullable=False)
 
-class HolidayConfig(Base):
-    __tablename__ = "holiday_config"
-    id = Column(Integer, primary_key=True, default=1)
-    holiday_mode = Column(Integer, default=0) 

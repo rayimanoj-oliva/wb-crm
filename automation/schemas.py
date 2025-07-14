@@ -87,24 +87,6 @@ class KeywordOut(KeywordBase):
     class Config:
         orm_mode = True
 
-# Routing Rule
-class RoutingRuleBase(BaseModel):
-    type: str
-    material_id: UUID
-    target_name: str
-
-class RoutingRuleCreate(RoutingRuleBase):
-    pass
-
-class RoutingRuleUpdate(BaseModel):
-    type: Optional[str] = None
-    material_id: Optional[UUID] = None
-    target_name: Optional[str] = None
-
-class RoutingRuleOut(RoutingRuleBase):
-    id: UUID
-    class Config:
-        orm_mode = True
 
 # Working Hours
 class Interval(BaseModel):
@@ -127,12 +109,9 @@ class WorkingHourOut(WorkingHourBase):
     id: UUID
     class Config:
         orm_mode = True
+        from_attributes = True
 
-# Holiday Config
-class HolidayConfigOut(BaseModel):
-    holiday_mode: bool
-    class Config:
-        orm_mode = True
 
-class HolidayConfigUpdate(BaseModel):
-    holiday_mode: bool 
+class KeywordRepliesAssociationRequest(BaseModel):
+    keyword_id: UUID
+    material_ids: List[UUID] 

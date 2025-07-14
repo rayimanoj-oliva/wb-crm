@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session
 from .models import (
-    ReplyMaterial, DefaultAutomationRule, Keyword, KeywordTerm, KeywordReply, RoutingRule, WorkingHour, HolidayConfig
+    ReplyMaterial, DefaultAutomationRule, Keyword, KeywordTerm, KeywordReply,  WorkingHour
 )
 from .schemas import *
 from uuid import UUID
@@ -113,37 +113,16 @@ def delete_keyword(db: Session, keyword_id: UUID) -> bool:
     db.commit()
     return True
 
-# --- Routing Rule ---
-def create_routing_rule(db: Session, rule: RoutingRuleCreate) -> RoutingRule:
-    db_rule = RoutingRule(**rule.dict())
-    db.add(db_rule)
-    db.commit()
-    db.refresh(db_rule)
-    return db_rule
-
-def get_routing_rules(db: Session) -> List[RoutingRule]:
-    return db.query(RoutingRule).all()
-
-def get_routing_rule(db: Session, rule_id: UUID) -> Optional[RoutingRule]:
-    return db.query(RoutingRule).filter(RoutingRule.id == rule_id).first()
-
-def update_routing_rule(db: Session, rule_id: UUID, rule: RoutingRuleUpdate) -> Optional[RoutingRule]:
-    db_rule = get_routing_rule(db, rule_id)
-    if not db_rule:
-        return None
-    for field, value in rule.dict(exclude_unset=True).items():
-        setattr(db_rule, field, value)
-    db.commit()
-    db.refresh(db_rule)
-    return db_rule
-
-def delete_routing_rule(db: Session, rule_id: UUID) -> bool:
-    db_rule = get_routing_rule(db, rule_id)
-    if not db_rule:
-        return False
-    db.delete(db_rule)
+def associate_keyword_replies(db: Session, keyword_id: UUID, material_ids: List[UUID]):
+    # Remove existing replies
+    db.query(KeywordReply).filter(KeywordReply.keyword_id == keyword_id).delete()
+    # Add new replies
+    for material_id in material_ids:
+        db_reply = KeywordReply(keyword_id=keyword_id, material_id=material_id)
+        db.add(db_reply)
     db.commit()
     return True
+
 
 # --- Working Hours ---
 def get_working_hours(db: Session) -> List[WorkingHour]:
@@ -159,19 +138,3 @@ def update_working_hour(db: Session, working_hour_id: UUID, wh: WorkingHourUpdat
     db.refresh(db_wh)
     return db_wh
 
-# --- Holiday Config ---
-def get_holiday_config(db: Session) -> HolidayConfig:
-    config = db.query(HolidayConfig).first()
-    if not config:
-        config = HolidayConfig(id=1, holiday_mode=0)
-        db.add(config)
-        db.commit()
-        db.refresh(config)
-    return config
-
-def update_holiday_config(db: Session, holiday_mode: bool) -> HolidayConfig:
-    config = get_holiday_config(db)
-    config.holiday_mode = 1 if holiday_mode else 0
-    db.commit()
-    db.refresh(config)
-    return config 

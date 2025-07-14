@@ -80,52 +80,47 @@ def delete_keyword(keyword_id: UUID, db: Session = Depends(get_db), current_user
         raise HTTPException(status_code=404, detail="Keyword not found")
     return {"ok": True}
 
-# --- Routing Rules ---
-@router.post("/automation/routing", response_model=RoutingRuleOut, tags=["Routing"])
-def create_routing_rule(rule: RoutingRuleCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    return service.create_routing_rule(db, rule)
-
-@router.get("/automation/routing", response_model=List[RoutingRuleOut], tags=["Routing"])
-def list_routing_rules(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    return service.get_routing_rules(db)
-
-@router.get("/automation/routing/{rule_id}", response_model=RoutingRuleOut, tags=["Routing"])
-def get_routing_rule(rule_id: UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    rule = service.get_routing_rule(db, rule_id)
-    if not rule:
-        raise HTTPException(status_code=404, detail="Routing rule not found")
-    return rule
-
-@router.put("/automation/routing/{rule_id}", response_model=RoutingRuleOut, tags=["Routing"])
-def update_routing_rule(rule_id: UUID, rule: RoutingRuleUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    updated = service.update_routing_rule(db, rule_id, rule)
-    if not updated:
-        raise HTTPException(status_code=404, detail="Routing rule not found")
-    return updated
-
-@router.delete("/automation/routing/{rule_id}", tags=["Routing"])
-def delete_routing_rule(rule_id: UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    if not service.delete_routing_rule(db, rule_id):
-        raise HTTPException(status_code=404, detail="Routing rule not found")
+@router.post("/automation/keyword-replies", tags=["Keyword Actions"])
+def associate_keyword_replies_endpoint(req: KeywordRepliesAssociationRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    service.associate_keyword_replies(db, req.keyword_id, req.material_ids)
     return {"ok": True}
+
 
 # --- Working Hours ---
 @router.get("/automation/working-hours", response_model=List[WorkingHourOut], tags=["Working Hours"])
 def get_working_hours(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    return service.get_working_hours(db)
+    result = service.get_working_hours(db)
+    out = []
+    for r in result:
+        intervals = []
+        for interval in r.intervals:
+            if isinstance(interval, dict) and 'from_time' in interval and 'to_time' in interval:
+                intervals.append({'from': interval['from_time'], 'to': interval['to_time']})
+            else:
+                intervals.append(interval)
+        out.append(WorkingHourOut(
+            id=r.id,
+            day=r.day,
+            open=r.open,
+            intervals=intervals
+        ))
+    return out
 
 @router.put("/automation/working-hours/{working_hour_id}", response_model=WorkingHourOut, tags=["Working Hours"])
 def update_working_hour(working_hour_id: UUID, wh: WorkingHourUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     updated = service.update_working_hour(db, working_hour_id, wh)
     if not updated:
         raise HTTPException(status_code=404, detail="Working hour not found")
-    return updated
+    intervals = []
+    for interval in updated.intervals:
+        if isinstance(interval, dict) and 'from_time' in interval and 'to_time' in interval:
+            intervals.append({'from': interval['from_time'], 'to': interval['to_time']})
+        else:
+            intervals.append(interval)
+    return WorkingHourOut(
+        id=updated.id,
+        day=updated.day,
+        open=updated.open,
+        intervals=intervals
+    )
 
-# --- Holiday Config ---
-@router.get("/automation/holiday", response_model=HolidayConfigOut, tags=["Working Hours"])
-def get_holiday_config(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    return service.get_holiday_config(db)
-
-@router.put("/automation/holiday", response_model=HolidayConfigOut, tags=["Working Hours"])
-def update_holiday_config(update: HolidayConfigUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    return service.update_holiday_config(db, update.holiday_mode) 
