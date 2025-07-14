@@ -42,6 +42,8 @@ class CampaignUpdate(BaseModel):
     content: Optional[dict]
     type: Optional[AllowedTypes]
     campaign_cost_type: Optional[str] = None
+
+
 class CampaignOut(CampaignBase):
     id: UUID
     created_at: datetime
