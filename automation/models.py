@@ -1,10 +1,10 @@
 from sqlalchemy import Column, String, Integer, ForeignKey, DateTime
 from sqlalchemy.dialects.postgresql import UUID, JSONB
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, declarative_base
 import uuid
-from models.models import Base
+# from models.models import Base
 from sqlalchemy.dialects.postgresql import ENUM
-
+Base = declarative_base()
 reply_material_type_enum = ENUM(
     "text", "image", "template", "document", "video", "audio", name="reply_material_type_enum", create_type=True
 )

@@ -30,6 +30,7 @@ class CampaignBase(BaseModel):
     customer_ids: Optional[List[UUID]] = []
     content: Optional[dict] = None
     type: AllowedTypes
+    campaign_cost_type: Optional[str] = None
 
 class CampaignCreate(CampaignBase):
     pass
@@ -40,7 +41,7 @@ class CampaignUpdate(BaseModel):
     customer_ids: Optional[List[UUID]]
     content: Optional[dict]
     type: Optional[AllowedTypes]
-
+    campaign_cost_type: Optional[str] = None
 class CampaignOut(CampaignBase):
     id: UUID
     created_at: datetime

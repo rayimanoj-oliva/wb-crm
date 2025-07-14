@@ -150,6 +150,10 @@ class Campaign(Base):
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=True
     )
+
+    campaign_cost_type = Column(String(50), ForeignKey("costs.type"), nullable=True)
+
+    cost = relationship("Cost", foreign_keys=[campaign_cost_type])
     # Many-to-many relationship with customers
     customers = relationship("Customer", secondary="campaign_customers", back_populates="campaigns")
     content = Column(JSONB, nullable=True)
@@ -215,5 +219,16 @@ class JobStatus(Base):
 
     job = relationship("Job", backref="statuses")
     customer = relationship("Customer")
+
+
+class Cost(Base):
+    __tablename__ = "costs"
+
+    type = Column(String(50), primary_key=True)  # e.g., "SMS", "WhatsApp", etc.
+    price = Column(Float, nullable=False)        # e.g., 0.25, 1.50
+
+    def __repr__(self):
+        return f"<Cost(type='{self.type}', price={self.price})>"
+
 
 #comment

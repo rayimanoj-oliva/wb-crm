@@ -7,6 +7,7 @@ from datetime import timedelta
 from zenoti.zenoti_controller import router as zenoti_router
 from starlette.middleware.cors import CORSMiddleware
 from clients.controller import router as clients_router
+from controllers.cost_controller import router as cost_router
 
 
 from auth import authenticate_user, create_access_token
@@ -69,4 +70,4 @@ app.include_router(dashboard_controller.router, prefix="/dashboard")
 app.include_router(automation_router,prefix="/automation")
 app.include_router(clients_router, prefix="/client")
 app.include_router(zenoti_router, prefix="/zenoti")
-
+app.include_router(cost_router, prefix="/cost")
