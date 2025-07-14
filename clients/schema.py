@@ -23,7 +23,6 @@ class SalesQuery(BaseModel):
 class Lead(BaseModel):
     Last_Name: Optional[str]
     Email: Optional[str]
-    Mobile: Optional[str]
     Phone: Optional[str]
 class LeadQuery(BaseModel):
     from_datetime: datetime

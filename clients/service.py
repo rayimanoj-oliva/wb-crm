@@ -92,9 +92,13 @@ def fetch_leads(query: LeadQuery):
         data = result.get("data", [])  # return only the list of leads
         response = []
         for item in data:
-            if item.get("Mobile") or item.get("Phone"):
-                response.append(item)
-
+            contact_number = item.get("Mobile") or item.get("Phone")
+            if contact_number:
+                response.append({
+                    "Last_Name": item.get("Last_Name"),
+                    "Email": item.get("Email"),
+                    "Phone": contact_number  # single unified field
+                })
         return response
     except Exception as e:
         return {"error": "Failed to parse leads", "details": str(e)}
