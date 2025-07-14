@@ -151,9 +151,9 @@ class Campaign(Base):
         nullable=True
     )
 
-    campaign_cost_type = Column(String(50), ForeignKey("costs.type"), nullable=True)
+    campaign_cost_type = Column(String, ForeignKey("costs.type"))
 
-    cost = relationship("Cost", foreign_keys=[campaign_cost_type])
+    cost = relationship("Cost", backref="campaigns")
     # Many-to-many relationship with customers
     customers = relationship("Customer", secondary="campaign_customers", back_populates="campaigns")
     content = Column(JSONB, nullable=True)

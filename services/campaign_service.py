@@ -4,15 +4,10 @@ import pika
 import requests
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
-
-from controllers.whatsapp_controller import WHATSAPP_API_URL
-from models.models import Campaign, Customer, Template, Job
+from models.models import Campaign, Customer, Template, Job, Cost
 from schemas.campaign_schema import CampaignCreate, CampaignUpdate
 from uuid import UUID
 
-from services import whatsapp_service
-from services.template_service import union_dict
-from utils.json_placeholder import fill_placeholders
 
 
 def get_all_campaigns(db: Session):
@@ -25,11 +20,13 @@ def get_campaign(db: Session, campaign_id: UUID):
     return campaign
 
 def create_campaign(db: Session, campaign: CampaignCreate, user_id: UUID):
+
     new_campaign = Campaign(
         name=campaign.name,
         description=campaign.description,
         content=campaign.content,
         type=campaign.type,
+        campaign_cost_type=campaign.campaign_cost_type,
         created_by=user_id,
         updated_by=user_id
     )
@@ -45,6 +42,7 @@ def create_campaign(db: Session, campaign: CampaignCreate, user_id: UUID):
 
 def update_campaign(db: Session, campaign_id: UUID, updates: CampaignUpdate, user_id: UUID):
     campaign = get_campaign(db, campaign_id)
+
     for field, value in updates.dict(exclude_unset=True).items():
         if field == "customer_ids":
             campaign.customers = db.query(Customer).filter(Customer.id.in_(value)).all()
