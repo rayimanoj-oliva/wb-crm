@@ -4,7 +4,7 @@ from database.db import get_db
 from schemas.cost_schema import CostCreate, CostOut
 from services import cost_service
 
-router = APIRouter(prefix="/costs", tags=["Costs"])
+router = APIRouter(tags=["Costs"])
 
 @router.post("/", response_model=CostOut)
 def create_or_update(data: CostCreate, db: Session = Depends(get_db)):

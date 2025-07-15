@@ -1,9 +1,10 @@
 # app.py
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.security import OAuth2PasswordRequestForm
-from pyexpat.errors import messages
 from sqlalchemy.orm import Session
 from datetime import timedelta
+
+import consumer
 from zenoti.zenoti_controller import router as zenoti_router
 from starlette.middleware.cors import CORSMiddleware
 from clients.controller import router as clients_router
@@ -26,7 +27,6 @@ from automation.controller import router as automation_router
 models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[

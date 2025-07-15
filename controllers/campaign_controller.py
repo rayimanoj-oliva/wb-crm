@@ -43,7 +43,7 @@ def delete_campaign(campaign_id: UUID, db: Session = Depends(get_db), current_us
     return campaign_service.delete_campaign(db, campaign_id)
 
 @router.post("/run/{campaign_id}")
-def run_campaign(campaign_id:UUID,db :Session = Depends(get_db),):
-    job = job_service.create_job(db, campaign_id)
+def run_campaign(campaign_id:UUID,db :Session = Depends(get_db),current_user: dict = Depends(get_current_user)):
+    job = job_service.create_job(db, campaign_id,current_user)
     campaign = campaign_service.get_campaign(db,campaign_id)
     return campaign_service.run_campaign(campaign,job,db)
