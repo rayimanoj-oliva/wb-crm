@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
+from fastapi.responses import FileResponse
+import os, shutil
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from uuid import UUID
@@ -7,7 +9,8 @@ from auth import get_current_user
 from models.models import User
 from . import service
 from .schemas import *
-
+import os, shutil
+UPLOAD_DIR = "uploads/reply_materials"
 router = APIRouter()
 
 # --- Reply Materials ---
@@ -38,6 +41,35 @@ def delete_reply_material(material_id: UUID, db: Session = Depends(get_db), curr
     if not service.delete_reply_material(db, material_id):
         raise HTTPException(status_code=404, detail="Material not found")
     return {"ok": True}
+
+@router.post("/automation/materials/upload", tags=["Reply Materials"])
+def upload_reply_material_file(
+    title: str = Form(...),
+    type: str = Form(...),  # Accept type: 'image' or 'document'
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    file_path = os.path.join(UPLOAD_DIR, file.filename)
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    url = f"/{UPLOAD_DIR}/{file.filename}"
+    content = {"url": url, "filename": file.filename}
+    material = service.create_reply_material(db, ReplyMaterialCreate(
+        type=type,
+        title=title,
+        content=content,
+        preview=url
+    ))
+    return material
+
+@router.get("/automation/materials/file/{filename}", tags=["Reply Materials"])
+def get_reply_material_file(filename: str):
+    file_path = os.path.join(UPLOAD_DIR, filename)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(file_path, media_type="application/octet-stream", filename=filename)
 
 # --- Default Automation Rules ---
 @router.get("/automation/default-rules", response_model=List[DefaultAutomationRuleOut], tags=["Automation Rules"])
