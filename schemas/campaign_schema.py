@@ -51,6 +51,7 @@ class CampaignOut(CampaignBase):
     created_by: UUID
     updated_by: Optional[UUID]
     customers: List[CustomerOut]  # ✅ include this
+    last_job_id: Optional[UUID]
 
     class Config:
         orm_mode = True

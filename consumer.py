@@ -1,3 +1,5 @@
+from datetime import datetime, time
+
 import pika, json, requests
 from sqlalchemy.orm import Session
 from controllers.whatsapp_controller import WHATSAPP_API_URL
@@ -8,12 +10,18 @@ from services.template_service import union_dict
 from utils.json_placeholder import fill_placeholders
 
 
+
+from sqlalchemy import func
+from models.models import Job  # ⬅️ Import Job model
+
 def callback(ch, method, properties, body):
     db: Session = next(get_db())
     task = json.loads(body)
     customer = task['customer']
     job_id = task['job_id']
     campaign_id = task['campaign_id']
+
+    start_time = time.time()  # ⏱ Start timing
 
     try:
         token_obj = whatsapp_service.get_latest_token(db)
@@ -54,15 +62,16 @@ def callback(ch, method, properties, body):
 
         # ✅ Send message
         res = requests.post(WHATSAPP_API_URL, json=payload, headers=headers)
-
-        # ✅ Determine success/failure
         status = "success" if res.status_code == 200 else "failure"
 
     except Exception as e:
         print(f"Error sending to {customer['wa_id']}: {e}")
         status = "failure"
 
-    # ✅ Update JobStatus in DB
+    end_time = time.time()
+    duration = round(end_time - start_time, 2)
+
+    # ✅ Update JobStatus
     job_status = db.query(JobStatus).filter_by(
         job_id=job_id,
         customer_id=customer['id']
@@ -70,9 +79,26 @@ def callback(ch, method, properties, body):
 
     if job_status:
         job_status.status = status
+
+    # ✅ Count completed vs total customers for this job
+    total_customers = db.query(JobStatus).filter_by(job_id=job_id).count()
+    completed_customers = db.query(JobStatus).filter(
+        JobStatus.job_id == job_id,
+        JobStatus.status.in_(["success", "failure"])
+    ).count()
+
+    # ✅ If all customers done, update job.last_triggered_time
+    if completed_customers == total_customers:
+        job = db.query(Job).filter_by(id=job_id).first()
+        if job:
+            job.last_triggered_time = datetime.utcnow()
+            db.commit()
+            print(f"Job {job_id} completed. Total time: {duration:.2f}s")
+
+    else:
         db.commit()
 
-    print(f"[{status.upper()}] {customer['wa_id']}")
+    print(f"[{status.upper()}] {customer['wa_id']} - {duration}s")
     ch.basic_ack(delivery_tag=method.delivery_tag)
 
 

@@ -130,6 +130,7 @@ campaign_type_enum = ENUM(
     create_type=False  # Alembic will manage this
 )
 
+
 class Campaign(Base):
     __tablename__ = "campaigns"
 
@@ -139,31 +140,28 @@ class Campaign(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    created_by = Column(
-        UUID(as_uuid=True),
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False
-    )
-
-    updated_by = Column(
-        UUID(as_uuid=True),
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=True
-    )
-
+    created_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    updated_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
     campaign_cost_type = Column(String, ForeignKey("costs.type"))
-
-    cost = relationship("Cost", backref="campaigns")
-    # Many-to-many relationship with customers
-    customers = relationship("Customer", secondary="campaign_customers", back_populates="campaigns")
     content = Column(JSONB, nullable=True)
     type = Column(campaign_type_enum, nullable=False)
+
+    # 🆕 Last job reference
+    last_job_id = Column(UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True)
+
+    # ✅ FIX HERE: Specify which FK column this relationship uses
     jobs = relationship(
         "Job",
         back_populates="campaign",
         cascade="all, delete-orphan",
-        passive_deletes=True
+        passive_deletes=True,
+        foreign_keys="[Job.campaign_id]"  # 🛠 important!
     )
+
+    last_job = relationship("Job", foreign_keys=[last_job_id], post_update=True)
+    cost = relationship("Cost", backref="campaigns")
+    customers = relationship("Customer", secondary="campaign_customers", back_populates="campaigns")
+
 
 campaign_customers = Table(
     "campaign_customers",
@@ -198,10 +196,21 @@ class Job(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     campaign_id = Column(UUID(as_uuid=True), ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+    last_attempted_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    last_triggered_time = Column(DateTime, nullable=True)
 
-    campaign = relationship("Campaign", back_populates="jobs")
+    # ✅ Specify foreign key explicitly to avoid ambiguity
+    campaign = relationship("Campaign", back_populates="jobs", foreign_keys=[campaign_id])
 
+    attempted_by_user = relationship("User", backref="attempted_jobs")
 
+jobs = relationship(
+    "Job",
+    back_populates="campaign",
+    cascade="all, delete-orphan",
+    passive_deletes=True,
+    foreign_keys=[Job.campaign_id]  # ✅ correct usage (no quotes)
+)
 
 
 job_status_enum = Enum("pending", "success", "failure", name="job_status_enum", create_type=False)
