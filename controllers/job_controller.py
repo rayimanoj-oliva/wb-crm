@@ -5,6 +5,7 @@ from sqlalchemy import func, case
 from sqlalchemy.orm import Session
 from uuid import UUID
 
+from auth import get_current_user
 from database.db import get_db
 from models.models import JobStatus, Job
 from schemas.job_schemas import JobOut
@@ -13,9 +14,9 @@ from services import job_service
 router = APIRouter(tags=["Jobs"])
 
 @router.post("/{campaign_id}", response_model=JobOut)
-def create_job(campaign_id: UUID, db: Session = Depends(get_db)):
+def create_job(campaign_id: UUID, db: Session = Depends(get_db),current_user: dict = Depends(get_current_user)):
     try:
-        job = job_service.create_job(db, campaign_id)
+        job = job_service.create_job(db, campaign_id, current_user)
         return job
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
