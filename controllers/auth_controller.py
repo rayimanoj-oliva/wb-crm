@@ -32,7 +32,7 @@ def forgot_password(req: ForgotPasswordRequest, db: Session = Depends(get_db)):
         "exp": datetime.utcnow() + timedelta(minutes=30)
     }
     token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
-    reset_link = f"http://localhost:8080/reset-password?token={token}"
+    reset_link = f"https://connect.olivaclinic.com/reset-password?token={token}"
 
     try:
         send_forgot_password_email(user.email, reset_link)
