@@ -32,7 +32,7 @@ def forgot_password(req: ForgotPasswordRequest, db: Session = Depends(get_db)):
         "exp": datetime.utcnow() + timedelta(minutes=30)
     }
     token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
-    reset_link = f"https://localhost:5173/reset-password?token={token}"
+    reset_link = f"https://localhost:8080/reset-password?token={token}"
 
     try:
         send_forgot_password_email(user.email, reset_link)
