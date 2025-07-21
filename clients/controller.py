@@ -1,43 +1,33 @@
-from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
-from clients.schema import AppointmentQuery, CollectionQuery, SalesQuery, Lead , LeadQuery
-from database.db import get_db
-import clients.service as service
+# clients/controller.py
+
+from fastapi import APIRouter, Query, HTTPException
 from typing import List
-from fastapi import HTTPException
-router = APIRouter(tags=["clients"])
+from clients.schema import WalkinAppointment
+from clients.service import get_walkin_appointments_by_date
+from datetime import datetime
 
-@router.get("/appointments")
-def get_appointments(query: AppointmentQuery = Depends(), db: Session = Depends(get_db)):
-    return service.fetch_appointments(query)
+router = APIRouter()
 
-@router.get("/walkins/{appointment_id}")
-def get_walkins(appointment_id: str, db: Session = Depends(get_db)):
-    return service.fetch_walkins(appointment_id)
+@router.get("/walkin/by-date", response_model=List[WalkinAppointment])
+async def get_walkin_by_date(
+    from_date: str = Query(..., description="YYYY-MM-DD"),
+    to_date: str = Query(..., description="YYYY-MM-DD")
+):
+    # Validation
+    try:
+        from_dt = datetime.strptime(from_date, "%Y-%m-%d")
+        to_dt = datetime.strptime(to_date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Dates must be in YYYY-MM-DD format")
+    if from_dt > to_dt:
+        raise HTTPException(status_code=400, detail="from_date cannot be after to_date")
 
-@router.get("/collections")
-def get_collections(query: CollectionQuery = Depends(), db: Session = Depends(get_db)):
-    return service.fetch_collections(query)
-
-@router.get("/sales")
-def get_sales(query: SalesQuery = Depends(), db: Session = Depends(get_db)):
-    return service.fetch_sales(query)
-
-
-
-@router.get("/leads", response_model=List[Lead])
-def get_leads(query: LeadQuery = Depends()):
-    result = service.fetch_leads(query)
-
-    # Error case
-    if isinstance(result, dict) and "error" in result:
-        raise HTTPException(
-            status_code=result.get("status_code", 500),
-            detail=result.get("error")
-        )
-
-    # Only return records with at least one contact field
-    return [
-        lead for lead in result
-        if lead.get("Mobile") or lead.get("Phone")
-    ]
+    try:
+        data = get_walkin_appointments_by_date(from_date, to_date)
+        if not data:
+            raise HTTPException(status_code=404, detail="No appointments found for the given dates")
+        return data
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))

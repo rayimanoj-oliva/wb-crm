@@ -1,107 +1,46 @@
-from datetime import timezone
 
-import requests
-from clients.schema import AppointmentQuery, CollectionQuery, SalesQuery , LeadQuery
-from utils.zoho_auth import get_valid_access_token
 
-ZENOTI_API_KEY = "f5bd053c34de47c686d2a0f35e68c136e7539811437e4749915b48e725d40eca"
-COLLECTION_BASE_URL = "https://oliva.zenoti.com/api/v100/services/integration/collectionsapi.aspx"
+import os
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker
+from dotenv import load_dotenv
 
-def fetch_appointments(query: AppointmentQuery):
-    url = "https://api.zenoti.com/v1/appointments"
-    headers = {
-        "Authorization": f"apikey {ZENOTI_API_KEY}",
-        "accept": "application/json"
-    }
-    params = query.dict()
-    response = requests.get(url, headers=headers, params=params)
-    return response.json()
+load_dotenv()
 
-def fetch_walkins(appointment_id: str):
-    url = f"https://api.zenoti.com/v1/appointments/{appointment_id}"
-    headers = {
-        "Authorization": f"apikey {ZENOTI_API_KEY}",
-        "accept": "application/json"
-    }
-    params = {
-        "view_context": 1,
-        "version_no": 0,
-        "tag_id": None
-    }
-    response = requests.get(url, headers=headers, params=params)
-    return response.json()
+DB_USER = os.getenv("ZENOTI_POSTGRES_USER")
+DB_PASSWORD = os.getenv("ZENOTI_POSTGRES_PASSWORD")
+DB_HOST = os.getenv("ZENOTI_POSTGRES_HOST")
+DB_PORT = os.getenv("ZENOTI_POSTGRES_PORT")
+DB_NAME = os.getenv("ZENOTI_POSTGRES_DB")
+DB_SCHEMA = os.getenv("ZENOTI_POSTGRES_SCHEMA")
 
-def fetch_collections(query: CollectionQuery):
-    params = {
-        "userName": "apisetup",
-        "userPassword": "Password123",
-        "accountName": "oliva",
-        "appVersion": "v100",
-        "methodName": "getCollectionsReport",
-        "centerid": query.centerid,
-        "fromdate": str(query.fromdate),
-        "todate": str(query.todate),
-    }
-    headers = {
-        "Content-Type": "application/json"
-    }
-    response = requests.get(COLLECTION_BASE_URL, params=params, headers=headers)
-    return response.json()
-
-def fetch_sales(query: SalesQuery):
-    url = "https://api.zenoti.com/v1/sales/salesreport"
-    headers = {
-        "Authorization": f"apikey {ZENOTI_API_KEY}",
-        "accept": "application/json"
-    }
-    response = requests.get(url, headers=headers, params=query.dict())
-    return response.json()
+DATABASE_URL = (
+    f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+)
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 
-
-def fetch_leads(query: LeadQuery):
-    token = get_valid_access_token()
-
-    url = "https://www.zohoapis.in/crm/v2.1/coql"
-    headers = {
-        "Authorization": f"Zoho-oauthtoken {token}",
-        "Content-Type": "application/json"
-    }
-    from_str = query.from_datetime.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    to_str = query.to_datetime.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    payload = {
-        "select_query": f"""
-            select Last_Name, Email, Mobile, Phone 
-            from Leads 
-            where (Created_Time between '{from_str}' and '{to_str}') 
-            ORDER BY id ASC LIMIT 1,200
-        """
-    }
-
-    response = requests.post(url, json=payload, headers=headers)
-    if response.status_code != 200:
-        return {
-            "error": "Failed to fetch leads",
-            "status_code": response.status_code,
-            "details": response.text
-        }
+def get_walkin_appointments_by_date(from_date: str, to_date: str):
+    """
+    Return appointment_id and mobilenumber for walkins between from_date and to_date inclusive.
+    Expects from_date and to_date as strings in 'YYYY-MM-DD' format.
+    """
+    session = SessionLocal()
     try:
-        result = response.json()
-        data = result.get("data", [])  # return only the list of leads
-        response = []
-        for item in data:
-            contact_number = item.get("Mobile") or item.get("Phone")
-            if contact_number:
-                response.append({
-                    "Last_Name": item.get("Last_Name"),
-                    "Email": item.get("Email"),
-                    "Phone": contact_number  # single unified field
-                })
-        return response
-    except Exception as e:
-        return {"error": "Failed to parse leads", "details": str(e)}
-
-
-
+        sql = text("""
+            SELECT appointment_id, mobilenumber
+            FROM test.appointments_walkin
+            WHERE date1 >= CAST(:from_date AS DATE)
+              AND date1 <= CAST(:to_date AS DATE)
+        """)
+        result = session.execute(sql, {"from_date": from_date, "to_date": to_date})
+        columns = result.keys()
+        data = [dict(zip(columns, row)) for row in result.fetchall()]
+        return data
+    except Exception as exc:
+        session.rollback()
+        raise
+    finally:
+        session.close()
