@@ -48,9 +48,12 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         timestamp = datetime.fromtimestamp(int(message["timestamp"]))
         message_type = message["type"]
         message_id = message["id"]
+        body_text = message[message_type].get("body", "")
+        is_address = any(
+            keyword in body_text for keyword in ["Full Name:", "House No.", "Pincode:", "Phone Number:"]) and len(
+            body_text) > 30
 
         customer = customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=sender_name))
-
         if message_type == "order":
             order = message["order"]
             order_items = [
@@ -98,11 +101,7 @@ Landmark (Optional):
 Phone Number:
                 """, db)
 
-        else:
-            body_text = message[message_type].get("body", "")
-            is_address = any(keyword in body_text for keyword in ["Full Name:", "House No.", "Pincode:", "Phone Number:"]) and len(body_text) > 30
-
-            if is_address:
+        elif is_address:
                 try:
                     customer_service.update_customer_address(db, customer.id, body_text)
                     message_data = MessageCreate(
@@ -128,17 +127,24 @@ Phone Number:
                 except Exception as e:
                     print("Address save error:", e)
                     await send_message_to_waid(wa_id, "❌ Failed to save your address. Please try again.", db)
-            else:
-                message_data = MessageCreate(
-                    message_id=message_id,
-                    from_wa_id=from_wa_id,
-                    to_wa_id=to_wa_id,
-                    type=message_type,
-                    body=body_text,
-                    timestamp=timestamp,
-                    customer_id=customer.id
-                )
-                message_service.create_message(db, message_data)
+        else:
+            message_data = MessageCreate(
+                message_id=message_id,
+                from_wa_id=from_wa_id,
+                to_wa_id=to_wa_id,
+                type=message_type,
+                body=body_text,
+                timestamp=timestamp,
+                customer_id=customer.id
+            )
+            message_service.create_message(db, message_data)
+            await manager.broadcast({
+                "from": from_wa_id,
+                "to": "917729992376",
+                "type": "text",
+                "message": message_data.body,
+                "timestamp": message_data.timestamp.isoformat()
+            })
 
         return {"status": "success", "message_id": message_id}
 
@@ -157,4 +163,4 @@ async def verify_webhook(request: Request):
         # implement the database insertion logic here and complete this function
         return PlainTextResponse(content=challenge)
     else:
-        raise HTTPException(status_code=403)
+          raise HTTPException(status_code=403)
