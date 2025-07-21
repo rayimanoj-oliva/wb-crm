@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from controllers.whatsapp_controller import WHATSAPP_API_URL
 from database.db import get_db
 from models.models import Template
-from schemas.template_schema import TemplateCreate, TemplateUpdate
+from schemas.template_schema import TemplateCreate, TemplateUpdate, TemplatesResponse
 from services.whatsapp_service import get_latest_token
 from utils.json_placeholder import fill_placeholders
 
@@ -17,6 +17,7 @@ def union_dict(dic1,dic2):
     return dic2
 def send_template_to_customer(template_name,extra, db: Session = Depends(get_db)):
     token_entry = get_latest_token(db)
+
     if not token_entry:
         raise HTTPException(status_code=404, detail="WhatsApp token not found")
 
@@ -27,11 +28,8 @@ def send_template_to_customer(template_name,extra, db: Session = Depends(get_db)
     }
 
     template = db.query(Template).filter(Template.template_name == template_name).first()
-    print(extra)
-    print(template.template_vars)
     new_vars = union_dict(extra, template.template_vars)
     new_body = fill_placeholders(template.template_body, new_vars)
-    print(new_body)
     data = {
         "messaging_product": "whatsapp",
         "recipient_type": "individual",
@@ -71,3 +69,21 @@ def delete_template(db: Session, template_name: str):
         db.delete(db_template)
         db.commit()
     return db_template
+
+def get_all_templates_from_meta(db: Session = Depends(get_db)) -> TemplatesResponse:
+    token_entry = get_latest_token(db)
+    print(token_entry)
+    if not token_entry:
+        raise HTTPException(status_code=404, detail="WhatsApp token not found")
+
+    page_id = "286831244524604"
+    url = f"https://graph.facebook.com/v22.0/{page_id}/message_templates"
+    headers = {
+        "Authorization": f"Bearer {token_entry.token}"
+    }
+
+    response = requests.get(url, headers=headers)
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code, detail=response.json())
+
+    return TemplatesResponse(**response.json())
