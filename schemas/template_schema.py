@@ -53,3 +53,27 @@ class TemplateOut(TemplateCreate):
     updated_at: Optional[str] = None
     class Config:
         orm_mode = True
+
+# ----------- Meta Template Creation Example Values -----------
+
+class TemplateExample(BaseModel):
+    header_text: Optional[List[str]] = None
+    body_text: Optional[List[str]] = None
+
+
+# ----------- Component Definition for Meta Template -----------
+
+class TemplateComponent(BaseModel):
+    type: str                      # HEADER, BODY, FOOTER, BUTTONS
+    format: Optional[str] = None   # TEXT, IMAGE (only for HEADER)
+    text: Optional[str] = None     # Message content with placeholders
+    example: Optional[TemplateExample] = None
+
+
+# ----------- Meta Template Create Schema -----------
+
+class CreateMetaTemplateRequest(BaseModel):
+    name: str                      # Unique template name (e.g. "promo_offer")
+    language: str                  # ISO language code (e.g. "en_US")
+    category: str                  # MARKETING, TRANSACTIONAL, OTP
+    components: List[TemplateComponent]

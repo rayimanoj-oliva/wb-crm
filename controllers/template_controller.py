@@ -6,10 +6,10 @@ from sqlalchemy.orm import Session
 
 from database.db import get_db
 from models.models import Template
-from schemas.template_schema import TemplateCreate, TemplateOut, TemplateUpdate, TemplatesResponse
+from schemas.template_schema import TemplateCreate, TemplateOut, TemplateUpdate, TemplatesResponse, CreateMetaTemplateRequest
 from services import template_service
 from services.customer_service import get_customer_by_id
-from services.template_service import send_template_to_customer, get_all_templates_from_meta
+from services.template_service import send_template_to_customer, get_all_templates_from_meta, create_template_on_meta
 from uuid import UUID
 router = APIRouter(tags=["Templates"])
 
@@ -68,3 +68,14 @@ def send_template(customer_id: UUID, template_name: str, db: Session = Depends(g
 @router.get("/templates/meta", response_model=TemplatesResponse)
 def fetch_meta_templates(db: Session = Depends(get_db)):
     return get_all_templates_from_meta(db)
+
+
+@router.post("/templates/meta/create")
+def create_meta_template(payload: CreateMetaTemplateRequest, db: Session = Depends(get_db)):
+    try:
+        response = create_template_on_meta(payload, db)
+        return {"message": "Template created on Meta successfully", "response": response}
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")

@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from controllers.whatsapp_controller import WHATSAPP_API_URL
 from database.db import get_db
 from models.models import Template
-from schemas.template_schema import TemplateCreate, TemplateUpdate, TemplatesResponse
+from schemas.template_schema import TemplateCreate, TemplateUpdate, TemplatesResponse, CreateMetaTemplateRequest
 from services.whatsapp_service import get_latest_token
 from utils.json_placeholder import fill_placeholders
 
@@ -87,3 +87,28 @@ def get_all_templates_from_meta(db: Session = Depends(get_db)) -> TemplatesRespo
         raise HTTPException(status_code=response.status_code, detail=response.json())
 
     return TemplatesResponse(**response.json())
+def create_template_on_meta(payload: CreateMetaTemplateRequest, db: Session):
+    token_entry = get_latest_token(db)
+
+    if not token_entry:
+        raise HTTPException(status_code=404, detail="WhatsApp token not found")
+
+    url = "https://graph.facebook.com/v22.0/286831244524604/message_templates"
+    headers = {
+        "Authorization": f"Bearer {token_entry.token}",
+        "Content-Type": "application/json"
+    }
+
+    request_body = {
+        "name": payload.name,
+        "language": payload.language,
+        "category": payload.category,
+        "components": [component.dict(exclude_none=True) for component in payload.components]
+    }
+
+    response = requests.post(url, headers=headers, json=request_body)
+
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code, detail=response.json())
+
+    return response.json()
