@@ -1,6 +1,6 @@
 # schemas/message_schema.py
-from pydantic import BaseModel
-from typing import List,Dict
+from pydantic import BaseModel, Field, RootModel
+from typing import List, Dict, Any
 
 from typing_extensions import Optional
 
@@ -77,3 +77,7 @@ class CreateMetaTemplateRequest(BaseModel):
     language: str                  # ISO language code (e.g. "en_US")
     category: str                  # MARKETING, TRANSACTIONAL, OTP
     components: List[TemplateComponent]
+
+
+class TemplateStructure(RootModel[Dict[str, Any]]):
+    pass

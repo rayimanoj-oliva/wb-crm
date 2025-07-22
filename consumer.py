@@ -7,7 +7,7 @@ from controllers.whatsapp_controller import WHATSAPP_API_URL
 from database.db import get_db
 from models.models import Template, JobStatus, Campaign
 from services import whatsapp_service
-from services.template_service import union_dict
+# from services.template_service import union_dict
 from utils.json_placeholder import fill_placeholders
 
 
@@ -32,34 +32,14 @@ def callback(ch, method, properties, body):
         token = token_obj.token
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-        if task['type'] != "template":
-            payload = {
+        payload = {
                 "messaging_product": "whatsapp",
                 "to": customer['wa_id'],
                 "recipient_type": "individual",
                 "type": task['type'],
                 task['type']: task['content']
             }
-        else:
-            template_name = task['content']['template_name']
-            template = db.query(Template).filter(Template.template_name == template_name).first()
 
-            extra = {
-                "customer_id": customer['id'],
-                "customer_name": customer['name'],
-                "customer_phone": customer['wa_id'],
-            }
-
-            new_vars = union_dict(extra, template.template_vars)
-            new_body = fill_placeholders(template.template_body, new_vars)
-
-            payload = {
-                "messaging_product": "whatsapp",
-                "recipient_type": "individual",
-                "to": extra["customer_phone"],
-                "type": "template",
-                "template": new_body
-            }
 
         # ✅ Send message
         res = requests.post(WHATSAPP_API_URL, json=payload, headers=headers)
