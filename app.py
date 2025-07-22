@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from datetime import timedelta
 
 import consumer
+from media import media_controller
 from zenoti.zenoti_controller import router as zenoti_router
 from starlette.middleware.cors import CORSMiddleware
 from clients.controller import router as clients_router
@@ -71,3 +72,4 @@ app.include_router(dashboard_controller.router, prefix="/dashboard")
 app.include_router(clients_router, prefix="/client")
 app.include_router(zenoti_router, prefix="/zenoti")
 app.include_router(cost_router, prefix="/cost")
+app.include_router(media_controller.router, prefix="/media")
