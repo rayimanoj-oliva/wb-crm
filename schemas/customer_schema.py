@@ -3,6 +3,9 @@ from pydantic import BaseModel, EmailStr
 from typing import Optional
 from uuid import UUID
 
+from models.models import CustomerStatusEnum
+
+
 # Schema for creating a customer
 class CustomerCreate(BaseModel):
     wa_id: str
@@ -20,6 +23,7 @@ class CustomerOut(BaseModel):
     unread_count: int = 0
     last_message_at: Optional[datetime] = None
     user_id: Optional[UUID] = None
+    customer_status: Optional[CustomerStatusEnum] = None
 
     class Config:
         orm_mode = True
