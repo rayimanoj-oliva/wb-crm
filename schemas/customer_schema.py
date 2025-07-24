@@ -1,4 +1,6 @@
 from datetime import datetime
+from enum import Enum
+
 from pydantic import BaseModel, EmailStr
 from typing import Optional
 from uuid import UUID
@@ -40,3 +42,10 @@ class CustomerEmailUpdate(BaseModel):
 # Assign user to customer
 class AssignUserRequest(BaseModel):
     user_id: Optional[UUID] = None
+class CustomerStatusEnum(str, Enum):
+    pending = "pending"
+    open = "open"
+    resolved = "resolved"
+
+class CustomerStatusUpdate(BaseModel):
+    status: CustomerStatusEnum

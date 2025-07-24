@@ -6,7 +6,7 @@ from starlette import status
 
 from cache.redis_connection import redis_client
 from models.models import Customer, User
-from schemas.customer_schema import CustomerCreate, CustomerUpdate
+from schemas.customer_schema import CustomerCreate, CustomerUpdate, CustomerStatusEnum
 from uuid import UUID
 
 # Create a new customer or return existing if wa_id matches
@@ -130,3 +130,13 @@ def get_customers_for_user(db: Session, user_id: UUID) -> List[Customer]:
     customers = db.query(Customer).filter(Customer.user_id == user_id).all()
     return customers
 
+
+def update_customer_status(db: Session, customer_id: UUID, new_status: CustomerStatusEnum) -> Customer:
+    customer = db.query(Customer).filter(Customer.id == customer_id).first()
+    if not customer:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
+
+    customer.customer_status = new_status
+    db.commit()
+    db.refresh(customer)
+    return customer

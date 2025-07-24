@@ -2,12 +2,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from models.models import Customer, User
-from schemas.customer_schema import CustomerCreate, CustomerOut, CustomerUpdate, AssignUserRequest, CustomerEmailUpdate
+from schemas.customer_schema import CustomerCreate, CustomerOut, CustomerUpdate, AssignUserRequest, CustomerEmailUpdate, \
+    CustomerStatusUpdate
 from services import customer_service
 from database.db import get_db
 from uuid import UUID
 
-
+from services.customer_service import update_customer_status
 
 router = APIRouter(tags=["Customers"])
 
@@ -84,3 +85,8 @@ def update_customer_email_route(
     }
 
 
+
+@router.patch("/customers/{customer_id}/status")
+def change_customer_status(customer_id: UUID, update: CustomerStatusUpdate, db: Session = Depends(get_db)):
+    updated_customer = update_customer_status(db, customer_id, update.status)
+    return {"message": "Customer status updated", "customer_id": str(updated_customer.id), "new_status": updated_customer.customer_status}
