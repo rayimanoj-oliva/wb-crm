@@ -19,6 +19,12 @@ from sqlalchemy import Column, String, DateTime, ForeignKey, Integer
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 
 Base = declarative_base()
+import enum
+
+class CustomerStatusEnum(str, enum.Enum):
+    pending = "pending"
+    open = "open"
+    resolved = "resolved"
 
 user_role_enum = Enum(
     "ADMIN", "AGENT",
@@ -53,7 +59,11 @@ class Customer(Base):
     last_message_at = Column(DateTime, nullable=True)
     # foreign key
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
-
+    customer_status = Column(
+        Enum(CustomerStatusEnum, name="customer_status_enum", create_type=True),
+        nullable=False,
+        default="pending",
+    )
     # Relationship to User
     user = relationship("User", back_populates="customers")
     def __str__(self):
