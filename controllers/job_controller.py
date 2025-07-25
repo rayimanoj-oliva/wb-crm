@@ -70,3 +70,30 @@ def get_campaign_job_stats(campaign_id: UUID, db: Session = Depends(get_db)):
         "failure_percentage": round((failure / total) * 100, 2),
         "pending_percentage": round((pending / total) * 100, 2)
     }
+
+@router.get("/job-stats/overall")
+def get_overall_job_stats(db: Session = Depends(get_db)):
+    # Total number of job-customer statuses across all campaigns
+    total = db.query(func.count(JobStatus.job_id)).scalar()
+
+    if total == 0:
+        raise HTTPException(status_code=404, detail="No jobs found across campaigns.")
+
+    # Count each status using conditional aggregation
+    status_counts = (
+        db.query(
+            func.count(case((JobStatus.status == "success", 1))).label("success"),
+            func.count(case((JobStatus.status == "failure", 1))).label("failure"),
+            func.count(case((JobStatus.status == "pending", 1))).label("pending"),
+        )
+        .one()
+    )
+
+    success, failure, pending = status_counts
+
+    return {
+        "total_jobs": total,
+        "success_percentage": round((success / total) * 100, 2),
+        "failure_percentage": round((failure / total) * 100, 2),
+        "pending_percentage": round((pending / total) * 100, 2)
+    }
