@@ -41,3 +41,4 @@ def get_leads(query: LeadQuery = Depends()):
         lead for lead in result
         if lead.get("Mobile") or lead.get("Phone")
     ]
+
