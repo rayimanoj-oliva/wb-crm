@@ -54,102 +54,103 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             body_text) > 30
 
         customer = customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=sender_name))
-        send_welcome_template_to_waid(from_wa_id=from_wa_id, customer_name=sender_name, db=db)
+        # result = await send_welcome_template_to_waid(wa_id=from_wa_id, customer_name=sender_name, db=db)
+        # return result
 
-#         if message_type == "order":
-#             order = message["order"]
-#             order_items = [
-#                 OrderItemCreate(
-#                     product_retailer_id=prod["product_retailer_id"],
-#                     quantity=prod["quantity"],
-#                     item_price=prod["item_price"],
-#                     currency=prod["currency"]
-#                 ) for prod in order["product_items"]
-#             ]
-#             order_data = OrderCreate(
-#                 customer_id=customer.id,
-#                 catalog_id=order["catalog_id"],
-#                 timestamp=timestamp,
-#                 items=order_items
-#             )
-#             order_service.create_order(db, order_data)
-#
-#             await manager.broadcast({
-#                 "from": from_wa_id,
-#                 "to": to_wa_id,
-#                 "type": "order",
-#                 "catalog_id": order["catalog_id"],
-#                 "products": order["product_items"],
-#                 "timestamp": timestamp.isoformat(),
-#             })
-#
-#             await send_message_to_waid(wa_id, "📌 Please enter your full delivery address in the format below:", db)
-#             await send_message_to_waid(wa_id,
-#                 """
-# Full Name:
-#
-# House No. + Street:
-#
-# Area / Locality:
-#
-# City:
-#
-# State:
-#
-# Pincode:
-#
-# Landmark (Optional):
-#
-# Phone Number:
-#                 """, db)
-#
-#         elif is_address:
-#                 try:
-#                     customer_service.update_customer_address(db, customer.id, body_text)
-#                     message_data = MessageCreate(
-#                         message_id=message_id,
-#                         from_wa_id=from_wa_id,
-#                         to_wa_id="917729992376",
-#                         type="text",
-#                         body=body_text,
-#                         timestamp=datetime.now(),
-#                         customer_id=customer.id,
-#                     )
-#                     new_msg = message_service.create_message(db, message_data)
-#
-#                     await manager.broadcast({
-#                         "from": from_wa_id,
-#                         "to": "917729992376",
-#                         "type": "text",
-#                         "message": new_msg.body,
-#                         "timestamp": new_msg.timestamp.isoformat(),
-#                     })
-#
-#                     await send_message_to_waid(wa_id, "✅ Your address has been saved successfully!", db)
-#                 except Exception as e:
-#                     print("Address save error:", e)
-#                     await send_message_to_waid(wa_id, "❌ Failed to save your address. Please try again.", db)
-#         else:
-#             message_data = MessageCreate(
-#                 message_id=message_id,
-#                 from_wa_id=from_wa_id,
-#                 to_wa_id=to_wa_id,
-#                 type=message_type,
-#                 body=body_text,
-#                 timestamp=timestamp,
-#                 customer_id=customer.id
-#             )
-#             message_service.create_message(db, message_data)
-#             await manager.broadcast({
-#                 "from": from_wa_id,
-#                 "to": "917729992376",
-#                 "type": "text",
-#                 "message": message_data.body,
-#                 "timestamp": message_data.timestamp.isoformat()
-#             })
-#
-#         return {"status": "success", "message_id": message_id}
-#
+        if message_type == "order":
+            order = message["order"]
+            order_items = [
+                OrderItemCreate(
+                    product_retailer_id=prod["product_retailer_id"],
+                    quantity=prod["quantity"],
+                    item_price=prod["item_price"],
+                    currency=prod["currency"]
+                ) for prod in order["product_items"]
+            ]
+            order_data = OrderCreate(
+                customer_id=customer.id,
+                catalog_id=order["catalog_id"],
+                timestamp=timestamp,
+                items=order_items
+            )
+            order_service.create_order(db, order_data)
+
+            await manager.broadcast({
+                "from": from_wa_id,
+                "to": to_wa_id,
+                "type": "order",
+                "catalog_id": order["catalog_id"],
+                "products": order["product_items"],
+                "timestamp": timestamp.isoformat(),
+            })
+
+            await send_message_to_waid(wa_id, "📌 Please enter your full delivery address in the format below:", db)
+            await send_message_to_waid(wa_id,
+                """
+Full Name:
+
+House No. + Street:
+
+Area / Locality:
+
+City:
+
+State:
+
+Pincode:
+
+Landmark (Optional):
+
+Phone Number:
+                """, db)
+
+        elif is_address:
+                try:
+                    customer_service.update_customer_address(db, customer.id, body_text)
+                    message_data = MessageCreate(
+                        message_id=message_id,
+                        from_wa_id=from_wa_id,
+                        to_wa_id="917729992376",
+                        type="text",
+                        body=body_text,
+                        timestamp=datetime.now(),
+                        customer_id=customer.id,
+                    )
+                    new_msg = message_service.create_message(db, message_data)
+
+                    await manager.broadcast({
+                        "from": from_wa_id,
+                        "to": "917729992376",
+                        "type": "text",
+                        "message": new_msg.body,
+                        "timestamp": new_msg.timestamp.isoformat(),
+                    })
+
+                    await send_message_to_waid(wa_id, "✅ Your address has been saved successfully!", db)
+                except Exception as e:
+                    print("Address save error:", e)
+                    await send_message_to_waid(wa_id, "❌ Failed to save your address. Please try again.", db)
+        else:
+            message_data = MessageCreate(
+                message_id=message_id,
+                from_wa_id=from_wa_id,
+                to_wa_id=to_wa_id,
+                type=message_type,
+                body=body_text,
+                timestamp=timestamp,
+                customer_id=customer.id
+            )
+            message_service.create_message(db, message_data)
+            await manager.broadcast({
+                "from": from_wa_id,
+                "to": "917729992376",
+                "type": "text",
+                "message": message_data.body,
+                "timestamp": message_data.timestamp.isoformat()
+            })
+
+        return {"status": "success", "message_id": message_id}
+
     except Exception as e:
         print("Webhook error:", e)
         return {"status": "failed", "error": str(e)}

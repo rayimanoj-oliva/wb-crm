@@ -100,6 +100,7 @@ async def send_welcome_template_to_waid(wa_id: str, customer_name: str, db, from
     }
 
     res = requests.post(WHATSAPP_API_URL, headers=headers, json=payload)
+    print(res.json())
     if res.status_code != 200:
         raise HTTPException(status_code=500, detail=f"Failed to send welcome template: {res.text}")
 
@@ -125,4 +126,4 @@ async def send_welcome_template_to_waid(wa_id: str, customer_name: str, db, from
         "timestamp": new_msg.timestamp.isoformat(),
     })
 
-    return new_msg
+    return res.json()
