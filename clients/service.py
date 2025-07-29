@@ -1,4 +1,4 @@
-from datetime import timezone
+from datetime import timezone, datetime
 
 import requests
 from clients.schema import AppointmentQuery, CollectionQuery, SalesQuery , LeadQuery
