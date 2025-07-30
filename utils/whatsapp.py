@@ -8,7 +8,7 @@ from schemas.message_schema import MessageCreate
 from services import whatsapp_service, customer_service, message_service
 from utils.ws_manager import manager
 
-WHATSAPP_API_URL = "https://graph.facebook.com/v22.0/367633743092037/messages"
+WHATSAPP_API_URL = "https://graph.facebook.com/v22.0/367633743092037/messages" # Use v22.0 as in your curl example
 
 async def send_message_to_waid(wa_id: str, message_body: str, db, from_wa_id="917729992376"):
     token_obj = whatsapp_service.get_latest_token(db)
@@ -29,10 +29,12 @@ async def send_message_to_waid(wa_id: str, message_body: str, db, from_wa_id="91
 
     res = requests.post(WHATSAPP_API_URL, headers=headers, json=payload)
     if res.status_code != 200:
+        print(f"Error sending message: {res.status_code} - {res.text}") # Print error for debugging
         raise HTTPException(status_code=500, detail=f"Failed to send message: {res.text}")
 
     message_id = res.json()["messages"][0]["id"]
-    customer = customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
+    # get_or_create_customer returns (customer, created_boolean), but here we only need the customer object
+    customer, _ = customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
 
     message_data = MessageCreate(
         message_id=message_id,
@@ -81,7 +83,7 @@ async def send_welcome_template_to_waid(wa_id: str, customer_name: str, db, from
                         {
                             "type": "image",
                             "image": {
-                                "link": "https://scontent.whatsapp.net/v/t61.29466-34/506841557_711768841552344_4400215025584897919_n.png?ccb=1-7&_nc_sid=8b1bef&_nc_ohc=E0X6MAQr6_YQ7kNvwGh3H2n&_nc_oc=Adk7ZP_5xtRfnoxTFYzj5-uWkaPdjrNJlTngPnYevt0ZwKz5ROzO7iLNGxX4RLMHLFY&_nc_zt=3&_nc_ht=scontent.whatsapp.net&edm=AH51TzQEAAAA&_nc_gid=Vpzwj8gpWlgZh3qhSmaqsg&oh=01_Q5Aa2AExUhdaeVR1cX85B0ICsAMDM7urN4ceMZdXRTWmYuULGA&oe=68B060AC"
+                                "id": "2205060503276391"  # Changed from 'link' to 'id' as in your curl command
                             }
                         }
                     ]
@@ -100,12 +102,14 @@ async def send_welcome_template_to_waid(wa_id: str, customer_name: str, db, from
     }
 
     res = requests.post(WHATSAPP_API_URL, headers=headers, json=payload)
-    print(res.json())
+    print("WhatsApp API Response for template:", res.json()) # Added print for clarity
     if res.status_code != 200:
+        print(f"Error sending welcome template: {res.status_code} - {res.text}") # Print error for debugging
         raise HTTPException(status_code=500, detail=f"Failed to send welcome template: {res.text}")
 
     message_id = res.json()["messages"][0]["id"]
-    customer = customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=customer_name))
+    # get_or_create_customer returns (customer, created_boolean), but here we only need the customer object
+    customer, _ = customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=customer_name))
 
     message_data = MessageCreate(
         message_id=message_id,
