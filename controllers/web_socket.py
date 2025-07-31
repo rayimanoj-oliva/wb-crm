@@ -1,11 +1,10 @@
 from datetime import datetime
 from http.client import HTTPException
 
-import requests
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, APIRouter
 from fastapi.params import Depends
 from fastapi.responses import JSONResponse
-from typing import List # This import might not be strictly needed based on the current code
+from typing import List
 import asyncio
 
 from sqlalchemy.orm import Session
@@ -38,8 +37,6 @@ VERIFY_TOKEN = "Oliva@123"
 async def receive_message(request: Request, db: Session = Depends(get_db)):
     try:
         body = await request.json()
-        print("✅ Webhook payload received:", body) # Added print for clarity
-
         value = body["entry"][0]["changes"][0]["value"]
         contact = value["contacts"][0]
         message = value["messages"][0]
@@ -52,29 +49,13 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         message_type = message["type"]
         message_id = message["id"]
         body_text = message[message_type].get("body", "")
-        # ✅ If the message is exactly "hi" (case-insensitive), send welcome template always
-        if body_text.strip().lower() == "hi":
-            try:
-                await send_welcome_template_to_waid(wa_id=wa_id, customer_name=sender_name, db=db)
-                print(f"✅ Sent welcome template to {sender_name} ({wa_id}) on 'hi'")
-            except Exception as e:
-                print(f"❌ Failed to send welcome template on 'hi':", e)
-
         is_address = any(
             keyword in body_text for keyword in ["Full Name:", "House No.", "Pincode:", "Phone Number:"]) and len(
             body_text) > 30
 
-        # --- IMPORTANT CHANGE HERE ---
-        # customer_service.get_or_create_customer must return (customer_object, boolean_created)
-        customer, created = customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=sender_name))
-
-        # Only send welcome template if the customer is newly created (first message from them)
-        if created:
-            print(f"🎉 New customer detected: {sender_name} ({wa_id}). Sending welcome template.")
-            await send_welcome_template_to_waid(wa_id=wa_id, customer_name=sender_name, db=db)
-        else:
-            print(f"Returning customer: {sender_name} ({wa_id}). No welcome template sent.")
-
+        customer = customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=sender_name))
+        # result = await send_welcome_template_to_waid(wa_id=from_wa_id, customer_name=sender_name, db=db)
+        # return result
 
         if message_type == "order":
             order = message["order"]
@@ -129,7 +110,7 @@ Phone Number:
                     message_data = MessageCreate(
                         message_id=message_id,
                         from_wa_id=from_wa_id,
-                        to_wa_id="917729992376", # Your business WA ID
+                        to_wa_id="917729992376",
                         type="text",
                         body=body_text,
                         timestamp=datetime.now(),
@@ -139,7 +120,7 @@ Phone Number:
 
                     await manager.broadcast({
                         "from": from_wa_id,
-                        "to": "917729992376", # Your business WA ID
+                        "to": "917729992376",
                         "type": "text",
                         "message": new_msg.body,
                         "timestamp": new_msg.timestamp.isoformat(),
@@ -162,7 +143,7 @@ Phone Number:
             message_service.create_message(db, message_data)
             await manager.broadcast({
                 "from": from_wa_id,
-                "to": "917729992376", # Your business WA ID
+                "to": "917729992376",
                 "type": "text",
                 "message": message_data.body,
                 "timestamp": message_data.timestamp.isoformat()
