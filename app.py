@@ -44,7 +44,7 @@ app.add_middleware(
 @app.get("/test-this")
 def test():
     return {
-        "test":"now plese fetch images"
+        "test":"now please fetch images"
     }
 @app.post("/token", response_model=Token)
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
