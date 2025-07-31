@@ -81,7 +81,8 @@ async def send_welcome_template_to_waid(wa_id: str, customer_name: str, db, from
                         {
                             "type": "image",
                             "image": {
-                                "link": "https://scontent.whatsapp.net/v/t61.29466-34/506841557_711768841552344_4400215025584897919_n.png?ccb=1-7&_nc_sid=8b1bef&_nc_ohc=E0X6MAQr6_YQ7kNvwGh3H2n&_nc_oc=Adk7ZP_5xtRfnoxTFYzj5-uWkaPdjrNJlTngPnYevt0ZwKz5ROzO7iLNGxX4RLMHLFY&_nc_zt=3&_nc_ht=scontent.whatsapp.net&edm=AH51TzQEAAAA&_nc_gid=Vpzwj8gpWlgZh3qhSmaqsg&oh=01_Q5Aa2AExUhdaeVR1cX85B0ICsAMDM7urN4ceMZdXRTWmYuULGA&oe=68B060AC"
+                                # Use image id here (not link)
+                                "id": "2205060503276391"
                             }
                         }
                     ]

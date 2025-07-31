@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.client import HTTPException
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, APIRouter
@@ -52,8 +52,14 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         is_address = any(
             keyword in body_text for keyword in ["Full Name:", "House No.", "Pincode:", "Phone Number:"]) and len(
             body_text) > 30
-
+        # Get or create customer
         customer = customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=sender_name))
+
+        # Auto-send welcome template if user said "hi"/"hello"/"hlo" and hasn't received one recently
+        if body_text.lower() in ["hi", "hello", "hlo"]:
+            await send_welcome_template_to_waid(wa_id=from_wa_id, customer_name=sender_name, db=db)
+
+        # customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=sender_name))
         # result = await send_welcome_template_to_waid(wa_id=from_wa_id, customer_name=sender_name, db=db)
         # return result
 
