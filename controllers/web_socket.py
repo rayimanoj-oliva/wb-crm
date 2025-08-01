@@ -118,30 +118,38 @@ Phone Number:
                 """, db)
         elif message_type == "location":
             location = message["location"]
+            location_name = location.get("name", "")
+            location_address = location.get("address", "")
+            location_body = ", ".join(filter(None, [location_name, location_address]))  # avoids ", " if both missing
 
             message_data = MessageCreate(
                 message_id=message_id,
                 from_wa_id=from_wa_id,
                 to_wa_id=to_wa_id,
                 type="location",
-                body=f"{location['name']}, {location['address']}",
+                body=location_body,
                 timestamp=timestamp,
                 customer_id=customer.id,
             )
             message_service.create_message(db, message_data)
 
-            await manager.broadcast({
+            broadcast_payload = {
                 "from": from_wa_id,
                 "to": to_wa_id,
                 "type": "location",
                 "latitude": location["latitude"],
                 "longitude": location["longitude"],
-                "name": location["name"],
-                "address": location["address"],
                 "timestamp": timestamp.isoformat()
-            })
+            }
 
-            return {"status": "success", "message_id": message_id}  # Stop here for location messages
+            if location_name:
+                broadcast_payload["name"] = location_name
+            if location_address:
+                broadcast_payload["address"] = location_address
+
+            await manager.broadcast(broadcast_payload)
+
+            return {"status": "success", "message_id": message_id}
 
         elif is_address:
                 try:
