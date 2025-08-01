@@ -89,7 +89,8 @@ class Message(Base):
     caption = Column(String, nullable=True)
     filename = Column(String, nullable=True)
     mime_type = Column(String, nullable=True)
-
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
 
 class WhatsAppToken(Base):
     __tablename__ = "whatsapp_tokens"

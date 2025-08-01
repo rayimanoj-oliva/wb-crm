@@ -54,7 +54,7 @@ async def send_message_to_waid(wa_id: str, message_body: str, db, from_wa_id="91
     })
 
     return new_msg
-async def send_location_to_waid(wa_id: str, latitude: str, longitude: str, name: str, address: str, db, from_wa_id="917729992376"):
+async def send_location_to_waid(wa_id: str, latitude: float, longitude: float, name: str, address: str, db, from_wa_id="917729992376"):
     token_obj = whatsapp_service.get_latest_token(db)
     if not token_obj:
         raise HTTPException(status_code=400, detail="Token not available")
@@ -64,7 +64,6 @@ async def send_location_to_waid(wa_id: str, latitude: str, longitude: str, name:
         "Content-Type": "application/json"
     }
 
-    # Build location payload dynamically (omit empty name/address)
     location_data = {
         "latitude": latitude,
         "longitude": longitude,
@@ -88,7 +87,6 @@ async def send_location_to_waid(wa_id: str, latitude: str, longitude: str, name:
     message_id = res.json()["messages"][0]["id"]
     customer = customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
 
-    # Safely join name/address
     location_body = ", ".join(filter(None, [name, address]))
 
     message_data = MessageCreate(
@@ -99,10 +97,11 @@ async def send_location_to_waid(wa_id: str, latitude: str, longitude: str, name:
         body=location_body,
         timestamp=datetime.now(),
         customer_id=customer.id,
+        latitude=latitude,
+        longitude=longitude,
     )
     new_msg = message_service.create_message(db, message_data)
 
-    # Broadcast clean payload
     broadcast_data = {
         "from": new_msg.from_wa_id,
         "to": new_msg.to_wa_id,
@@ -119,6 +118,7 @@ async def send_location_to_waid(wa_id: str, latitude: str, longitude: str, name:
     await manager.broadcast(broadcast_data)
 
     return new_msg
+
 async def send_welcome_template_to_waid(wa_id: str, customer_name: str, db, from_wa_id="917729992376"):
     token_obj = whatsapp_service.get_latest_token(db)
     if not token_obj:

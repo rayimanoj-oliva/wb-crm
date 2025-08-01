@@ -130,6 +130,8 @@ Phone Number:
                 body=location_body,
                 timestamp=timestamp,
                 customer_id=customer.id,
+                latitude=location.get("latitude"),
+                longitude=location.get("longitude"),
             )
             message_service.create_message(db, message_data)
 
@@ -150,7 +152,6 @@ Phone Number:
             await manager.broadcast(broadcast_payload)
 
             return {"status": "success", "message_id": message_id}
-
         elif is_address:
                 try:
                     customer_service.update_customer_address(db, customer.id, body_text)
