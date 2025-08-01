@@ -54,7 +54,61 @@ async def send_message_to_waid(wa_id: str, message_body: str, db, from_wa_id="91
     })
 
     return new_msg
+async def send_location_to_waid(wa_id: str, latitude: str, longitude: str, name: str, address: str, db, from_wa_id="917729992376"):
+    """
+    Send a location message to WhatsApp user.
+    """
+    token_obj = whatsapp_service.get_latest_token(db)
+    if not token_obj:
+        raise HTTPException(status_code=400, detail="Token not available")
 
+    headers = {
+        "Authorization": f"Bearer {token_obj.token}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": wa_id,
+        "type": "location",
+        "location": {
+            "latitude": latitude,
+            "longitude": longitude,
+            "name": name,
+            "address": address
+        }
+    }
+
+    res = requests.post(WHATSAPP_API_URL, headers=headers, json=payload)
+    if res.status_code != 200:
+        raise HTTPException(status_code=500, detail=f"Failed to send location message: {res.text}")
+
+    message_id = res.json()["messages"][0]["id"]
+    customer = customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
+
+    message_data = MessageCreate(
+        message_id=message_id,
+        from_wa_id=from_wa_id,
+        to_wa_id=wa_id,
+        type="location",
+        body=f"{name}, {address}",
+        timestamp=datetime.now(),
+        customer_id=customer.id,
+    )
+    new_msg = message_service.create_message(db, message_data)
+
+    await manager.broadcast({
+        "from": new_msg.from_wa_id,
+        "to": new_msg.to_wa_id,
+        "type": "location",
+        "latitude": latitude,
+        "longitude": longitude,
+        "name": name,
+        "address": address,
+        "timestamp": new_msg.timestamp.isoformat(),
+    })
+
+    return new_msg
 async def send_welcome_template_to_waid(wa_id: str, customer_name: str, db, from_wa_id="917729992376"):
     token_obj = whatsapp_service.get_latest_token(db)
     if not token_obj:
