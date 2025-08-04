@@ -193,3 +193,41 @@ async def send_whatsapp_message(
 
     except Exception as e:
         return {"status": "failed", "error": str(e)}
+    
+
+@router.get("/get-image")
+def get_image(media_id: str, db: Session = Depends(get_db)):
+    # 1. Get the latest access token
+    token_obj = whatsapp_service.get_latest_token(db)
+    if not token_obj or not token_obj.token:
+        raise HTTPException(status_code=400, detail="Token not available")
+
+    token = token_obj.token
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # 2. Fetch media metadata (to get the media URL)
+    metadata_url = f"https://graph.facebook.com/v22.0/{media_id}"
+    meta_res = requests.get(metadata_url, headers=headers)
+
+    if meta_res.status_code != 200:
+        raise HTTPException(
+            status_code=meta_res.status_code,
+            detail=f"Failed to fetch media metadata: {meta_res.text}"
+        )
+
+    media_url = meta_res.json().get("url")
+    if not media_url:
+        raise HTTPException(status_code=400, detail="Media URL not found in metadata response")
+
+    # 3. Download the media file
+    media_res = requests.get(media_url, headers=headers, stream=True)
+    if media_res.status_code != 200:
+        raise HTTPException(
+            status_code=media_res.status_code,
+            detail=f"Failed to download media: {media_res.text}"
+        )
+
+    content_type = media_res.headers.get("Content-Type", "application/octet-stream")
+
+    # 4. Return the media as a streamed response
+    return StreamingResponse(media_res.raw, media_type=content_type)
