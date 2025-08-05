@@ -83,7 +83,10 @@ class Message(Base):
     timestamp = Column(DateTime)
 
     customer_id = Column(PG_UUID(as_uuid=True), ForeignKey("customers.id"))
-
+    # New fields to support agent response time calculation
+    center_id = Column(String)
+    agent_id = Column(String, nullable=True)  # ID of the agent, if the message is from one
+    sender_type = Column(String)  # 'customer' or 'agent'
     # Optional fields for media
     media_id = Column(String, nullable=True)
     caption = Column(String, nullable=True)

@@ -1,6 +1,8 @@
+from typing import Optional
+
 from sqlalchemy import func
 from sqlalchemy.orm import Session
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 from models.models import Message, Customer
 from clients.schema import AppointmentQuery
@@ -46,3 +48,51 @@ def get_appointments_booked_today(center_id: str, db: Session):
     appointments = client_service.fetch_appointments(query)
 
     return len(appointments)
+
+def get_agent_avg_response_time(agent_id: str, center_id: Optional[str], db: Session) -> Optional[float]:
+    """
+    Calculates the average time taken by a specific agent to reply to a customer message.
+
+    The function uses the 'agent_id' and the optional 'center_id' to filter messages.
+
+    :param agent_id: The ID of the agent whose response time is being measured.
+    :param center_id: The ID of the center to filter messages by. Optional.
+    :param db: The database session.
+    :return: The average response time in seconds, or None if no agent replies are found.
+    """
+    # Start with a base query for all messages related to the agent
+    query = db.query(Message).filter(
+        Message.agent_id == agent_id
+    )
+
+    # If a center_id is provided, add the filter
+    if center_id:
+        query = query.filter(Message.center_id == center_id)
+
+    # Order the messages by timestamp for accurate calculation
+    messages = query.order_by(Message.timestamp).all()
+
+    if not messages:
+        return None
+
+    response_times = []
+    last_customer_message_time = None
+
+    for message in messages:
+        # Check if the current message is from a customer
+        if message.sender_type == "customer":
+            last_customer_message_time = message.timestamp
+        # Check if the current message is from the specified agent and we have a preceding customer message
+        elif message.sender_type == "agent" and message.agent_id == agent_id and last_customer_message_time:
+            # Calculate the time difference
+            time_diff: timedelta = message.timestamp - last_customer_message_time
+            response_times.append(time_diff.total_seconds())
+            # Reset the last customer message time, as this response concludes the sequence
+            last_customer_message_time = None
+
+    if not response_times:
+        return None  # No agent replies found
+
+    # Calculate the average response time
+    avg_response_time = sum(response_times) / len(response_times)
+    return avg_response_time
