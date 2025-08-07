@@ -1,6 +1,10 @@
-from fastapi import APIRouter
-from sqlalchemy import nullsfirst
+from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException
+from sqlalchemy.orm import Session
 from starlette.responses import StreamingResponse
+from typing import Optional, Literal
+from datetime import datetime
+import requests
+import mimetypes
 
 from controllers.web_socket import manager
 from schemas.campaign_schema import CampaignOut
@@ -11,13 +15,6 @@ from schemas.whatsapp_token_schema import WhatsAppTokenCreate
 from database.db import get_db
 from services import customer_service, message_service, whatsapp_service
 from services.whatsapp_service import create_whatsapp_token, get_latest_token
-
-from fastapi import UploadFile, File, Form, Depends, HTTPException
-from typing import Optional, Literal
-from sqlalchemy.orm import Session
-import requests
-import mimetypes
-from datetime import datetime
 
 router = APIRouter(tags=["WhatsApp Token"])
 
@@ -37,13 +34,16 @@ def add_token(token_data: WhatsAppTokenCreate, db: Session = Depends(get_db)):
 @router.post("/send-message")
 async def send_whatsapp_message(
     wa_id: str = Form(...),
-    type: Literal["text", "image", "document", "interactive", "location"] = Form(...),  # <-- ✅ ADDED "location"
+    type: Literal["text", "image", "document", "interactive", "location", "template"] = Form(...),
     body: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
-    latitude: Optional[str] = Form(None),              # <-- ✅ ADDED
-    longitude: Optional[str] = Form(None),             # <-- ✅ ADDED
-    location_name: Optional[str] = Form(None),         # <-- ✅ ADDED
-    location_address: Optional[str] = Form(None),      # <-- ✅ ADDED
+    latitude: Optional[str] = Form(None),
+    longitude: Optional[str] = Form(None),
+    location_name: Optional[str] = Form(None),
+    location_address: Optional[str] = Form(None),
+    template_name: Optional[str] = Form(None),
+    language: Optional[str] = Form("en_US"),
+    template_params: Optional[str] = Form(None),
     db: Session = Depends(get_db)
 ):
     try:
@@ -135,7 +135,7 @@ async def send_whatsapp_message(
             }
             body = "5 Products"
 
-        elif type == "location":  # <-- ✅ LOCATION SUPPORT
+        elif type == "location":
             if not latitude or not longitude:
                 raise HTTPException(status_code=400, detail="Latitude and Longitude are required")
             payload["location"] = {
@@ -147,6 +147,25 @@ async def send_whatsapp_message(
             if location_address:
                 payload["location"]["address"] = location_address
             body = f"{location_name or ''} - {location_address or ''}"
+
+        elif type == "template":
+            if not template_name:
+                raise HTTPException(status_code=400, detail="Template name is required")
+
+            components = []
+            if template_params:
+                param_list = [p.strip() for p in template_params.split(",")]
+                components.append({
+                    "type": "body",
+                    "parameters": [{"type": "text", "text": param} for param in param_list]
+                })
+
+            payload["template"] = {
+                "name": template_name,
+                "language": {"code": language},
+                "components": components
+            }
+            body = f"TEMPLATE: {template_name} - Params: {template_params}"
 
         res = requests.post(
             WHATSAPP_API_URL,
@@ -193,11 +212,10 @@ async def send_whatsapp_message(
 
     except Exception as e:
         return {"status": "failed", "error": str(e)}
-    
+
 
 @router.get("/get-image")
 def get_image(media_id: str, db: Session = Depends(get_db)):
-    # 1. Get the latest access token
     token_obj = whatsapp_service.get_latest_token(db)
     if not token_obj:
         raise HTTPException(status_code=400, detail="Token not available")
@@ -205,7 +223,6 @@ def get_image(media_id: str, db: Session = Depends(get_db)):
     token = token_obj.token
     headers = {"Authorization": f"Bearer {token}"}
 
-    # 2. Fetch media URL using media_id
     metadata_url = f"https://graph.facebook.com/v23.0/{media_id}"
     meta_res = requests.get(metadata_url, headers=headers)
 
@@ -216,12 +233,9 @@ def get_image(media_id: str, db: Session = Depends(get_db)):
     if not media_url:
         raise HTTPException(status_code=400, detail="Media URL not found")
 
-    # 3. Fetch the actual media file from media URL
     media_res = requests.get(media_url, headers=headers, stream=True)
     if media_res.status_code != 200:
         raise HTTPException(status_code=media_res.status_code, detail="Failed to download media")
 
     content_type = media_res.headers.get("Content-Type", "application/octet-stream")
-
-    # 4. Return the media as a streamed response
     return StreamingResponse(media_res.raw, media_type=content_type)
