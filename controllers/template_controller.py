@@ -5,7 +5,8 @@ from sqlalchemy.orm import Session
 
 from database.db import get_db
 from schemas.template_schema import TemplatesResponse, CreateMetaTemplateRequest, TemplateStructure
-from services.template_service import get_all_templates_from_meta, create_template_on_meta, send_template_to_facebook
+from services.template_service import get_all_templates_from_meta, create_template_on_meta, send_template_to_facebook, \
+    delete_template_from_meta
 
 router = APIRouter(tags=["Templates"])
 @router.get("/meta", response_model=TemplatesResponse)
@@ -20,5 +21,13 @@ def create_template(template: TemplateStructure, db: Session = Depends(get_db)):
         # print(template)
         return {"status": "success", "facebook_response": response}
         return template.root
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/")
+def delete_template(template_name: str, db: Session = Depends(get_db)):
+    try:
+        result = delete_template_from_meta(template_name, db)
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

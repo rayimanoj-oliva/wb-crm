@@ -82,3 +82,23 @@ def send_template_to_facebook(payload: Dict[str, Any],db: Session) -> Dict[str, 
 
     response.raise_for_status()
     return response.json()
+
+def delete_template_from_meta(template_name: str, db: Session):
+    token_entry = get_latest_token(db)
+    if not token_entry:
+        raise HTTPException(status_code=404, detail="WhatsApp token not found")
+
+    page_id = "286831244524604"  # Replace with dynamic value if needed
+    url = f"https://graph.facebook.com/v22.0/{page_id}/message_templates"
+    headers = {
+        "Authorization": f"Bearer {token_entry.token}"
+    }
+
+    params = {"name": template_name}
+
+    response = requests.delete(url, headers=headers, params=params)
+
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code, detail=response.json())
+
+    return {"status": "success", "detail": response.json()}
