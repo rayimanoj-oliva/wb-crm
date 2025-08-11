@@ -148,23 +148,58 @@ async def send_whatsapp_message(
                 payload["location"]["address"] = location_address
             body = f"{location_name or ''} - {location_address or ''}"
 
+
         elif type == "template":
+
             if not template_name:
                 raise HTTPException(status_code=400, detail="Template name is required")
 
             components = []
+
             if template_params:
+
+                # Split the template_params string by comma to get individual parameters
+
                 param_list = [p.strip() for p in template_params.split(",")]
-                components.append({
-                    "type": "body",
-                    "parameters": [{"type": "text", "text": param} for param in param_list]
-                })
+
+                # IMPORTANT:
+
+                # If your template header expects parameters, add them here.
+
+                # For example, if header expects 1 param, take param_list[0] for header
+
+                if len(param_list) >= 1:
+                    components.append({
+
+                        "type": "header",
+
+                        "parameters": [{"type": "text", "text": param_list[0]}]
+
+                    })
+
+                # Add body parameters if any (starting from param_list[1])
+
+                if len(param_list) > 1:
+                    components.append({
+
+                        "type": "body",
+
+                        "parameters": [{"type": "text", "text": p} for p in param_list[1:]]
+
+                    })
 
             payload["template"] = {
+
                 "name": template_name,
+
                 "language": {"code": language},
+
                 "components": components
+
             }
+
+            # For your internal use, set body summary of what template was sent
+
             body = f"TEMPLATE: {template_name} - Params: {template_params}"
 
         res = requests.post(
