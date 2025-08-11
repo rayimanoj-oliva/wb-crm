@@ -15,7 +15,7 @@ from schemas.orders_schema import OrderItemCreate,OrderCreate
 from services import customer_service, message_service, order_service
 from schemas.customer_schema import CustomerCreate
 from schemas.message_schema import MessageCreate
-from utils.whatsapp import send_message_to_waid, send_welcome_template_to_waid
+from utils.whatsapp import send_message_to_waid
 from utils.ws_manager import manager
 
 router = APIRouter()
