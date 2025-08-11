@@ -1,5 +1,6 @@
 from datetime import datetime
-from http.client import HTTPException
+from fastapi import HTTPException
+
 
 import requests
 
@@ -119,7 +120,7 @@ async def send_location_to_waid(wa_id: str, latitude: float, longitude: float, n
 
     return new_msg
 
-async def send_welcome_template_to_waid(wa_id: str, customer_name: str, db, from_wa_id="917729992376"):
+'''async def send_welcome_template_to_waid(wa_id: str, customer_name: str, db, from_wa_id="917729992376"):
     token_obj = whatsapp_service.get_latest_token(db)
     if not token_obj:
         raise HTTPException(status_code=400, detail="Token not available")
@@ -191,4 +192,4 @@ async def send_welcome_template_to_waid(wa_id: str, customer_name: str, db, from
         "timestamp": new_msg.timestamp.isoformat(),
     })
 
-    return res.json()
+    return res.json()'''

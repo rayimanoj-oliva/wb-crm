@@ -56,19 +56,19 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         customer = customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=sender_name))
 
         # Auto-send welcome template if user said "hi"/"hello"/"hlo" and hasn't received one recently
-        if body_text.lower() in ["hi", "hello", "hlo"]:
-            await send_welcome_template_to_waid(wa_id=from_wa_id, customer_name=sender_name, db=db)
-            await manager.broadcast({
-                "from": "system",
-                "to": from_wa_id,
-                "type": "template",
-                "message": "Welcome template sent",
-                "timestamp": datetime.now().isoformat()
-            })
-
-
-        # result = await send_welcome_template_to_waid(wa_id=from_wa_id, customer_name=sender_name, db=db)
-        # return result
+        # if body_text.lower() in ["hi", "hello", "hlo"]:
+        #     await send_welcome_template_to_waid(wa_id=from_wa_id, customer_name=sender_name, db=db)
+        #     await manager.broadcast({
+        #         "from": "system",
+        #         "to": from_wa_id,
+        #         "type": "template",
+        #         "message": "Welcome template sent",
+        #         "timestamp": datetime.now().isoformat()
+        #     })
+        #
+        #
+        # # result = await send_welcome_template_to_waid(wa_id=from_wa_id, customer_name=sender_name, db=db)
+        # # return result
 
         if message_type == "order":
             order = message["order"]
