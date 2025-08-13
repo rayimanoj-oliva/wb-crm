@@ -1,3 +1,4 @@
+# consumer.py
 import time
 from datetime import datetime
 import pika
@@ -14,7 +15,7 @@ from utils.json_placeholder import fill_placeholders
 def build_payload(task, customer):
     """Build WhatsApp API payload depending on message type."""
     msg_type = task["type"]
-    content = task["content"]
+    content = task.get("content") or {}
 
     base = {
         "messaging_product": "whatsapp",
@@ -22,40 +23,54 @@ def build_payload(task, customer):
         "recipient_type": "individual"
     }
 
-    # For text messages
     if msg_type == "text":
-        base.update({
-            "type": "text",
-            "text": content
-        })
+        if not isinstance(content, str):
+            raise ValueError("Text content must be a string")
+        base.update({"type": "text", "text": content})
 
-    # For template messages
     elif msg_type == "template":
-        # Ensure placeholders are filled before sending
         template_name = content.get("name")
+        if not template_name:
+            raise ValueError("Template name is missing")
+
         language_code = content.get("language", {}).get("code", "en_US")
         components = content.get("components", [])
+        if not isinstance(components, list):
+            components = []
 
         base.update({
             "type": "template",
             "template": {
                 "name": template_name,
-                "language": { "code": language_code },
+                "language": {"code": language_code},
                 "components": components
             }
         })
 
-    # For image / document messages
     elif msg_type in ["image", "document"]:
-        base.update({
-            "type": msg_type,
-            msg_type: content
-        })
+        if not isinstance(content, dict):
+            raise ValueError(f"{msg_type} content must be a dict with url or id")
+        base.update({"type": msg_type, msg_type: content})
 
     else:
         raise ValueError(f"Unsupported message type: {msg_type}")
 
     return base
+
+
+def send_whatsapp_request(payload, headers, retries=3):
+    """Send request to WhatsApp Cloud API with retry logic."""
+    for attempt in range(1, retries + 1):
+        try:
+            res = requests.post(WHATSAPP_API_URL, json=payload, headers=headers, timeout=10)
+            if res.status_code == 200:
+                return "success", res.text
+            else:
+                print(f"⚠️ Attempt {attempt}: API responded {res.status_code} - {res.text}")
+        except requests.exceptions.RequestException as e:
+            print(f"⚠️ Attempt {attempt}: Network error: {e}")
+        time.sleep(2 ** attempt)  # exponential backoff
+    return "failure", None
 
 
 def callback(ch, method, properties, body):
@@ -68,41 +83,30 @@ def callback(ch, method, properties, body):
     start_time = time.time()
 
     try:
-        # Get latest token
         token_obj = whatsapp_service.get_latest_token(db)
         if not token_obj:
-            raise Exception("Token not available")
+            raise Exception("WhatsApp token not available")
 
-        token = token_obj.token
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json"
-        }
-
-        # Build correct payload depending on type
+        headers = {"Authorization": f"Bearer {token_obj.token}", "Content-Type": "application/json"}
         payload = build_payload(task, customer)
 
-        # Send request to WhatsApp
-        res = requests.post(WHATSAPP_API_URL, json=payload, headers=headers)
-        print(f"📤 Payload Sent: {json.dumps(payload, indent=2)}")
-        print(f"📩 Response ({res.status_code}): {res.text}")
-
-        status = "success" if res.status_code == 200 else "failure"
+        print(f"📤 Sending payload: {json.dumps(payload, indent=2)}")
+        status, response_text = send_whatsapp_request(payload, headers)
+        print(f"📩 Response: {response_text}")
 
     except Exception as e:
         print(f"❌ Error sending to {customer['wa_id']}: {e}")
         status = "failure"
 
-    # Update status in DB
-    job_status = db.query(JobStatus).filter_by(
-        job_id=job_id,
-        customer_id=customer["id"]
-    ).first()
-
-    if job_status:
+    # Ensure JobStatus exists
+    job_status = db.query(JobStatus).filter_by(job_id=job_id, customer_id=customer["id"]).first()
+    if not job_status:
+        job_status = JobStatus(job_id=job_id, customer_id=customer["id"], status=status)
+        db.add(job_status)
+    else:
         job_status.status = status
 
-    # Update job and campaign last trigger time
+    # Update job and campaign metadata
     job = db.query(Job).filter_by(id=job_id).first()
     campaign = db.query(Campaign).filter_by(id=campaign_id).first()
     if job:
