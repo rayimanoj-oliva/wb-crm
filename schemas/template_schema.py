@@ -57,8 +57,10 @@ class TemplateOut(TemplateCreate):
 # ----------- Meta Template Creation Example Values -----------
 
 class TemplateExample(BaseModel):
+    header_handle: Optional[List[str]] = None  # For IMAGE headers
     header_text: Optional[List[str]] = None
     body_text: Optional[List[str]] = None
+
 
 
 # ----------- Component Definition for Meta Template -----------
