@@ -9,13 +9,17 @@ from services import whatsapp_service
 
 
 def callback(ch, method, properties, body):
+    """
+    RabbitMQ worker callback to process each task.
+    Supports both generic and template messages.
+    """
     db: Session = next(get_db())
     task = json.loads(body)
     customer = task['customer']
-    job_id = task.get('job_id')
-    campaign_id = task.get('campaign_id')
+    job_id = task['job_id']
+    campaign_id = task['campaign_id']
 
-    start_time = time.time()
+    start_time = time.time()  # Start timing
 
     try:
         # Get latest WhatsApp token
@@ -25,7 +29,7 @@ def callback(ch, method, properties, body):
         token = token_obj.token
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-        # Build payload based on message type
+        # 🔹 Build payload depending on type
         if task['type'] == "template":
             payload = whatsapp_service.build_template_payload(customer, task['content'])
         else:
@@ -52,7 +56,7 @@ def callback(ch, method, properties, body):
     duration = round(end_time - start_time, 2)
 
     # Update JobStatus
-    job_status = db.query(JobStatus).filter_by(job_id=job_id, customer_id=customer.get('id')).first()
+    job_status = db.query(JobStatus).filter_by(job_id=job_id, customer_id=customer['id']).first()
     if job_status:
         job_status.status = status
 
@@ -67,11 +71,12 @@ def callback(ch, method, properties, body):
     db.commit()
     print(f"[{status.upper()}] {customer['wa_id']} - {duration}s")
 
-    # Acknowledge RabbitMQ message
+    # Acknowledge message in RabbitMQ
     ch.basic_ack(delivery_tag=method.delivery_tag)
 
 
 def start_worker():
+    """Start RabbitMQ worker to consume messages from 'campaign_queue'."""
     connection = pika.BlockingConnection(pika.ConnectionParameters("localhost"))
     channel = connection.channel()
     channel.queue_declare(queue="campaign_queue", durable=True)
