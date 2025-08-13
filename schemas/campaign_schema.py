@@ -1,19 +1,17 @@
 from datetime import datetime
-from typing import List, Optional, Literal
-from uuid import UUID
-from pydantic import BaseModel
-from schemas.template_schema import TemplateParameter
 
+from pydantic import BaseModel
+from typing import List, Optional, Literal
+from schemas.template_schema import TemplateParameter
+from uuid import UUID
 
 class CampaignRecipient(BaseModel):
     wa_id: str
-    parameters: List[TemplateParameter]  # parameters for template messages
-
+    parameters: List[TemplateParameter]
 
 class BulkTemplateRequest(BaseModel):
     template_name: str
     clients: List[CampaignRecipient]
-
 
 class CustomerOut(BaseModel):
     id: UUID
@@ -24,22 +22,18 @@ class CustomerOut(BaseModel):
         orm_mode = True
 
 
-# Allowed WhatsApp message types for campaigns
 AllowedTypes = Literal["text", "image", "document", "template", "interactive"]
-
 
 class CampaignBase(BaseModel):
     name: str
     description: Optional[str] = None
-    customer_ids: Optional[List[UUID]] = []  # linked customer IDs
-    content: Optional[dict] = None  # message content or template details
+    customer_ids: Optional[List[UUID]] = []
+    content: Optional[dict] = None
     type: AllowedTypes
     campaign_cost_type: Optional[str] = None
 
-
 class CampaignCreate(CampaignBase):
     pass
-
 
 class CampaignUpdate(BaseModel):
     name: Optional[str]
@@ -56,7 +50,7 @@ class CampaignOut(CampaignBase):
     updated_at: datetime
     created_by: UUID
     updated_by: Optional[UUID]
-    customers: List[CustomerOut]  # include customer details
+    customers: List[CustomerOut]  # ✅ include this
     last_job_id: Optional[UUID]
 
     class Config:
