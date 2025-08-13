@@ -4,6 +4,7 @@ import pika
 from sqlalchemy.orm import Session
 from models.models import WhatsAppToken
 from schemas.whatsapp_token_schema import WhatsAppTokenCreate
+from utils.json_placeholder import fill_placeholders
 
 def create_whatsapp_token(db: Session, token_data: WhatsAppTokenCreate):
     token_entry = WhatsAppToken(token=token_data.token)
@@ -14,6 +15,28 @@ def create_whatsapp_token(db: Session, token_data: WhatsAppTokenCreate):
 
 def get_latest_token(db: Session):
     return db.query(WhatsAppToken).order_by(WhatsAppToken.created_at.desc()).first()
+
+def build_template_payload(customer: dict, template_content: dict):
+
+    template_name = template_content.get("name")
+    language_code = template_content.get("language", "en_US")
+    components = template_content.get("components", [])
+
+    # Replace placeholders dynamically
+    if components:
+        components = fill_placeholders(components, customer)
+
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": customer['wa_id'],
+        "type": "template",
+        "template": {
+            "name": template_name,
+            "language": {"code": language_code},
+            "components": components
+        }
+    }
+    return payload
 
 def enqueue_template_message(to: str, template_name: str, parameters: list):
     payload = {
