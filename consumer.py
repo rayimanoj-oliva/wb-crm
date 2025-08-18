@@ -8,6 +8,51 @@ from models.models import JobStatus, Campaign, Job
 from services import whatsapp_service
 
 
+def build_template_payload(customer, content: dict):
+    """
+    Build WhatsApp template payload.
+    content must include at least:
+    {
+      "template_name": "welcome_message",
+      "language": "en_US"
+    }
+
+    Personalization:
+    - First parameter = customer's name (fallback = wa_id)
+    - Additional parameters can be provided in content["parameters"]
+    """
+    parameters = []
+
+    # Insert customer's name as first parameter (fallback = wa_id)
+    if customer.get("name"):
+        parameters.append({"type": "text", "text": customer["name"]})
+    else:
+        parameters.append({"type": "text", "text": customer["wa_id"]})
+
+    # Add any extra parameters from campaign.content
+    extra_params = content.get("parameters", [])
+    for p in extra_params:
+        parameters.append({"type": "text", "text": str(p)})
+
+    components = []
+    if parameters:
+        components.append({
+            "type": "body",
+            "parameters": parameters
+        })
+
+    return {
+        "messaging_product": "whatsapp",
+        "to": customer["wa_id"],
+        "type": "template",
+        "template": {
+            "name": content["template_name"],
+            "language": {"code": content.get("language", "en_US")},
+            "components": components
+        }
+    }
+
+
 def callback(ch, method, properties, body):
     """
     RabbitMQ worker callback to process each task.
@@ -31,7 +76,7 @@ def callback(ch, method, properties, body):
 
         # 🔹 Build payload depending on type
         if task['type'] == "template":
-            payload = whatsapp_service.build_template_payload(customer, task['content'])
+            payload = build_template_payload(customer, task['content'])
         else:
             payload = {
                 "messaging_product": "whatsapp",
@@ -41,15 +86,21 @@ def callback(ch, method, properties, body):
                 task['type']: task['content']
             }
 
+        print("📤 Sending payload:", json.dumps(payload, indent=2))
+
         # Send WhatsApp message
         res = requests.post(WHATSAPP_API_URL, json=payload, headers=headers)
-        status = "success" if res.status_code == 200 else "failure"
+        result = res.json()
 
-        if status == "failure":
-            print(f"Failed to send message to {customer['wa_id']}. Response: {res.text}")
+        if "error" in result:
+            print(f"❌ Error sending to {customer['wa_id']}: {result['error']}")
+            status = "failure"
+        else:
+            print(f"✅ Message sent to {customer['wa_id']}: {result}")
+            status = "success"
 
     except Exception as e:
-        print(f"Error sending to {customer['wa_id']}: {e}")
+        print(f"⚠️ Exception while sending to {customer['wa_id']}: {e}")
         status = "failure"
 
     end_time = time.time()
@@ -82,7 +133,7 @@ def start_worker():
     channel.queue_declare(queue="campaign_queue", durable=True)
     channel.basic_qos(prefetch_count=1)
     channel.basic_consume(queue="campaign_queue", on_message_callback=callback)
-    print("Worker started. Waiting for messages...")
+    print("🚀 Worker started. Waiting for messages...")
     channel.start_consuming()
 
 
