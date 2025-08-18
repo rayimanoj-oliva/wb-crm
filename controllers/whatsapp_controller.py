@@ -138,31 +138,72 @@ async def send_whatsapp_message(
                 payload["location"]["address"] = location_address
             body = f"{location_name or ''} - {location_address or ''}"
 
+
         elif type == "template":
+
             if not template_name:
                 raise HTTPException(status_code=400, detail="Template name is required")
 
+            # Fetch template definition from DB
+
+            template_obj = db.query(Template).filter(Template.template_name == template_name).first()
+
+            if not template_obj:
+                raise HTTPException(status_code=400, detail="Template not found in DB")
+
+            # Prepare components
+
             components = []
+
+            param_list = []
+
             if template_params:
                 param_list = [p.strip() for p in template_params.split(",")]
 
-                if len(param_list) >= 1:
-                    components.append({
-                        "type": "header",
-                        "parameters": [{"type": "text", "text": param_list[0]}]
-                    })
+            # Assign parameters to header and body based on template definition
 
-                if len(param_list) > 1:
-                    components.append({
-                        "type": "body",
-                        "parameters": [{"type": "text", "text": p} for p in param_list[1:]]
-                    })
+            # template_vars example: {"header": ["name"], "body": ["link","score"]}
+
+            template_vars = template_obj.template_vars
+
+            # Header params
+
+            if "header" in template_vars and len(template_vars["header"]) > 0:
+
+                header_params = [{"type": "text", "text": param_list[i]}
+
+                                 for i in range(min(len(template_vars["header"]), len(param_list)))]
+
+                if header_params:
+                    components.append({"type": "header", "parameters": header_params})
+
+            # Body params
+
+            if "body" in template_vars and len(template_vars["body"]) > 0:
+
+                start_index = len(template_vars.get("header", []))  # skip header params
+
+                body_params = [{"type": "text", "text": param_list[i]}
+
+                               for i in
+                               range(start_index, min(start_index + len(template_vars["body"]), len(param_list)))]
+
+                if body_params:
+                    components.append({"type": "body", "parameters": body_params})
+
+            # Construct WhatsApp template payload
 
             payload["template"] = {
+
                 "name": template_name,
+
                 "language": {"code": language},
+
                 "components": components
+
             }
+
+            # Internal body for DB & UI
 
             body = f"TEMPLATE: {template_name} - Params: {template_params}"
 
