@@ -7,6 +7,8 @@ from datetime import datetime, date, timedelta
 from models.models import Message, Customer
 from clients.schema import AppointmentQuery
 import clients.service as client_service
+from models.models import Template, JobStatus
+
 
 def get_today_metrics(db: Session):
     today = date.today()
@@ -96,3 +98,32 @@ def get_agent_avg_response_time(agent_id: str, center_id: Optional[str], db: Ses
     # Calculate the average response time
     avg_response_time = sum(response_times) / len(response_times)
     return avg_response_time
+def get_template_status(db: Session):
+    """
+    Returns counts of approved, pending, and rejected templates
+    """
+    approved = db.query(Template).filter(Template.template_body["status"].astext == "approved").count()
+    pending = db.query(Template).filter(Template.template_body["status"].astext == "pending").count()
+    rejected = db.query(Template).filter(Template.template_body["status"].astext == "rejected").count()
+
+    return {
+        "approved_templates": approved,
+        "pending_review": pending,
+        "rejected": rejected
+    }
+
+
+def get_recent_failed_messages(db: Session):
+    """
+    Returns counts of different failure reasons in recent JobStatus / Message failures
+    """
+    # Example: if you are storing failures in JobStatus with "failure" + reason in body
+    unapproved_template = db.query(Message).filter(Message.body.ilike("%Unapproved template%")).count()
+    user_opted_out = db.query(Message).filter(Message.body.ilike("%opted out%")).count()
+    invalid_phone = db.query(Message).filter(Message.body.ilike("%Invalid phone%")).count()
+
+    return {
+        "unapproved_template_used": unapproved_template,
+        "user_opted_out": user_opted_out,
+        "invalid_phone_number": invalid_phone
+    }

@@ -8,7 +8,10 @@ from sqlalchemy.orm import Session
 from database.db import get_db
 from services.dashboard_service import get_today_metrics, get_total_customers, get_agent_avg_response_time
 from services.dashboard_service import get_appointments_booked_today
-
+from services.dashboard_service import (
+    get_template_status,
+    get_recent_failed_messages
+)
 router = APIRouter(tags=["Dashboard"])
 
 @router.get("/today")
@@ -35,3 +38,13 @@ def agent_avg_response_time(agent_id: str, center_id: Optional[str] = None, db: 
             status_code=500,
             detail=f"An error occurred while calculating average response time: {e}"
         )
+
+# 🆕 Add Template Status API
+@router.get("/template-status")
+def template_status(db: Session = Depends(get_db)):
+    return get_template_status(db)
+
+# 🆕 Add Recent Failed Messages API
+@router.get("/recent-failed-messages")
+def recent_failed_messages(db: Session = Depends(get_db)):
+    return get_recent_failed_messages(db)
