@@ -20,6 +20,7 @@ router = APIRouter(tags=["WhatsApp Token"])
 
 WHATSAPP_API_URL = "https://graph.facebook.com/v22.0/367633743092037/messages"
 MEDIA_URL = "https://graph.facebook.com/v22.0/367633743092037/media"
+# MEDIA_URL = "https://graph.facebook.com/v22.0/286831244524604/media"
 
 
 @router.post("/token", status_code=201)
