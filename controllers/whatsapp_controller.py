@@ -60,9 +60,7 @@ async def send_whatsapp_message(
         caption = None
         filename = None
         mime_type = None
-        param_list = []
 
-        # --- Upload file if present ---
         if file:
             mime_type = mimetypes.guess_type(file.filename)[0]
             if not mime_type:
@@ -85,7 +83,6 @@ async def send_whatsapp_message(
             "type": type
         }
 
-        # --- Message type handling ---
         if type == "text":
             if not body:
                 raise HTTPException(status_code=400, detail="Text body required")
@@ -102,14 +99,25 @@ async def send_whatsapp_message(
                 raise HTTPException(status_code=400, detail="Document upload failed")
             caption = body or ""
             filename = file.filename
-            payload["document"] = {"id": media_id, "caption": caption, "filename": filename}
+            payload["document"] = {
+                "id": media_id,
+                "caption": caption,
+                "filename": filename
+            }
 
         elif type == "interactive":
             payload["interactive"] = {
                 "type": "product_list",
-                "header": {"type": "text", "text": "Oliva Skin Solutions"},
-                "body": {"text": "Here are some products just for you"},
-                "footer": {"text": "Tap to view each product"},
+                "header": {
+                    "type": "text",
+                    "text": "Oliva Skin Solutions"
+                },
+                "body": {
+                    "text": "Here are some products just for you"
+                },
+                "footer": {
+                    "text": "Tap to view each product"
+                },
                 "action": {
                     "catalog_id": "1093353131080785",
                     "sections": [
@@ -131,7 +139,10 @@ async def send_whatsapp_message(
         elif type == "location":
             if not latitude or not longitude:
                 raise HTTPException(status_code=400, detail="Latitude and Longitude are required")
-            payload["location"] = {"latitude": latitude, "longitude": longitude}
+            payload["location"] = {
+                "latitude": latitude,
+                "longitude": longitude
+            }
             if location_name:
                 payload["location"]["name"] = location_name
             if location_address:
@@ -144,54 +155,39 @@ async def send_whatsapp_message(
             if not template_name:
                 raise HTTPException(status_code=400, detail="Template name is required")
 
-            # Fetch template definition from DB
-
-            template_obj = db.query(Template).filter(Template.template_name == template_name).first()
-
-            if not template_obj:
-                raise HTTPException(status_code=400, detail="Template not found in DB")
-
-            # Prepare components
-
             components = []
 
-            param_list = []
-
             if template_params:
+
+                # Split the template_params string by comma to get individual parameters
+
                 param_list = [p.strip() for p in template_params.split(",")]
 
-            # Assign parameters to header and body based on template definition
+                # IMPORTANT:
 
-            # template_vars example: {"header": ["name"], "body": ["link","score"]}
+                # If your template header expects parameters, add them here.
 
-            template_vars = template_obj.template_vars
+                # For example, if header expects 1 param, take param_list[0] for header
 
-            # Header params
+                if len(param_list) >= 1:
+                    components.append({
 
-            if "header" in template_vars and len(template_vars["header"]) > 0:
+                        "type": "header",
 
-                header_params = [{"type": "text", "text": param_list[i]}
+                        "parameters": [{"type": "text", "text": param_list[0]}]
 
-                                 for i in range(min(len(template_vars["header"]), len(param_list)))]
+                    })
 
-                if header_params:
-                    components.append({"type": "header", "parameters": header_params})
+                # Add body parameters if any (starting from param_list[1])
 
-            # Body params
+                if len(param_list) > 1:
+                    components.append({
 
-            if "body" in template_vars and len(template_vars["body"]) > 0:
+                        "type": "body",
 
-                start_index = len(template_vars.get("header", []))  # skip header params
+                        "parameters": [{"type": "text", "text": p} for p in param_list[1:]]
 
-                body_params = [{"type": "text", "text": param_list[i]}
-
-                               for i in
-                               range(start_index, min(start_index + len(template_vars["body"]), len(param_list)))]
-
-                if body_params:
-                    components.append({"type": "body", "parameters": body_params})
-
-            # Construct WhatsApp template payload
+                    })
 
             payload["template"] = {
 
@@ -203,11 +199,10 @@ async def send_whatsapp_message(
 
             }
 
-            # Internal body for DB & UI
+            # For your internal use, set body summary of what template was sent
 
             body = f"TEMPLATE: {template_name} - Params: {template_params}"
 
-        # --- Send WhatsApp message ---
         res = requests.post(
             WHATSAPP_API_URL,
             json=payload,
@@ -217,40 +212,26 @@ async def send_whatsapp_message(
         if res.status_code != 200:
             raise HTTPException(status_code=500, detail=f"Failed to send message: {res.text}")
 
-        message_json = res.json()["messages"][0]
-        message_id = message_json["id"]
-        wa_timestamp = message_json.get("timestamp")
+        message_id = res.json()["messages"][0]["id"]
 
-        # Use WhatsApp timestamp if available, else UTC now
-        if wa_timestamp:
-            timestamp = datetime.fromtimestamp(int(wa_timestamp), tz=datetime.timezone.utc)
-        else:
-            timestamp = datetime.now(datetime.timezone.utc)
-
-        # --- Get or create customer ---
         customer_data = CustomerCreate(wa_id=wa_id, name="")
         customer = customer_service.get_or_create_customer(db, customer_data)
 
-        # --- Save message in DB ---
         message_data = MessageCreate(
             message_id=message_id,
             from_wa_id=from_wa_id,
             to_wa_id=wa_id,
             type=type,
             body=body or "",
-            timestamp=timestamp,
+            timestamp=datetime.now(),
             customer_id=customer.id,
             media_id=media_id,
             caption=caption,
             filename=filename,
-            mime_type=mime_type,
-            template_name=template_name if type == "template" else None,
-            template_params=param_list if type == "template" else None
+            mime_type=mime_type
         )
-
         message = message_service.create_message(db, message_data)
 
-        # --- Broadcast to WebSocket clients ---
         await manager.broadcast({
             "from": message.from_wa_id,
             "to": message.to_wa_id,
@@ -260,15 +241,14 @@ async def send_whatsapp_message(
             "media_id": message.media_id,
             "caption": message.caption,
             "filename": message.filename,
-            "mime_type": message.mime_type,
-            "template_name": message.template_name,
-            "template_params": message.template_params
+            "mime_type": message.mime_type
         })
 
         return {"status": "success", "message_id": message.message_id}
 
     except Exception as e:
         return {"status": "failed", "error": str(e)}
+
 
 @router.get("/get-image")
 def get_image(media_id: str, db: Session = Depends(get_db)):

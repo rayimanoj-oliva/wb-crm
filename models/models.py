@@ -69,8 +69,6 @@ class Customer(Base):
     def __str__(self):
         return f"{self.wa_id} {self.name} {self.id}"
 
-
-
 class Message(Base):
     __tablename__ = "messages"
 
@@ -94,9 +92,6 @@ class Message(Base):
     mime_type = Column(String, nullable=True)
     latitude = Column(Float, nullable=True)
     longitude = Column(Float, nullable=True)
-    # ✅ Fields for template messages
-    template_name = Column(String, nullable=True)  # WhatsApp template name
-    template_params = Column(JSONB, nullable=True)  # Store template variables as list or dict
 
 class WhatsAppToken(Base):
     __tablename__ = "whatsapp_tokens"
