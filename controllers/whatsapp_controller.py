@@ -5,7 +5,6 @@ from typing import Optional, Literal
 from datetime import datetime
 import requests
 import mimetypes
-import json
 
 from controllers.web_socket import manager
 from schemas.campaign_schema import CampaignOut
@@ -44,7 +43,7 @@ async def send_whatsapp_message(
     location_address: Optional[str] = Form(None),
     template_name: Optional[str] = Form(None),
     language: Optional[str] = Form("en_US"),
-    template_params: Optional[str] = Form(None),  # JSON string
+    template_params: Optional[str] = Form(None),
     db: Session = Depends(get_db)
 ):
     try:
@@ -61,7 +60,6 @@ async def send_whatsapp_message(
         filename = None
         mime_type = None
 
-        # Handle media uploads
         if file:
             mime_type = mimetypes.guess_type(file.filename)[0]
             if not mime_type:
@@ -77,7 +75,6 @@ async def send_whatsapp_message(
                 raise HTTPException(status_code=500, detail=f"Media upload failed: {upload_res.text}")
             media_id = upload_res.json().get("id")
 
-        # Base payload
         payload = {
             "messaging_product": "whatsapp",
             "to": wa_id,
@@ -85,20 +82,17 @@ async def send_whatsapp_message(
             "type": type
         }
 
-        # Type: text
         if type == "text":
             if not body:
                 raise HTTPException(status_code=400, detail="Text body required")
             payload["text"] = {"body": body, "preview_url": False}
 
-        # Type: image
         elif type == "image":
             if not media_id:
                 raise HTTPException(status_code=400, detail="Image upload failed")
             caption = body or ""
             payload["image"] = {"id": media_id, "caption": caption}
 
-        # Type: document
         elif type == "document":
             if not media_id:
                 raise HTTPException(status_code=400, detail="Document upload failed")
@@ -110,13 +104,19 @@ async def send_whatsapp_message(
                 "filename": filename
             }
 
-        # Type: interactive (product list example)
         elif type == "interactive":
             payload["interactive"] = {
                 "type": "product_list",
-                "header": {"type": "text", "text": "Oliva Skin Solutions"},
-                "body": {"text": "Here are some products just for you"},
-                "footer": {"text": "Tap to view each product"},
+                "header": {
+                    "type": "text",
+                    "text": "Oliva Skin Solutions"
+                },
+                "body": {
+                    "text": "Here are some products just for you"
+                },
+                "footer": {
+                    "text": "Tap to view each product"
+                },
                 "action": {
                     "catalog_id": "1093353131080785",
                     "sections": [
@@ -135,7 +135,6 @@ async def send_whatsapp_message(
             }
             body = "5 Products"
 
-        # Type: location
         elif type == "location":
             if not latitude or not longitude:
                 raise HTTPException(status_code=400, detail="Latitude and Longitude are required")
@@ -149,55 +148,60 @@ async def send_whatsapp_message(
                 payload["location"]["address"] = location_address
             body = f"{location_name or ''} - {location_address or ''}"
 
-        # Type: template
+
         elif type == "template":
+
             if not template_name:
                 raise HTTPException(status_code=400, detail="Template name is required")
 
             components = []
+
             if template_params:
-                try:
-                    params_dict = json.loads(template_params)
 
-                    if "header" in params_dict:
-                        components.append({
-                            "type": "header",
-                            "parameters": [{"type": "text", "text": p} for p in params_dict["header"]]
-                        })
+                # Split the template_params string by comma to get individual parameters
 
-                    if "body" in params_dict:
-                        components.append({
-                            "type": "body",
-                            "parameters": [{"type": "text", "text": p} for p in params_dict["body"]]
-                        })
+                param_list = [p.strip() for p in template_params.split(",")]
 
-                    if "footer" in params_dict:
-                        components.append({
-                            "type": "footer",
-                            "parameters": [{"type": "text", "text": p} for p in params_dict["footer"]]
-                        })
+                # IMPORTANT:
 
-                    if "button" in params_dict:
-                        for i, bparams in enumerate(params_dict["button"], start=0):
-                            components.append({
-                                "type": "button",
-                                "sub_type": "quick_reply",
-                                "index": str(i),
-                                "parameters": [{"type": "text", "text": p} for p in bparams]
-                            })
+                # If your template header expects parameters, add them here.
 
-                except Exception:
-                    raise HTTPException(status_code=400, detail="Invalid template_params JSON")
+                # For example, if header expects 1 param, take param_list[0] for header
+
+                if len(param_list) >= 1:
+                    components.append({
+
+                        "type": "header",
+
+                        "parameters": [{"type": "text", "text": param_list[0]}]
+
+                    })
+
+                # Add body parameters if any (starting from param_list[1])
+
+                if len(param_list) > 1:
+                    components.append({
+
+                        "type": "body",
+
+                        "parameters": [{"type": "text", "text": p} for p in param_list[1:]]
+
+                    })
 
             payload["template"] = {
+
                 "name": template_name,
+
                 "language": {"code": language},
+
                 "components": components
+
             }
+
+            # For your internal use, set body summary of what template was sent
 
             body = f"TEMPLATE: {template_name} - Params: {template_params}"
 
-        # Send message
         res = requests.post(
             WHATSAPP_API_URL,
             json=payload,
@@ -209,7 +213,6 @@ async def send_whatsapp_message(
 
         message_id = res.json()["messages"][0]["id"]
 
-        # Save in DB
         customer_data = CustomerCreate(wa_id=wa_id, name="")
         customer = customer_service.get_or_create_customer(db, customer_data)
 
@@ -228,7 +231,6 @@ async def send_whatsapp_message(
         )
         message = message_service.create_message(db, message_data)
 
-        # Broadcast to WebSocket clients
         await manager.broadcast({
             "from": message.from_wa_id,
             "to": message.to_wa_id,
