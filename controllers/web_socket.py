@@ -47,6 +47,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         to_wa_id = value["metadata"]["display_phone_number"]
         timestamp = datetime.fromtimestamp(int(message["timestamp"]))
         message_type = message["type"]
+
         message_id = message["id"]
         body_text = message[message_type].get("body", "")
         is_address = any(
@@ -152,6 +153,81 @@ Phone Number:
             await manager.broadcast(broadcast_payload)
 
             return {"status": "success", "message_id": message_id}
+        elif message_type == "image":
+            image = message["image"]
+
+            media_id = image.get("id")
+            caption = image.get("caption", "")
+            mime_type = image.get("mime_type", "")
+            filename = image.get("filename", "")
+
+            # Save message in DB
+            message_data = MessageCreate(
+                message_id=message_id,
+                from_wa_id=from_wa_id,
+                to_wa_id=to_wa_id,
+                type="image",
+                body=caption or "[Image]",
+                timestamp=timestamp,
+                customer_id=customer.id,
+                media_id=media_id,
+                caption=caption,
+                filename=filename,
+                mime_type=mime_type,
+            )
+            new_msg = message_service.create_message(db, message_data)
+
+            # Broadcast to WebSocket clients
+            await manager.broadcast({
+                "from": from_wa_id,
+                "to": to_wa_id,
+                "type": "image",
+                "media_id": media_id,
+                "caption": caption,
+                "filename": filename,
+                "mime_type": mime_type,
+                "timestamp": timestamp.isoformat(),
+            })
+
+            return {"status": "success", "message_id": message_id}
+        elif message_type == "document":
+            document = message["document"]
+
+            media_id = document.get("id")
+            caption = document.get("caption", "")
+            mime_type = document.get("mime_type", "")
+            filename = document.get("filename", "")
+
+            # Save document message in DB
+            message_data = MessageCreate(
+                message_id=message_id,
+                from_wa_id=from_wa_id,
+                to_wa_id=to_wa_id,
+                type="document",
+                body=caption or "[Document]",
+                timestamp=timestamp,
+                customer_id=customer.id,
+                media_id=media_id,
+                caption=caption,
+                filename=filename,
+                mime_type=mime_type,
+            )
+            new_msg = message_service.create_message(db, message_data)
+
+            # Broadcast to WebSocket clients
+            await manager.broadcast({
+                "from": from_wa_id,
+                "to": to_wa_id,
+                "type": "document",
+                "media_id": media_id,
+                "caption": caption,
+                "filename": filename,
+                "mime_type": mime_type,
+                "timestamp": timestamp.isoformat(),
+            })
+
+            return {"status": "success", "message_id": message_id}
+        
         elif is_address:
                 try:
                     customer_service.update_customer_address(db, customer.id, body_text)

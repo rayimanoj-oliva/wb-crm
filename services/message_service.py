@@ -25,7 +25,7 @@ def create_message(db: Session, message_data: MessageCreate) -> Message:
         customer.last_message_at = new_message.timestamp
 
 
-    increment_unread(message_data.from_wa_id)
+    
     db.add(new_message)
     db.commit()
     db.refresh(new_message)
