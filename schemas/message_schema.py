@@ -27,6 +27,8 @@ class MessageOut(BaseModel):
     body: str
     timestamp: datetime
     customer_id: UUID
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
 
     # Optional media fields
     media_id: Optional[str] = None

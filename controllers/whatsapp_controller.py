@@ -5,7 +5,11 @@ from typing import Optional, Literal
 from datetime import datetime
 import requests
 import mimetypes
-
+import httpx
+import re
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse
+import os
 from controllers.web_socket import manager
 from schemas.campaign_schema import CampaignOut
 from schemas.customer_schema import CustomerCreate
@@ -275,3 +279,89 @@ def get_image(media_id: str, db: Session = Depends(get_db)):
 
     content_type = media_res.headers.get("Content-Type", "application/octet-stream")
     return StreamingResponse(media_res.raw, media_type=content_type)
+
+
+router = APIRouter()
+
+# ⚠️ Use your permanent WhatsApp Cloud API token here or from env
+# WHATSAPP_TOKEN = "YOUR_WA_CLOUD_API_ACCESS_TOKEN"
+
+DOWNLOAD_DIR = "downloads"
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+_EXTENSION_FALLBACK = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "application/pdf": ".pdf",
+    "application/zip": ".zip",
+    "audio/mpeg": ".mp3",
+    "video/mp4": ".mp4",
+    "application/msword": ".doc",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+}
+
+def _safe_filename(name: str) -> str:
+    # simple sanitiser: allow alnum, dot, underscore, dash
+    name = name.strip().replace(" ", "_")
+    return re.sub(r"[^A-Za-z0-9.\-_]", "_", name)
+
+@router.get("/download/{media_id}")
+async def download_media(media_id: str, db: Session = Depends(get_db)):
+    token_obj = whatsapp_service.get_latest_token(db)
+    if not token_obj:
+        raise HTTPException(status_code=400, detail="Token not available")
+
+    token = token_obj.token
+    # Step 1: request media metadata (returns a temporary 'url')
+    async with httpx.AsyncClient() as client:
+        meta_resp = await client.get(f"https://graph.facebook.com/v21.0/{media_id}",
+                                     headers={"Authorization": f"Bearer {token}"})
+    if meta_resp.status_code != 200:
+        raise HTTPException(status_code=meta_resp.status_code, detail=f"Failed to fetch media metadata: {meta_resp.text}")
+
+    meta = meta_resp.json()
+    media_url = meta.get("url")
+    provided_name = meta.get("filename") or meta.get("name")  # metadata may include filename/name
+    meta_mime = meta.get("mime_type")
+
+    if not media_url:
+        raise HTTPException(status_code=404, detail="Media URL not found in metadata")
+
+    # Step 2: stream the file from the media URL (use same Bearer token)
+    async with httpx.AsyncClient() as client:
+        async with client.stream("GET", media_url, headers={"Authorization": f"Bearer {token}"}) as file_resp:
+            if file_resp.status_code != 200:
+                raise HTTPException(status_code=file_resp.status_code, detail=f"Failed to download media: {await file_resp.aread()}")
+
+            # determine content-type and extension
+            content_type = (file_resp.headers.get("Content-Type") or meta_mime or "application/octet-stream").split(";")[0].strip()
+            ext = mimetypes.guess_extension(content_type)
+            if not ext:
+                # try metadata mime_type
+                if meta_mime:
+                    ext = mimetypes.guess_extension(meta_mime.split(";")[0].strip())
+            if not ext:
+                # fallback to manual map
+                ext = _EXTENSION_FALLBACK.get(content_type, "")
+
+            # choose filename
+            if provided_name:
+                base, cur_ext = os.path.splitext(provided_name)
+                if not cur_ext and ext:
+                    provided_name = base + ext
+                filename = _safe_filename(provided_name)
+            else:
+                filename = f"{media_id}{ext}"
+
+            file_path = os.path.join(DOWNLOAD_DIR, filename)
+
+            # stream-to-disk
+            with open(file_path, "wb") as f:
+                async for chunk in file_resp.aiter_bytes():
+                    if chunk:
+                        f.write(chunk)
+
+    # Step 3: return the file (FileResponse sets Content-Disposition with filename)
+    return FileResponse(path=file_path, filename=filename, media_type=content_type)
+
