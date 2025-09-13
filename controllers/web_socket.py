@@ -121,7 +121,16 @@ Phone Number:
             location = message["location"]
             location_name = location.get("name", "")
             location_address = location.get("address", "")
-            location_body = ", ".join(filter(None, [location_name, location_address]))  # avoids ", " if both missing
+
+            # convert to float safely
+            latitude = float(location["latitude"]) if "latitude" in location else None
+            longitude = float(location["longitude"]) if "longitude" in location else None
+
+            # body fallback
+            if location_name or location_address:
+                location_body = ", ".join(filter(None, [location_name, location_address]))
+            else:
+                location_body = f"Shared Location - Lat: {latitude}, Lng: {longitude}"
 
             message_data = MessageCreate(
                 message_id=message_id,
@@ -131,8 +140,8 @@ Phone Number:
                 body=location_body,
                 timestamp=timestamp,
                 customer_id=customer.id,
-                latitude=location.get("latitude"),
-                longitude=location.get("longitude"),
+                latitude=latitude,
+                longitude=longitude,
             )
             message_service.create_message(db, message_data)
 
@@ -140,8 +149,8 @@ Phone Number:
                 "from": from_wa_id,
                 "to": to_wa_id,
                 "type": "location",
-                "latitude": location["latitude"],
-                "longitude": location["longitude"],
+                "latitude": latitude,
+                "longitude": longitude,
                 "timestamp": timestamp.isoformat()
             }
 
@@ -153,6 +162,7 @@ Phone Number:
             await manager.broadcast(broadcast_payload)
 
             return {"status": "success", "message_id": message_id}
+
         elif message_type == "image":
             image = message["image"]
 

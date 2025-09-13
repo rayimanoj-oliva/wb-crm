@@ -232,6 +232,8 @@ async def send_whatsapp_message(
             media_id=media_id,
             caption=caption,
             filename=filename,
+            latitude=latitude,
+            longitude=longitude,
             mime_type=mime_type
         )
         message = message_service.create_message(db, message_data)
