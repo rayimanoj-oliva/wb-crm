@@ -281,7 +281,6 @@ def get_image(media_id: str, db: Session = Depends(get_db)):
     return StreamingResponse(media_res.raw, media_type=content_type)
 
 
-router = APIRouter()
 
 # ⚠️ Use your permanent WhatsApp Cloud API token here or from env
 # WHATSAPP_TOKEN = "YOUR_WA_CLOUD_API_ACCESS_TOKEN"
