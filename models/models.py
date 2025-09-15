@@ -124,6 +124,21 @@ class OrderItem(Base):
 
     order = relationship("Order", back_populates="items")
 
+class Payment(Base):
+    __tablename__ = "payments"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="CASCADE"), nullable=False)
+    amount = Column(Float, nullable=False)
+    currency = Column(String(10), nullable=False, default="INR")
+    razorpay_id = Column(String, nullable=True)  # payment_link id from Razorpay
+    razorpay_short_url = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="created")  # created, paid, expired, cancelled
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    order = relationship("Order")
+
 class TemplateMessage(Base):
     __tablename__ = "template_messages"
 

@@ -20,6 +20,7 @@ from controllers import (
     web_hook, web_socket, messages_controller, whatsapp_controller, order_controller, campaign_controller,
     template_controller, files_controller, job_controller, dashboard_controller
 )
+from controllers.payment_controller import router as payment_router
 from database.db import SessionLocal, engine, get_db
 from models import models
 from schemas.token_schema import Token
@@ -73,3 +74,4 @@ app.include_router(clients_router, prefix="/client")
 app.include_router(zenoti_router, prefix="/zenoti")
 app.include_router(cost_router, prefix="/cost")
 app.include_router(media_controller.router, prefix="/media")
+app.include_router(payment_router, prefix="/payment")

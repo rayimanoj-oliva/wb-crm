@@ -33,3 +33,22 @@ class OrderOut(BaseModel):
 
     class Config:
         orm_mode = True
+
+class PaymentCreate(BaseModel):
+    order_id: UUID
+    amount: float
+    currency: str = "INR"
+
+class PaymentOut(BaseModel):
+    id: UUID
+    order_id: UUID
+    amount: float
+    currency: str
+    razorpay_id: Optional[str]
+    razorpay_short_url: Optional[str]
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        orm_mode = True
