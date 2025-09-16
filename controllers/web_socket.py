@@ -6,6 +6,8 @@ from fastapi.params import Depends
 from fastapi.responses import JSONResponse
 from typing import List
 import asyncio
+import os
+import requests
 
 from sqlalchemy.orm import Session
 from starlette.responses import PlainTextResponse
@@ -17,6 +19,7 @@ from services import payment_service
 from schemas.customer_schema import CustomerCreate
 from schemas.message_schema import MessageCreate
 from utils.whatsapp import send_message_to_waid
+from utils.razorpay_utils import create_razorpay_payment_link
 from utils.ws_manager import manager
 
 router = APIRouter()
@@ -272,6 +275,105 @@ Phone Number:
                     })
 
                     await send_message_to_waid(wa_id, "✅ Your address has been saved successfully!", db)
+
+                    # --- After address saved: create payment link via proxy and send automatically ---
+                    try:
+                        # Compute order total for this customer (latest order)
+                        latest_order = (
+                            db.query(order_service.Order)
+                            .filter(order_service.Order.customer_id == customer.id)
+                            .order_by(order_service.Order.timestamp.desc())
+                            .first()
+                        )
+                        total_amount = 0
+                        if latest_order:
+                            for item in latest_order.items:
+                                qty = item.quantity or 1
+                                price = item.item_price or item.price or 0
+                                total_amount += float(price) * int(qty)
+
+                        if total_amount > 0:
+                            # Obtain bearer token dynamically if possible; fallback to static env
+                            bearer_token = None
+                            try:
+                                token_url = os.getenv("RAZORPAY_TOKEN_URL", "https://payments.olivaclinic.com/api/token")
+                                username = os.getenv("RAZORPAY_USERNAME") or os.getenv("RAZORPAY_PROXY_USERNAME")
+                                password = os.getenv("RAZORPAY_PASSWORD") or os.getenv("RAZORPAY_PROXY_PASSWORD")
+                                if username and password:
+                                    token_headers = {
+                                        "Accept": "application/json",
+                                        "Content-Type": "application/x-www-form-urlencoded",
+                                    }
+                                    token_data = {
+                                        "username": username,
+                                        "password": password,
+                                    }
+                                    token_resp = requests.post(token_url, data=token_data, headers=token_headers, timeout=15)
+                                    if token_resp.status_code == 200:
+                                        bearer_token = token_resp.json().get("access_token")
+                            except Exception as _:
+                                bearer_token = None
+                            # Final fallback to static token
+                            bearer_token = bearer_token or os.getenv("RAZORPAY_PROXY_BEARER_TOKEN")
+                            payment_api_url = os.getenv("RAZORPAY_PROXY_PAYMENT_URL", "https://payments.olivaclinic.com/api/payment")
+                            center_name = os.getenv("OLIVA_CENTER_NAME", "Corporate Training Center")
+                            center_id = os.getenv("OLIVA_CENTER_ID", "90e79e59-6202-4feb-a64f-b647801469e4")
+
+                            pay_link = None
+                            if bearer_token:
+                                payload = {
+                                    "customer_name": customer.name or "Customer",
+                                    "phone_number": customer.wa_id,
+                                    "email": customer.email or "",
+                                    "amount": int(round(total_amount)),
+                                    "center": center_name,
+                                    "center_id": center_id,
+                                    # minimal required personal/address fields
+                                    "personal_info_first_name": (customer.name or "").split(" ")[0] if (customer.name) else "",
+                                    "personal_info_last_name": "",
+                                    "personal_info_mobile_country_code": 91,
+                                    "personal_info_mobile_number": customer.wa_id,
+                                    "address_info_country_id": 95,
+                                    "address_info_state_id": -2,
+                                    "preferences_receive_transactional_email": True,
+                                    "preferences_receive_transactional_sms": True,
+                                    "preferences_receive_marketing_email": True,
+                                    "preferences_receive_marketing_sms": True,
+                                    "preferences_recieve_lp_stmt": True,
+                                }
+
+                                headers = {
+                                    "Authorization": f"Bearer {bearer_token}",
+                                    "Content-Type": "application/json",
+                                    "Accept": "application/json, text/plain, */*",
+                                }
+                                resp = requests.post(payment_api_url, json=payload, headers=headers, timeout=20)
+                                if resp.status_code == 200:
+                                    resp_json = resp.json()
+                                    pay_link = resp_json.get("payment_link")
+                                else:
+                                    print("Payment link creation via proxy failed:", resp.text)
+
+                            # Fallback to direct Razorpay link if proxy not available or failed
+                            if not pay_link:
+                                try:
+                                    direct_resp = create_razorpay_payment_link(
+                                        amount=float(total_amount),
+                                        currency="INR",
+                                        description=f"WA Order {str(latest_order.id) if latest_order else ''}"
+                                    )
+                                    pay_link = direct_resp.get("short_url") if isinstance(direct_resp, dict) else None
+                                except Exception as _:
+                                    pay_link = None
+
+                            if pay_link:
+                                await send_message_to_waid(wa_id, f"💳 Please complete your payment using this link: {pay_link}", db)
+                            else:
+                                print("Auto payment link send skipped: no link generated")
+                        else:
+                            print("No latest order or zero amount; skipping auto payment link send")
+                    except Exception as pay_err:
+                        print("Auto payment link send error:", pay_err)
                 except Exception as e:
                     print("Address save error:", e)
                     await send_message_to_waid(wa_id, "❌ Failed to save your address. Please try again.", db)

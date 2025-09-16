@@ -4,6 +4,9 @@ from starlette.responses import StreamingResponse
 from typing import Optional, Literal
 from datetime import datetime
 import requests
+import json
+import csv
+import io
 import mimetypes
 import httpx
 import re
@@ -49,6 +52,10 @@ async def send_whatsapp_message(
     template_name: Optional[str] = Form(None),
     language: Optional[str] = Form("en_US"),
     template_params: Optional[str] = Form(None),
+    template_auto_fix: Optional[bool] = Form(False),
+    template_header_params: Optional[int] = Form(None),
+    template_body_expected: Optional[int] = Form(None),
+    template_enforce_count: Optional[bool] = Form(False),
     db: Session = Depends(get_db)
 ):
     try:
@@ -162,49 +169,90 @@ async def send_whatsapp_message(
             components = []
 
             if template_params:
+                parsed = None
+                # Try JSON first: expects {"header": [..], "body": [..]}
+                try:
+                    parsed_json = json.loads(template_params)
+                    if isinstance(parsed_json, dict):
+                        header_params = parsed_json.get("header") or []
+                        body_params = parsed_json.get("body") or []
+                        if header_params:
+                            components.append({
+                                "type": "header",
+                                "parameters": [{"type": "text", "text": str(v)} for v in header_params]
+                            })
+                        if body_params:
+                            components.append({
+                                "type": "body",
+                                "parameters": [{"type": "text", "text": str(v)} for v in body_params]
+                            })
+                        parsed = True
+                except Exception:
+                    parsed = None
 
-                # Split the template_params string by comma to get individual parameters
+                # Fallback: CSV string
+                if not parsed:
+                    # Robust CSV parsing (handles commas inside quotes)
+                    try:
+                        reader = csv.reader(io.StringIO(template_params))
+                        row = next(reader, [])
+                        param_list = [p.strip() for p in row]
+                    except Exception:
+                        # Fallback to naive split
+                        param_list = [p.strip() for p in template_params.split(",") if p is not None]
+                    header_count = int(template_header_params) if template_header_params is not None else 0
+                    header_vals = param_list[:header_count] if header_count > 0 else []
+                    body_vals = param_list[header_count:] if header_count >= 0 else param_list
 
-                param_list = [p.strip() for p in template_params.split(",")]
+                    # Optionally enforce expected body count (pad/truncate)
+                    if template_enforce_count and template_body_expected is not None:
+                        expected = int(template_body_expected)
+                        if len(body_vals) < expected:
+                            body_vals = body_vals + [""] * (expected - len(body_vals))
+                        elif len(body_vals) > expected:
+                            body_vals = body_vals[:expected]
+                    if header_vals:
+                        components.append({
+                            "type": "header",
+                            "parameters": [{"type": "text", "text": v} for v in header_vals]
+                        })
+                    if body_vals:
+                        components.append({
+                            "type": "body",
+                            "parameters": [{"type": "text", "text": v} for v in body_vals]
+                        })
 
-                # IMPORTANT:
-
-                # If your template header expects parameters, add them here.
-
-                # For example, if header expects 1 param, take param_list[0] for header
-
-                if len(param_list) >= 1:
-                    components.append({
-
-                        "type": "header",
-
-                        "parameters": [{"type": "text", "text": param_list[0]}]
-
-                    })
-
-                # Add body parameters if any (starting from param_list[1])
-
-                if len(param_list) > 1:
-                    components.append({
-
-                        "type": "body",
-
-                        "parameters": [{"type": "text", "text": p} for p in param_list[1:]]
-
-                    })
+            # Optional auto-fix: only adjust when a header component already exists.
+            # We DO NOT create a header if one wasn't provided to avoid errors when the template header has 0 params.
+            if template_auto_fix:
+                header_comp = next((c for c in components if c.get("type") == "header"), None)
+                body_comp = next((c for c in components if c.get("type") == "body"), None)
+                if header_comp is not None and body_comp is not None:
+                    header_params = header_comp.get("parameters") or []
+                    body_params = body_comp.get("parameters") or []
+                    if len(header_params) == 0 and len(body_params) >= 1:
+                        # Move first body param to header only if header exists but has 0 params
+                        first = body_params.pop(0)
+                        header_comp["parameters"] = [first]
+                        # Update components in place
+                        for i, c in enumerate(components):
+                            if c.get("type") == "header":
+                                components[i] = header_comp
+                            if c.get("type") == "body":
+                                if len(body_params) == 0:
+                                    # Remove empty body component
+                                    components[i] = {"type": "__remove__"}
+                                else:
+                                    c["parameters"] = body_params
+                        components = [c for c in components if c.get("type") != "__remove__"]
 
             payload["template"] = {
-
                 "name": template_name,
-
                 "language": {"code": language},
-
                 "components": components
-
             }
 
             # For your internal use, set body summary of what template was sent
-
             body = f"TEMPLATE: {template_name} - Params: {template_params}"
 
         res = requests.post(

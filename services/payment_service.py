@@ -124,16 +124,30 @@ def create_payment_link(db: Session, payload: PaymentCreate, mock: bool = False)
     db.commit()
     db.refresh(payment)
     
+    # Prepare customer contact details (nested customer preferred)
+    nested_customer = getattr(payload, "customer", None)
+    contact_email = None
+    contact_phone = None
+    contact_name = None
+    if nested_customer:
+        contact_email = getattr(nested_customer, "email", None)
+        contact_phone = getattr(nested_customer, "phone", None)
+        contact_name = getattr(nested_customer, "name", None)
+    # Fallback to flat fields
+    contact_email = contact_email or getattr(payload, "customer_email", None)
+    contact_phone = contact_phone or getattr(payload, "customer_phone", None)
+    contact_name = contact_name or getattr(payload, "customer_name", None)
+
     # Send payment link to customer if contact details are provided
-    if payload.customer_email or payload.customer_phone:
+    if contact_email or contact_phone:
         try:
             notification_result = send_payment_notifications(
                 payment_link=short_url,
                 amount=payload.amount,
                 currency=payload.currency,
-                customer_email=payload.customer_email,
-                customer_phone=payload.customer_phone,
-                customer_name=payload.customer_name,
+                customer_email=contact_email,
+                customer_phone=contact_phone,
+                customer_name=contact_name,
                 transaction_id=f"TXN-{datetime.now().strftime('%Y%m%d')}-{uuid4().hex[:8].upper()}"
             )
             # Store notification result in payment object for reference

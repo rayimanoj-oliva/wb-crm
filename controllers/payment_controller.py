@@ -10,8 +10,9 @@ from models.models import PaymentTransaction, Order
 from schemas.payment_schema import PaymentCreate
 from services.payment_service import create_payment_link, create_shopify_order
 from utils.razorpay_utils import validate_razorpay_signature
+from utils.whatsapp import send_message_to_waid
 
-router = APIRouter(prefix="/payments", tags=["Payments"])
+router = APIRouter(tags=["Payments"])
 
 # Razorpay Webhook Secret - Update this with your actual webhook secret from Razorpay dashboard
 RAZORPAY_WEBHOOK_SECRET = os.getenv("RAZORPAY_WEBHOOK_SECRET", "your_razorpay_webhook_secret")
@@ -48,6 +49,36 @@ async def create_payment(request: Request, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(payment_transaction)
 
+        # Derive customer contact (nested preferred, fallback to flat)
+        nested_customer = getattr(payload, "customer", None)
+        contact_email = getattr(nested_customer, "email", None) if nested_customer else None
+        contact_phone = getattr(nested_customer, "phone", None) if nested_customer else None
+        contact_name = getattr(nested_customer, "name", None) if nested_customer else None
+        contact_wa_id = getattr(nested_customer, "wa_id", None) if nested_customer else None
+        contact_email = contact_email or getattr(payload, "customer_email", None)
+        contact_phone = contact_phone or getattr(payload, "customer_phone", None)
+        contact_name = contact_name or getattr(payload, "customer_name", None)
+        # If no explicit wa_id, use phone as wa_id for WhatsApp
+        if not contact_wa_id and contact_phone:
+            contact_wa_id = contact_phone
+
+        # Optionally send WhatsApp message with payment link if wa_id provided
+        if contact_wa_id and payment.razorpay_short_url:
+            try:
+                await send_message_to_waid(
+                    contact_wa_id,
+                    f"💳 Please complete your payment of ₹{int(payload.amount)} using this link: {payment.razorpay_short_url}",
+                    db,
+                )
+                # Mark notification as sent when WhatsApp succeeds
+                try:
+                    payment.notification_sent = True
+                    db.commit()
+                except Exception:
+                    db.rollback()
+            except Exception as wa_err:
+                print(f"WhatsApp send failed: {wa_err}")
+
         return JSONResponse(
             content={
                 "transaction_id": transaction_id,
@@ -57,9 +88,10 @@ async def create_payment(request: Request, db: Session = Depends(get_db)):
                 "mock_payment": True,
                 "notification_sent": getattr(payment, 'notification_sent', False),
                 "customer_contact": {
-                    "email": payload.customer_email,
-                    "phone": payload.customer_phone,
-                    "name": payload.customer_name
+                    "email": contact_email,
+                    "phone": contact_phone,
+                    "name": contact_name,
+                    "wa_id": contact_wa_id,
                 }
             }
         )
@@ -100,6 +132,34 @@ async def create_live_payment(request: Request, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(payment_transaction)
 
+        # Derive customer contact
+        nested_customer = getattr(payload, "customer", None)
+        contact_email = getattr(nested_customer, "email", None) if nested_customer else None
+        contact_phone = getattr(nested_customer, "phone", None) if nested_customer else None
+        contact_name = getattr(nested_customer, "name", None) if nested_customer else None
+        contact_wa_id = getattr(nested_customer, "wa_id", None) if nested_customer else None
+        contact_email = contact_email or getattr(payload, "customer_email", None)
+        contact_phone = contact_phone or getattr(payload, "customer_phone", None)
+        contact_name = contact_name or getattr(payload, "customer_name", None)
+        if not contact_wa_id and contact_phone:
+            contact_wa_id = contact_phone
+
+        # Optionally send WhatsApp message
+        if contact_wa_id and payment.razorpay_short_url:
+            try:
+                await send_message_to_waid(
+                    contact_wa_id,
+                    f"💳 Please complete your payment of ₹{int(payload.amount)} using this link: {payment.razorpay_short_url}",
+                    db,
+                )
+                try:
+                    payment.notification_sent = True
+                    db.commit()
+                except Exception:
+                    db.rollback()
+            except Exception as wa_err:
+                print(f"WhatsApp send failed: {wa_err}")
+
         return JSONResponse(
             content={
                 "transaction_id": transaction_id,
@@ -109,9 +169,10 @@ async def create_live_payment(request: Request, db: Session = Depends(get_db)):
                 "live_payment": True,
                 "notification_sent": getattr(payment, 'notification_sent', False),
                 "customer_contact": {
-                    "email": payload.customer_email,
-                    "phone": payload.customer_phone,
-                    "name": payload.customer_name
+                    "email": contact_email,
+                    "phone": contact_phone,
+                    "name": contact_name,
+                    "wa_id": contact_wa_id,
                 }
             }
         )
