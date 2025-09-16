@@ -103,14 +103,14 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             })
 
             # Create Razorpay payment link for the order total
-            try:
-                total_amount = sum([p.get("item_price", 0) * p.get("quantity", 1) for p in order["product_items"]])
-                payment_payload = PaymentCreate(order_id=order_obj.id, amount=float(total_amount), currency=order["product_items"][0].get("currency", "INR"))
-                payment = payment_service.create_payment_link(db, payment_payload)
-                if payment.razorpay_short_url:
-                    await send_message_to_waid(wa_id, f"💳 Please complete your payment of ₹{int(total_amount)} using this link: {payment.razorpay_short_url}", db)
-            except Exception as e:
-                print("Payment link creation failed:", e)
+            # try:
+            #     total_amount = sum([p.get("item_price", 0) * p.get("quantity", 1) for p in order["product_items"]])
+            #     payment_payload = PaymentCreate(order_id=order_obj.id, amount=float(total_amount), currency=order["product_items"][0].get("currency", "INR"))
+            #     payment = payment_service.create_payment_link(db, payment_payload)
+            #     if payment.razorpay_short_url:
+            #         await send_message_to_waid(wa_id, f"💳 Please complete your payment of ₹{int(total_amount)} using this link: {payment.razorpay_short_url}", db)
+            # except Exception as e:
+            #     print("Payment link creation failed:", e)
 
             await send_message_to_waid(wa_id, "📌 Please enter your full delivery address in the format below:", db)
             await send_message_to_waid(wa_id,
