@@ -5,6 +5,9 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, APIRouter
 from fastapi.params import Depends
 from fastapi.responses import JSONResponse
 from typing import List
+import re
+import mimetypes
+import mimetypes
 import asyncio
 import os
 import requests
@@ -19,6 +22,10 @@ from services import payment_service
 from schemas.customer_schema import CustomerCreate
 from schemas.message_schema import MessageCreate
 from utils.whatsapp import send_message_to_waid
+from services.whatsapp_service import get_latest_token
+from config.constants import get_messages_url, get_media_url
+from services.whatsapp_service import get_latest_token
+from config.constants import get_messages_url, get_media_url
 from utils.razorpay_utils import create_razorpay_payment_link
 from utils.ws_manager import manager
 
@@ -36,6 +43,38 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.disconnect(websocket)
 
 VERIFY_TOKEN = "Oliva@123"
+
+def _upload_header_image(access_token: str, image_path_or_url: str, phone_id: str) -> str:
+    try:
+        content = None
+        filename = None
+        content_type = None
+
+        # Local file path
+        if os.path.isfile(image_path_or_url):
+            filename = os.path.basename(image_path_or_url)
+            content_type = mimetypes.guess_type(image_path_or_url)[0] or "image/jpeg"
+            with open(image_path_or_url, "rb") as f:
+                content = f.read()
+        else:
+            # Assume URL
+            resp = requests.get(image_path_or_url, timeout=15)
+            if resp.status_code != 200:
+                return None
+            content = resp.content
+            filename = os.path.basename(image_path_or_url.split("?")[0]) or "welcome.jpg"
+            content_type = resp.headers.get("Content-Type") or mimetypes.guess_type(image_path_or_url)[0] or "image/jpeg"
+
+        files = {
+            "file": (filename, content, content_type),
+            "messaging_product": (None, "whatsapp")
+        }
+        up = requests.post(get_media_url(phone_id), headers={"Authorization": f"Bearer {access_token}"}, files=files, timeout=20)
+        if up.status_code == 200:
+            return up.json().get("id")
+    except Exception:
+        return None
+    return None
 
 @router.post("/webhook")
 async def receive_message(request: Request, db: Session = Depends(get_db)):
@@ -59,6 +98,112 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             body_text) > 30
 
         customer = customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=sender_name))
+
+     # 1) If this is the first ever message from this WA ID, send prompt to say Hi/Hello
+        prior_messages = message_service.get_messages_by_wa_id(db, wa_id)
+        if len(prior_messages) == 0:
+            await send_message_to_waid(wa_id, 'Type "Hi" or "Hello"', db)
+
+        # Persist and broadcast the inbound text BEFORE any automation/template
+        if message_type == "text":
+            inbound_text_msg = MessageCreate(
+                message_id=message_id,
+                from_wa_id=from_wa_id,
+                to_wa_id=to_wa_id,
+                type="text",
+                body=body_text,
+                timestamp=timestamp,
+                customer_id=customer.id
+            )
+            message_service.create_message(db, inbound_text_msg)
+            await manager.broadcast({
+                "from": from_wa_id,
+                "to": to_wa_id,
+                "type": "text",
+                "message": body_text,
+                "timestamp": timestamp.isoformat()
+            })
+
+        # 2) If user typed hi/hello (robust match), send welcome template
+        raw = (body_text or "").strip()
+        normalized = re.sub(r"[^a-z]", "", raw.lower())
+        if message_type == "text" and (normalized in {"hi", "hello", "hlo"} or (len(normalized) <= 10 and ("hi" in normalized or "hello" in normalized))):
+            token_entry = get_latest_token(db)
+            if token_entry and token_entry.token:
+                try:
+                    access_token = token_entry.token
+                    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+                    phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+
+                    # Resolve media_id: prefer env; else use last inbound image from this user; fallback to provided ID
+                    media_id = os.getenv("WELCOME_TEMPLATE_MEDIA_ID") or "2185668755244609"
+                    if not media_id:
+                        try:
+                            last_images = [m for m in reversed(prior_messages) if m.type == "image" and m.media_id]
+                            if last_images:
+                                media_id = last_images[0].media_id
+                        except Exception:
+                            media_id = None
+
+                    components = []
+                    if media_id:
+                        components.append({
+                            "type": "header",
+                            "parameters": [{"type": "image", "image": {"id": media_id}}]
+                        })
+                    components.append({
+                        "type": "body",
+                        "parameters": [{"type": "text", "text": sender_name}]
+                    })
+
+                    payload = {
+                        "messaging_product": "whatsapp",
+                        "to": wa_id,
+                        "type": "template",
+                        "template": {
+                            "name": "welcome_msg",
+                            "language": {"code": "en_US"},
+                            **({"components": components} if components else {})
+                        }
+                    }
+
+                    resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
+                    if resp.status_code != 200:
+                        print("Failed to send welcome template:", resp.text)
+                    else:
+                        try:
+                            tpl_msg_id = resp.json()["messages"][0]["id"]
+                            tpl_message = MessageCreate(
+                                message_id=tpl_msg_id,
+                                from_wa_id=to_wa_id,
+                                to_wa_id=wa_id,
+                                type="template",
+                                body=f"Welcome template sent to {sender_name}",
+                                timestamp=datetime.now(),
+                                customer_id=customer.id,
+                                media_id=media_id if media_id else None
+                            )
+                            message_service.create_message(db, tpl_message)
+                            await manager.broadcast({
+                                "from": to_wa_id,
+                                "to": wa_id,
+                                "type": "template",
+                                "message": f"Welcome template sent to {sender_name}",
+                                "timestamp": datetime.now().isoformat(),
+                                **({"media_id": media_id} if media_id else {})
+                            })
+                        except Exception:
+                            pass
+                except Exception as _:
+                    pass
+
+        # Send onboarding prompt on very first message from this WA ID
+        prior_messages = message_service.get_messages_by_wa_id(db, wa_id)
+        if len(prior_messages) == 0:
+            await send_message_to_waid(wa_id, 'Type "Hi" or "Hello"', db)
+        # (prompt already sent above on very first message)
+
+        # (single hi/hello trigger handled above; removed duplicate block)
 
         # Auto-send welcome template if user said "hi"/"hello"/"hlo" and hasn't received one recently
         # if body_text.lower() in ["hi", "hello", "hlo"]:
@@ -377,7 +522,7 @@ Phone Number:
                 except Exception as e:
                     print("Address save error:", e)
                     await send_message_to_waid(wa_id, "❌ Failed to save your address. Please try again.", db)
-        else:
+        elif message_type != "text":
             message_data = MessageCreate(
                 message_id=message_id,
                 from_wa_id=from_wa_id,
@@ -390,8 +535,8 @@ Phone Number:
             message_service.create_message(db, message_data)
             await manager.broadcast({
                 "from": from_wa_id,
-                "to": "917729992376",
-                "type": "text",
+                "to": to_wa_id,
+                "type": message_type,
                 "message": message_data.body,
                 "timestamp": message_data.timestamp.isoformat()
             })
