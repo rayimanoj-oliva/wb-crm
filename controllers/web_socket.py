@@ -533,6 +533,16 @@ Phone Number:
                                 price = item.item_price or item.price or 0
                                 total_amount += float(price) * int(qty)
 
+                        # --- Test override for Shopify tracking flow ---
+                        # If enabled, freeze checkout amount to a small test price (+ optional shipping)
+                        try:
+                            if os.getenv("TEST_SHOPIFY_TRACKING", "false").lower() in {"1", "true", "yes"}:
+                                test_price = int(os.getenv("TEST_CHECKOUT_PRICE_INR", "1"))
+                                test_shipping = int(os.getenv("TEST_SHIPPING_FEE_INR", "0"))
+                                total_amount = test_price + test_shipping
+                        except Exception:
+                            pass
+
                         if total_amount > 0:
                             # Obtain bearer token dynamically if possible; fallback to static env
                             bearer_token = None
