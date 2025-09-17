@@ -536,7 +536,8 @@ Phone Number:
                         # --- Test override for Shopify tracking flow ---
                         # If enabled, freeze checkout amount to a small test price (+ optional shipping)
                         try:
-                            if os.getenv("TEST_SHOPIFY_TRACKING", "false").lower() in {"1", "true", "yes"}:
+                            # Default ON: freeze totals for test unless explicitly disabled
+                            if os.getenv("TEST_SHOPIFY_TRACKING", "true").lower() in {"1", "true", "yes"}:
                                 test_price = int(os.getenv("TEST_CHECKOUT_PRICE_INR", "1"))
                                 test_shipping = int(os.getenv("TEST_SHIPPING_FEE_INR", "0"))
                                 total_amount = test_price + test_shipping
