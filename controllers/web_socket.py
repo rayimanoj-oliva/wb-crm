@@ -106,7 +106,8 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             await send_message_to_waid(wa_id, 'Type "Hi" or "Hello"', db)
 
         # Persist and broadcast the inbound text BEFORE any automation/template
-        if message_type == "text":
+        # Avoid double logging when this text is an address; the address branch below will handle it.
+        if message_type == "text" and not is_address:
             inbound_text_msg = MessageCreate(
                 message_id=message_id,
                 from_wa_id=from_wa_id,
