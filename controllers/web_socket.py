@@ -359,6 +359,102 @@ Phone Number:
             })
 
             return {"status": "success", "message_id": message_id}
+        elif message_type == "interactive":
+            interactive = message.get("interactive", {})
+            i_type = interactive.get("type")
+            title = None
+            reply_id = None
+            try:
+                if i_type == "button_reply":
+                    title = interactive.get("button_reply", {}).get("title")
+                    reply_id = interactive.get("button_reply", {}).get("id")
+                elif i_type == "list_reply":
+                    title = interactive.get("list_reply", {}).get("title")
+                    reply_id = interactive.get("list_reply", {}).get("id")
+            except Exception:
+                title = None
+                reply_id = None
+
+            # Save user's interactive reply
+            reply_text = title or reply_id or "[Interactive Reply]"
+            msg_interactive = MessageCreate(
+                message_id=message_id,
+                from_wa_id=from_wa_id,
+                to_wa_id=to_wa_id,
+                type="interactive",
+                body=reply_text,
+                timestamp=timestamp,
+                customer_id=customer.id,
+            )
+            message_service.create_message(db, msg_interactive)
+            await manager.broadcast({
+                "from": from_wa_id,
+                "to": to_wa_id,
+                "type": "interactive",
+                "message": reply_text,
+                "timestamp": timestamp.isoformat(),
+            })
+
+            # If user chose Buy Products → send catalog (same structure as whatsapp_controller interactive)
+            choice_text = (reply_text or "").lower()
+            if ("buy" in choice_text) or ("product" in choice_text) or (reply_id and reply_id.lower() in {"buy_products", "buy", "products"}):
+                token_entry = get_latest_token(db)
+                if token_entry and token_entry.token:
+                    try:
+                        access_token = token_entry.token
+                        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+                        phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+                        catalog_payload = {
+                            "messaging_product": "whatsapp",
+                            "to": wa_id,
+                            "type": "interactive",
+                            "interactive": {
+                                "type": "product_list",
+                                "header": {"type": "text", "text": "Oliva Skin Solutions"},
+                                "body": {"text": "Here are some products just for you"},
+                                "footer": {"text": "Tap to view each product"},
+                                "action": {
+                                    "catalog_id": "1093353131080785",
+                                    "sections": [
+                                        {
+                                            "title": "Skin Care Combos",
+                                            "product_items": [
+                                                {"product_retailer_id": "39302163202202"},
+                                                {"product_retailer_id": "39531958435994"},
+                                                {"product_retailer_id": "35404294455450"},
+                                                {"product_retailer_id": "35411030081690"},
+                                                {"product_retailer_id": "40286295392410"}
+                                            ]
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                        resp = requests.post(get_messages_url(phone_id), headers=headers, json=catalog_payload)
+                        if resp.status_code == 200:
+                            sent_id = resp.json()["messages"][0]["id"]
+                            out_msg = MessageCreate(
+                                message_id=sent_id,
+                                from_wa_id=to_wa_id,
+                                to_wa_id=wa_id,
+                                type="interactive",
+                                body="Product catalog sent",
+                                timestamp=datetime.now(),
+                                customer_id=customer.id,
+                            )
+                            message_service.create_message(db, out_msg)
+                            await manager.broadcast({
+                                "from": to_wa_id,
+                                "to": wa_id,
+                                "type": "interactive",
+                                "message": "Product catalog sent",
+                                "timestamp": datetime.now().isoformat(),
+                            })
+                        else:
+                            print("Failed to send catalog:", resp.text)
+                    except Exception as _:
+                        pass
+            return {"status": "success", "message_id": message_id}
         elif message_type == "document":
             document = message["document"]
 
