@@ -385,17 +385,11 @@ Phone Number:
                 "timestamp": timestamp.isoformat(),
             })
 
-            # If user tapped Buy Products on welcome template → send catalog link once
+            # If user tapped Buy Products on welcome template → send catalog link
             choice_text = (reply_text or "").lower()
             if ("buy" in choice_text) or ("product" in choice_text) or (btn_id and str(btn_id).lower() in {"buy_products", "buy", "products"}):
                 try:
-                    history = message_service.get_messages_by_wa_id(db, wa_id)
-                    already_sent_catalog = any(
-                        ((m.body or "").find("wa.me/c/917729992376") != -1) and (m.from_wa_id == to_wa_id)
-                        for m in reversed(history[-50:])
-                    )
-                    if not already_sent_catalog:
-                        await send_message_to_waid(wa_id, "🛍️ Browse our catalog: https://wa.me/c/917729992376", db)
+                    await send_message_to_waid(wa_id, "🛍️ Browse our catalog: https://wa.me/c/917729992376", db)
                 except Exception:
                     pass
 
@@ -441,13 +435,7 @@ Phone Number:
             choice_text = (reply_text or "").lower()
             if ("buy" in choice_text) or ("product" in choice_text) or (reply_id and reply_id.lower() in {"buy_products", "buy", "products"}):
                 try:
-                    history = message_service.get_messages_by_wa_id(db, wa_id)
-                    already_sent_catalog = any(
-                        ((m.body or "").find("wa.me/c/917729992376") != -1) and (m.from_wa_id == to_wa_id)
-                        for m in reversed(history[-50:])
-                    )
-                    if not already_sent_catalog:
-                        await send_message_to_waid(wa_id, "🛍️ Browse our catalog: https://wa.me/c/917729992376", db)
+                    await send_message_to_waid(wa_id, "🛍️ Browse our catalog: https://wa.me/c/917729992376", db)
                 except Exception:
                     pass
             return {"status": "success", "message_id": message_id}
