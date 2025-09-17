@@ -360,6 +360,47 @@ Phone Number:
             })
 
             return {"status": "success", "message_id": message_id}
+        elif message_type == "button":
+            # Template button reply (WhatsApp sets type = "button" for template quick replies)
+            btn = message.get("button", {})
+            btn_text = btn.get("text", "")
+            btn_id = btn.get("payload") or btn.get("id") or ""
+
+            reply_text = btn_text or btn_id or "[Button Reply]"
+            msg_button = MessageCreate(
+                message_id=message_id,
+                from_wa_id=from_wa_id,
+                to_wa_id=to_wa_id,
+                type="button",
+                body=reply_text,
+                timestamp=timestamp,
+                customer_id=customer.id,
+            )
+            message_service.create_message(db, msg_button)
+            await manager.broadcast({
+                "from": from_wa_id,
+                "to": to_wa_id,
+                "type": "button",
+                "message": reply_text,
+                "timestamp": timestamp.isoformat(),
+            })
+
+            # If user tapped Buy Products on welcome template → send catalog link once
+            choice_text = (reply_text or "").lower()
+            if ("buy" in choice_text) or ("product" in choice_text) or (btn_id and str(btn_id).lower() in {"buy_products", "buy", "products"}):
+                try:
+                    history = message_service.get_messages_by_wa_id(db, wa_id)
+                    already_sent_catalog = any(
+                        ((m.body or "").find("wa.me/c/917729992376") != -1) and (m.from_wa_id == to_wa_id)
+                        for m in reversed(history[-50:])
+                    )
+                    if not already_sent_catalog:
+                        await send_message_to_waid(wa_id, "🛍️ Browse our catalog: https://wa.me/c/917729992376", db)
+                except Exception:
+                    pass
+
+            return {"status": "success", "message_id": message_id}
+
         elif message_type == "interactive":
             interactive = message.get("interactive", {})
             i_type = interactive.get("type")
