@@ -28,6 +28,7 @@ from services.whatsapp_service import get_latest_token
 from config.constants import get_messages_url, get_media_url
 from utils.razorpay_utils import create_razorpay_payment_link
 from utils.ws_manager import manager
+from utils.shopify_admin import update_variant_price
 
 router = APIRouter()
 
@@ -395,65 +396,19 @@ Phone Number:
                 "timestamp": timestamp.isoformat(),
             })
 
-            # If user chose Buy Products → send catalog (same structure as whatsapp_controller interactive)
+            # If user chose Buy Products → send only the WhatsApp catalog link
             choice_text = (reply_text or "").lower()
             if ("buy" in choice_text) or ("product" in choice_text) or (reply_id and reply_id.lower() in {"buy_products", "buy", "products"}):
-                token_entry = get_latest_token(db)
-                if token_entry and token_entry.token:
-                    try:
-                        access_token = token_entry.token
-                        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-                        phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
-                        catalog_payload = {
-                            "messaging_product": "whatsapp",
-                            "to": wa_id,
-                            "type": "interactive",
-                            "interactive": {
-                                "type": "product_list",
-                                "header": {"type": "text", "text": "Oliva Skin Solutions"},
-                                "body": {"text": "Here are some products just for you"},
-                                "footer": {"text": "Tap to view each product"},
-                                "action": {
-                                    "catalog_id": "1093353131080785",
-                                    "sections": [
-                                        {
-                                            "title": "Skin Care Combos",
-                                            "product_items": [
-                                                {"product_retailer_id": "39302163202202"},
-                                                {"product_retailer_id": "39531958435994"},
-                                                {"product_retailer_id": "35404294455450"},
-                                                {"product_retailer_id": "35411030081690"},
-                                                {"product_retailer_id": "40286295392410"}
-                                            ]
-                                        }
-                                    ]
-                                }
-                            }
-                        }
-                        resp = requests.post(get_messages_url(phone_id), headers=headers, json=catalog_payload)
-                        if resp.status_code == 200:
-                            sent_id = resp.json()["messages"][0]["id"]
-                            out_msg = MessageCreate(
-                                message_id=sent_id,
-                                from_wa_id=to_wa_id,
-                                to_wa_id=wa_id,
-                                type="interactive",
-                                body="Product catalog sent",
-                                timestamp=datetime.now(),
-                                customer_id=customer.id,
-                            )
-                            message_service.create_message(db, out_msg)
-                            await manager.broadcast({
-                                "from": to_wa_id,
-                                "to": wa_id,
-                                "type": "interactive",
-                                "message": "Product catalog sent",
-                                "timestamp": datetime.now().isoformat(),
-                            })
-                        else:
-                            print("Failed to send catalog:", resp.text)
-                    except Exception as _:
-                        pass
+                try:
+                    history = message_service.get_messages_by_wa_id(db, wa_id)
+                    already_sent_catalog = any(
+                        ((m.body or "").find("wa.me/c/917729992376") != -1) and (m.from_wa_id == to_wa_id)
+                        for m in reversed(history[-50:])
+                    )
+                    if not already_sent_catalog:
+                        await send_message_to_waid(wa_id, "🛍️ Browse our catalog: https://wa.me/c/917729992376", db)
+                except Exception:
+                    pass
             return {"status": "success", "message_id": message_id}
         elif message_type == "document":
             document = message["document"]
@@ -534,13 +489,20 @@ Phone Number:
                                 total_amount += float(price) * int(qty)
 
                         # --- Test override for Shopify tracking flow ---
-                        # If enabled, freeze checkout amount to a small test price (+ optional shipping)
+                        # If enabled, also push price change to Shopify before creating payment
                         try:
                             # Default ON: freeze totals for test unless explicitly disabled
                             if os.getenv("TEST_SHOPIFY_TRACKING", "true").lower() in {"1", "true", "yes"}:
                                 test_price = int(os.getenv("TEST_CHECKOUT_PRICE_INR", "1"))
                                 test_shipping = int(os.getenv("TEST_SHIPPING_FEE_INR", "0"))
                                 total_amount = test_price + test_shipping
+
+                                # Optional: update a specific Shopify variant to this test price
+                                variant_id = os.getenv("TEST_SHOPIFY_VARIANT_ID")
+                                if variant_id:
+                                    ok = update_variant_price(variant_id, test_price)
+                                    if not ok:
+                                        print("Warning: Failed to update Shopify variant price for test")
                         except Exception:
                             pass
 
