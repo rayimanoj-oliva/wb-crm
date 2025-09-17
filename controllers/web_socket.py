@@ -29,6 +29,7 @@ from config.constants import get_messages_url, get_media_url
 from utils.razorpay_utils import create_razorpay_payment_link
 from utils.ws_manager import manager
 from utils.shopify_admin import update_variant_price
+from utils.address_validator import analyze_address, format_errors_for_user
 
 router = APIRouter()
 
@@ -480,6 +481,14 @@ Phone Number:
         
         elif is_address:
                 try:
+                    # Validate the address text first
+                    parsed, addr_errors = analyze_address(body_text)
+                    if addr_errors:
+                        # Inform user which fields are invalid and stop further processing
+                        error_text = format_errors_for_user(addr_errors)
+                        await send_message_to_waid(wa_id, error_text, db)
+                        return {"status": "validation_failed", "message_id": message_id}
+
                     customer_service.update_customer_address(db, customer.id, body_text)
                     message_data = MessageCreate(
                         message_id=message_id,
