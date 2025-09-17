@@ -38,7 +38,6 @@ def add_token(token_data: WhatsAppTokenCreate, db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-
 @router.post("/send-message")
 async def send_whatsapp_message(
     wa_id: str = Form(...),
@@ -56,13 +55,13 @@ async def send_whatsapp_message(
     template_header_params: Optional[int] = Form(None),
     template_body_expected: Optional[int] = Form(None),
     template_enforce_count: Optional[bool] = Form(False),
+    template_media_id: Optional[str] = Form(None),
     db: Session = Depends(get_db)
 ):
     try:
         token_obj = whatsapp_service.get_latest_token(db)
         if not token_obj:
             raise HTTPException(status_code=400, detail="Token not available")
-
         token = token_obj.token
         headers = {"Authorization": f"Bearer {token}"}
         from_wa_id = "917729992376"
@@ -72,17 +71,16 @@ async def send_whatsapp_message(
         filename = None
         mime_type = None
 
+        # ---------------- Upload media if file is provided ----------------
         if file:
             mime_type = mimetypes.guess_type(file.filename)[0]
             if not mime_type:
                 raise HTTPException(status_code=400, detail="Invalid file type")
-
             files = {
                 "file": (file.filename, await file.read(), mime_type),
                 "messaging_product": (None, "whatsapp")
             }
-
-            upload_res = requests.post(f"{MEDIA_URL}", headers=headers, files=files)
+            upload_res = requests.post(MEDIA_URL, headers=headers, files=files)
             if upload_res.status_code != 200:
                 raise HTTPException(status_code=500, detail=f"Media upload failed: {upload_res.text}")
             media_id = upload_res.json().get("id")
@@ -94,41 +92,31 @@ async def send_whatsapp_message(
             "type": type
         }
 
+        # ---------------- Text Message ----------------
         if type == "text":
             if not body:
                 raise HTTPException(status_code=400, detail="Text body required")
             payload["text"] = {"body": body, "preview_url": False}
 
+        # ---------------- Image Message ----------------
         elif type == "image":
             if not media_id:
                 raise HTTPException(status_code=400, detail="Image upload failed")
-            caption = body or ""
-            payload["image"] = {"id": media_id, "caption": caption}
+            payload["image"] = {"id": media_id, "caption": body or ""}
 
+        # ---------------- Document Message ----------------
         elif type == "document":
             if not media_id:
                 raise HTTPException(status_code=400, detail="Document upload failed")
-            caption = body or ""
-            filename = file.filename
-            payload["document"] = {
-                "id": media_id,
-                "caption": caption,
-                "filename": filename
-            }
+            payload["document"] = {"id": media_id, "caption": body or "", "filename": file.filename}
 
+        # ---------------- Interactive Message ----------------
         elif type == "interactive":
             payload["interactive"] = {
                 "type": "product_list",
-                "header": {
-                    "type": "text",
-                    "text": "Oliva Skin Solutions"
-                },
-                "body": {
-                    "text": "Here are some products just for you"
-                },
-                "footer": {
-                    "text": "Tap to view each product"
-                },
+                "header": {"type": "text", "text": "Oliva Skin Solutions"},
+                "body": {"text": "Here are some products just for you"},
+                "footer": {"text": "Tap to view each product"},
                 "action": {
                     "catalog_id": "1093353131080785",
                     "sections": [
@@ -147,104 +135,70 @@ async def send_whatsapp_message(
             }
             body = "5 Products"
 
+        # ---------------- Location Message ----------------
         elif type == "location":
             if not latitude or not longitude:
                 raise HTTPException(status_code=400, detail="Latitude and Longitude are required")
-            payload["location"] = {
-                "latitude": latitude,
-                "longitude": longitude
-            }
+            payload["location"] = {"latitude": latitude, "longitude": longitude}
             if location_name:
                 payload["location"]["name"] = location_name
             if location_address:
                 payload["location"]["address"] = location_address
             body = f"{location_name or ''} - {location_address or ''}"
 
-
+        # ---------------- Template Message ----------------
         elif type == "template":
-
             if not template_name:
                 raise HTTPException(status_code=400, detail="Template name is required")
 
             components = []
 
+            # ---------------- Parse template_params ----------------
             if template_params:
-                parsed = None
-                # Try JSON first: expects {"header": [..], "body": [..]}
                 try:
-                    parsed_json = json.loads(template_params)
-                    if isinstance(parsed_json, dict):
-                        header_params = parsed_json.get("header") or []
-                        body_params = parsed_json.get("body") or []
-                        if header_params:
-                            components.append({
-                                "type": "header",
-                                "parameters": [{"type": "text", "text": str(v)} for v in header_params]
-                            })
-                        if body_params:
-                            components.append({
-                                "type": "body",
-                                "parameters": [{"type": "text", "text": str(v)} for v in body_params]
-                            })
-                        parsed = True
+                    reader = csv.reader(io.StringIO(template_params))
+                    row = next(reader, [])
+                    param_list = [p.strip() for p in row]
                 except Exception:
-                    parsed = None
+                    param_list = [p.strip() for p in template_params.split(",") if p]
 
-                # Fallback: CSV string
-                if not parsed:
-                    # Robust CSV parsing (handles commas inside quotes)
-                    try:
-                        reader = csv.reader(io.StringIO(template_params))
-                        row = next(reader, [])
-                        param_list = [p.strip() for p in row]
-                    except Exception:
-                        # Fallback to naive split
-                        param_list = [p.strip() for p in template_params.split(",") if p is not None]
-                    header_count = int(template_header_params) if template_header_params is not None else 0
-                    header_vals = param_list[:header_count] if header_count > 0 else []
-                    body_vals = param_list[header_count:] if header_count >= 0 else param_list
+                header_count = int(template_header_params) if template_header_params else 0
+                header_vals = param_list[:header_count] if header_count > 0 else []
+                body_vals = param_list[header_count:] if header_count >= 0 else param_list
 
-                    # Optionally enforce expected body count (pad/truncate)
-                    if template_enforce_count and template_body_expected is not None:
-                        expected = int(template_body_expected)
-                        if len(body_vals) < expected:
-                            body_vals = body_vals + [""] * (expected - len(body_vals))
-                        elif len(body_vals) > expected:
-                            body_vals = body_vals[:expected]
-                    if header_vals:
-                        components.append({
-                            "type": "header",
-                            "parameters": [{"type": "text", "text": v} for v in header_vals]
-                        })
-                    if body_vals:
-                        components.append({
-                            "type": "body",
-                            "parameters": [{"type": "text", "text": v} for v in body_vals]
-                        })
+                if template_enforce_count and template_body_expected:
+                    expected = int(template_body_expected)
+                    if len(body_vals) < expected:
+                        body_vals += [""] * (expected - len(body_vals))
+                    elif len(body_vals) > expected:
+                        body_vals = body_vals[:expected]
 
-            # Optional auto-fix: only adjust when a header component already exists.
-            # We DO NOT create a header if one wasn't provided to avoid errors when the template header has 0 params.
-            if template_auto_fix:
-                header_comp = next((c for c in components if c.get("type") == "header"), None)
-                body_comp = next((c for c in components if c.get("type") == "body"), None)
-                if header_comp is not None and body_comp is not None:
-                    header_params = header_comp.get("parameters") or []
-                    body_params = body_comp.get("parameters") or []
-                    if len(header_params) == 0 and len(body_params) >= 1:
-                        # Move first body param to header only if header exists but has 0 params
-                        first = body_params.pop(0)
-                        header_comp["parameters"] = [first]
-                        # Update components in place
-                        for i, c in enumerate(components):
-                            if c.get("type") == "header":
-                                components[i] = header_comp
-                            if c.get("type") == "body":
-                                if len(body_params) == 0:
-                                    # Remove empty body component
-                                    components[i] = {"type": "__remove__"}
-                                else:
-                                    c["parameters"] = body_params
-                        components = [c for c in components if c.get("type") != "__remove__"]
+                # Add text header params
+                if header_vals and not (template_media_id or media_id):
+                    components.append({
+                        "type": "header",
+                        "parameters": [{"type": "text", "text": v} for v in header_vals]
+                    })
+                # Add body params
+                if body_vals:
+                    components.append({
+                        "type": "body",
+                        "parameters": [{"type": "text", "text": v} for v in body_vals]
+                    })
+
+            # ---------------- Image Header ----------------
+            effective_media_id = template_media_id or media_id
+            if effective_media_id:
+                # Correct structure: image inside parameters, no "format"
+                components.insert(0, {
+                    "type": "header",
+                    "parameters": [
+                        {
+                            "type": "image",
+                            "image": {"id": effective_media_id}
+                        }
+                    ]
+                })
 
             payload["template"] = {
                 "name": template_name,
@@ -252,9 +206,9 @@ async def send_whatsapp_message(
                 "components": components
             }
 
-            # For your internal use, set body summary of what template was sent
             body = f"TEMPLATE: {template_name} - Params: {template_params}"
 
+        # ---------------- Send Request ----------------
         res = requests.post(
             WHATSAPP_API_URL,
             json=payload,
@@ -266,6 +220,7 @@ async def send_whatsapp_message(
 
         message_id = res.json()["messages"][0]["id"]
 
+        # ---------------- Save in DB ----------------
         customer_data = CustomerCreate(wa_id=wa_id, name="")
         customer = customer_service.get_or_create_customer(db, customer_data)
 
@@ -277,9 +232,9 @@ async def send_whatsapp_message(
             body=body or "",
             timestamp=datetime.now(),
             customer_id=customer.id,
-            media_id=media_id,
-            caption=caption,
-            filename=filename,
+            media_id=effective_media_id,
+            caption=body if type in ["image", "document"] else None,
+            filename=file.filename if file else None,
             latitude=latitude,
             longitude=longitude,
             mime_type=mime_type
@@ -302,6 +257,8 @@ async def send_whatsapp_message(
 
     except Exception as e:
         return {"status": "failed", "error": str(e)}
+
+
 
 
 @router.get("/get-image")
