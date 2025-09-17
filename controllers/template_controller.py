@@ -17,7 +17,7 @@ def fetch_meta_templates(db: Session = Depends(get_db)):
 @router.post("/")
 def create_template(template: TemplateStructure, db: Session = Depends(get_db)):
     try:
-        response = create_template_on_meta(template.root,db)
+        response = send_template_to_facebook(template.root,db)
         # print(template)
         return {"status": "success", "facebook_response": response}
         return template.root
