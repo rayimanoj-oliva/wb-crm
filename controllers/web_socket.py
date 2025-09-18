@@ -121,14 +121,27 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 ])
                 if looks_like_address:
                     if addr_errors:
+                        # First broadcast the user's address attempt
                         await manager.broadcast({
-                        "from": from_wa_id,
-                        "to": to_wa_id,
-                        "type": "text",
-                        "message": body_text,
-                        "timestamp": timestamp.isoformat()
-            })
-                        await send_message_to_waid(wa_id, format_errors_for_user(addr_errors), db)
+                            "from": from_wa_id,
+                            "to": to_wa_id,
+                            "type": "text",
+                            "message": body_text,
+                            "timestamp": timestamp.isoformat()
+                        })
+                        
+                        # Send validation error to user
+                        error_text = format_errors_for_user(addr_errors)
+                        await send_message_to_waid(wa_id, error_text, db)
+                        
+                        # Then broadcast the error message to frontend
+                        await manager.broadcast({
+                            "from": to_wa_id,
+                            "to": from_wa_id,
+                            "type": "text",
+                            "message": error_text,
+                            "timestamp": datetime.now().isoformat()
+                        })
                         return {"status": "validation_failed", "message_id": message_id}
                     else:
                         # Save address
@@ -184,8 +197,8 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                         ok = update_variant_price(variant_id, test_price)
                                         if not ok:
                                             print("Warning: Failed to update Shopify variant price for test")
-                            except Exception:
-                                pass
+            except Exception:
+                pass
 
                             if total_amount > 0:
                                 # Try proxy payment link first
