@@ -379,11 +379,13 @@ Phone Number:
                 customer_id=customer.id,
             )
             message_service.create_message(db, msg_button)
+            
+            # Broadcast button click as a text message for frontend display
             await manager.broadcast({
                 "from": from_wa_id,
                 "to": to_wa_id,
-                "type": "button",
-                "message": reply_text,
+                "type": "text",
+                "message": f"🔘 {reply_text}",
                 "timestamp": timestamp.isoformat(),
             })
 
