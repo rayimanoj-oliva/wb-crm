@@ -209,8 +209,8 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                         ok = update_variant_price(variant_id, test_price)
                                         if not ok:
                                             print("Warning: Failed to update Shopify variant price for test")
-            except Exception:
-                pass
+                            except Exception:
+                            pass
 
                             if total_amount > 0:
                                 # Try proxy payment link first
