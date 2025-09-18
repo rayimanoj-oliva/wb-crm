@@ -1,8 +1,9 @@
 import re
 import json
-from openai import OpenAI
 import os
+from openai import OpenAI
 
+# Init OpenAI client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 VALID_STATES = {
@@ -15,104 +16,99 @@ VALID_STATES = {
     "Ladakh"
 }
 
+MANDATORY_FIELDS = {"Pincode", "City", "State", "Locality", "HouseStreet"}
+
+
 def normalize_phone(phone: str) -> str:
-    """Normalize phone to a 10-digit number if possible."""
-    phone = re.sub(r"\D", "", str(phone))  # remove spaces, +, -
+    phone = re.sub(r"\D", "", str(phone))
     if phone.startswith("91") and len(phone) == 12:
         phone = phone[2:]
-    if len(phone) == 10:
-        return phone
-    return ""  # invalid
+    return phone if len(phone) == 10 else ""
 
-MANDATORY_FIELDS = {"Pincode", "Phone"}  # You can add FullName, City etc.
 
 def validate_address_fields(data: dict):
     errors = []
+    suggestions = {}
 
-    # Check mandatory fields are present and not empty
+    # Mandatory fields
     for field in MANDATORY_FIELDS:
         if not data.get(field):
             errors.append(f"{field} is mandatory and missing")
 
-    # Full Name: only letters and spaces
+    # Full Name
     if not re.fullmatch(r"[A-Za-z ]{2,50}", data.get("FullName", "")):
         errors.append("Invalid Full Name")
 
-    # House No. + Street: should have digits + optional hyphen/slash
+    # HouseStreet
     if not re.search(r"\d", data.get("HouseStreet", "")):
-        errors.append("Invalid House No. + Street (should contain a number)")
+        errors.append("Invalid HouseStreet (should contain a number)")
 
-    # Locality: at least 3 chars, letters allowed
+    # Locality
     if len(data.get("Locality", "")) < 3:
         errors.append("Invalid Locality")
 
-    # City: should be text only
+    # City
     if not re.fullmatch(r"[A-Za-z ]{2,50}", data.get("City", "")):
         errors.append("Invalid City")
 
-    # State: must be in predefined list
-    if data.get("State") not in VALID_STATES:
+    # State
+    state = data.get("State", "")
+    if state not in VALID_STATES:
         errors.append("Invalid State")
 
-    # Pincode: 6-digit starting 1-9
-    if not re.fullmatch(r"[1-9][0-9]{5}", str(data.get("Pincode", ""))):
+    # Pincode
+    pincode = str(data.get("Pincode", "")).strip()
+    if not re.fullmatch(r"[1-9][0-9]{5}", pincode):
         errors.append("Invalid Pincode")
 
-    # Phone Number (after normalization)
+    # Phone
     phone = normalize_phone(data.get("Phone", ""))
     if not phone:
         errors.append("Invalid Phone Number")
 
-    return errors
+    # ✅ OpenAI-based validation for State + City
+    if re.fullmatch(r"[1-9][0-9]{5}", pincode) and state and data.get("City"):
+        validation_prompt = f"""
+Check if Indian Pincode {pincode} belongs to:
+State: "{state}"
+City: "{data.get("City")}"
+
+Respond only in JSON with keys:
+{{
+  "state_valid": true/false,
+  "expected_state": "<best guess state>",
+  "city_valid": true/false,
+  "expected_city": "<best guess city>"
+}}
+"""
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": validation_prompt}],
+            response_format={"type": "json_object"},
+        )
+        check = json.loads(response.choices[0].message.content)
+
+        # State validation
+        if not check.get("state_valid", False):
+            expected_state = check.get("expected_state", "")
+            errors.append(f"Pincode-State mismatch (expected: {expected_state})")
+            if expected_state:
+                suggestions["State"] = expected_state
+
+        # City validation
+        if not check.get("city_valid", False):
+            expected_city = check.get("expected_city", "")
+            errors.append(f"Pincode-City mismatch (expected: {expected_city})")
+            if expected_city:
+                suggestions["City"] = expected_city
+
+    return errors, suggestions
 
 
 def extract_and_validate(input_text: str):
-    # Step 1: Use LLM to parse fields with strict schema (camelcase keys)
     prompt = f"""
-You are an Indian Address Extractor.  
-Extract the following fields from text and return in *exact JSON key names*:
-- FullName
-- HouseStreet
-- Locality
-- City
-- State
-- Pincode
-- Phone
-- Landmark (optional)
-
-Do NOT validate — just extract.
-Text:
-{input_text}
-    """
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        response_format={"type": "json_object"}
-    )
-
-    data = json.loads(response.choices[0].message.content)
-
-    # Step 2: Validate fields
-    errors = validate_address_fields(data)
-
-    # Step 3: True/False decision
-    total_fields = 7
-    valid_fields = total_fields - len(errors)
-    return valid_fields / total_fields >= 0.5
-
-
-def analyze_address(input_text: str):
-    """Parse address text into fields and return (data, errors).
-
-    Returns:
-        tuple(dict, list[str]): Parsed fields dict and list of validation errors.
-    """
-    data = {}
-    errors = ["Validation service unavailable"]
-    try:
-        prompt = f"""
 You are an Indian Address Extractor.
-Extract the following fields from text and return in exact JSON key names:
+Extract fields in JSON with exact keys:
 - FullName
 - HouseStreet
 - Locality
@@ -121,22 +117,21 @@ Extract the following fields from text and return in exact JSON key names:
 - Pincode
 - Phone
 - Landmark
-
-Do NOT validate — just extract.
 Text:
 {input_text}
-        """
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"}
-        )
-        data = json.loads(response.choices[0].message.content)
-        errors = validate_address_fields(data)
-    except Exception:
-        # Keep defaults; caller can decide fallback UX
-        pass
-    return data, errors
+"""
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"},
+    )
+    data = json.loads(response.choices[0].message.content)
+    errors, suggestions = validate_address_fields(data)
+    return data, errors, suggestions
+
+
+def analyze_address(input_text: str):
+    return extract_and_validate(input_text)
 
 
 def format_errors_for_user(errors: list[str]) -> str:
@@ -144,24 +139,27 @@ def format_errors_for_user(errors: list[str]) -> str:
         return ""
     bullet_list = "\n".join([f"- {e}" for e in errors])
     return (
-        "I couldn't verify your address. Please correct these fields and resend:\n"
+        "I couldn't verify your address. Please correct these:\n"
         f"{bullet_list}\n\n"
         "Format reminder:\n"
-        "Full Name:\nHouse No. + Street:\nArea / Locality:\nCity:\nState:\nPincode:\nPhone Number:\nLandmark (Optional):"
+        "Full Name:\nHouseStreet:\nLocality:\nCity:\nState:\nPincode (6 digits):\nPhone (10 digits):\nLandmark (Optional):"
     )
 
-if __name__ == '__main__':
-    # Example input
-    input_text = """
-    Full Name:  Bogadi Bhargavi
-    Area / Locality: 1-11
-    House No. + Street:
-    City:  Hyderabad
-    State:  Telangana
-    Pincode:  500000
-    Landmark (Optional):
-    Phone Number: +91 6304742913
-    """
 
-    result = extract_and_validate(input_text)
-    print(result)  # → True or False
+if __name__ == '__main__':
+    input_text = """
+    Full Name: Bogadi Bhargavi
+    House No. + Street: 1-11
+    Area / Locality: Kukatpally
+    City: Hyderabad
+    State: Telangana
+    Pincode: 500072
+    Phone Number: +91 6304742913
+    Landmark: Near Forum Mall
+    """
+    data, errors, suggestions = extract_and_validate(input_text)
+    print("Extracted:", json.dumps(data, indent=2))
+    print("Errors:", errors)
+    print("Suggestions:", suggestions)
+    if errors:
+        print(format_errors_for_user(errors))

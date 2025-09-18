@@ -106,7 +106,20 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         if len(prior_messages) == 0:
             await send_message_to_waid(wa_id, 'Type "Hi" or "Hello"', db)
 
-        # Persist and broadcast the inbound text BEFORE any automation/template
+        # If user text seems like an address attempt but invalid, guide them with the exact format
+        if message_type == "text":
+            try:
+                parsed, addr_errors = analyze_address(body_text)
+                # Consider it an address attempt if at least one key field is present after extraction
+                looks_like_address = any([
+                    parsed.get("Pincode"), parsed.get("City"), parsed.get("State"), parsed.get("HouseStreet"), parsed.get("Locality")
+                ])
+                if looks_like_address and addr_errors:
+                    await send_message_to_waid(wa_id, format_errors_for_user(addr_errors), db)
+            except Exception:
+                pass
+
+        # Persist and broadcast the inbound text BEFORE any automation/template, unless handled by address branch
         # Avoid double logging when this text is an address; the address branch below will handle it.
         if message_type == "text" and not is_address:
             inbound_text_msg = MessageCreate(
