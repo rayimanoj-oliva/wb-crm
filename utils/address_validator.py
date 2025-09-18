@@ -3,8 +3,9 @@ import json
 import os
 from openai import OpenAI
 
-# Init OpenAI client
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Init OpenAI client lazily and optionally
+_OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=_OPENAI_API_KEY) if _OPENAI_API_KEY else None
 
 VALID_STATES = {
     "Andhra Pradesh", "Telangana", "Karnataka", "Tamil Nadu", "Kerala",
@@ -67,7 +68,7 @@ def validate_address_fields(data: dict):
         errors.append("Invalid Phone Number")
 
     # ✅ OpenAI-based validation for State + City
-    if re.fullmatch(r"[1-9][0-9]{5}", pincode) and state and data.get("City"):
+    if client and re.fullmatch(r"[1-9][0-9]{5}", pincode) and state and data.get("City"):
         validation_prompt = f"""
 Check if Indian Pincode {pincode} belongs to:
 State: "{state}"
@@ -81,12 +82,15 @@ Respond only in JSON with keys:
   "expected_city": "<best guess city>"
 }}
 """
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": validation_prompt}],
-            response_format={"type": "json_object"},
-        )
-        check = json.loads(response.choices[0].message.content)
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": validation_prompt}],
+                response_format={"type": "json_object"},
+            )
+            check = json.loads(response.choices[0].message.content)
+        except Exception:
+            check = {}
 
         # State validation
         if not check.get("state_valid", False):
@@ -120,12 +124,35 @@ Extract fields in JSON with exact keys:
 Text:
 {input_text}
 """
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        response_format={"type": "json_object"},
-    )
-    data = json.loads(response.choices[0].message.content)
+    data = {}
+    if client:
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+            )
+            data = json.loads(response.choices[0].message.content)
+        except Exception:
+            data = {}
+
+    # Fallback extraction with regex if OpenAI unavailable or failed
+    if not data:
+        # Basic regex-based extraction
+        def grab(label):
+            m = re.search(rf"{label}\s*:\s*(.*)", input_text, flags=re.IGNORECASE)
+            return (m.group(1).strip() if m else "")
+
+        data = {
+            "FullName": grab("Full Name|FullName"),
+            "HouseStreet": grab(r"HouseStreet|House No\.|House No|House|Street|Address"),
+            "Locality": grab("Locality"),
+            "City": grab("City"),
+            "State": grab("State"),
+            "Pincode": re.search(r"\b[1-9][0-9]{5}\b", input_text).group(0) if re.search(r"\b[1-9][0-9]{5}\b", input_text) else "",
+            "Phone": normalize_phone(grab("Phone|Phone Number|Mobile|Contact")),
+            "Landmark": grab("Landmark"),
+        }
     errors, suggestions = validate_address_fields(data)
     return data, errors, suggestions
 
