@@ -321,85 +321,84 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 "timestamp": timestamp.isoformat()
             })
 
-        # 4️⃣ Hi/Hello auto-template
+        # 4️⃣ Hi/Hello auto-template (only for first hi/hello message)
         raw = (body_text or "").strip()
         normalized = re.sub(r"[^a-z]", "", raw.lower())
         if message_type == "text" and (normalized in {"hi", "hello", "hlo"} or ("hi" in normalized or "hello" in normalized)):
-            # call your existing welcome template sending logic here
-            token_entry = get_latest_token(db)
-            if token_entry and token_entry.token:
-                try:
-                    access_token = token_entry.token
-                    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-                    phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+            # Check if user already received a welcome template
+            has_welcome_template = any(msg.type == "template" and "welcome" in msg.body.lower() for msg in prior_messages)
+            if not has_welcome_template:
+                # call your existing welcome template sending logic here
+                token_entry = get_latest_token(db)
+                if token_entry and token_entry.token:
+                    try:
+                        access_token = token_entry.token
+                        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+                        phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
 
-                    # Resolve media_id: prefer env; else use last inbound image from this user; fallback to provided ID
-                    media_id = os.getenv("WELCOME_TEMPLATE_MEDIA_ID") or "2185668755244609"
-                    if not media_id:
-                        try:
-                            last_images = [m for m in reversed(prior_messages) if m.type == "image" and m.media_id]
-                            if last_images:
-                                media_id = last_images[0].media_id
-                        except Exception:
-                            media_id = None
+                        # Resolve media_id: prefer env; else use last inbound image from this user; fallback to provided ID
+                        media_id = os.getenv("WELCOME_TEMPLATE_MEDIA_ID") or "2185668755244609"
+                        if not media_id:
+                            try:
+                                last_images = [m for m in reversed(prior_messages) if m.type == "image" and m.media_id]
+                                if last_images:
+                                    media_id = last_images[0].media_id
+                            except Exception:
+                                media_id = None
 
-                    components = []
-                    if media_id:
-                        components.append({
-                            "type": "header",
-                            "parameters": [{"type": "image", "image": {"id": media_id}}]
-                        })
-                    components.append({
-                        "type": "body",
-                        "parameters": [{"type": "text", "text": sender_name}]
-                    })
-
-                    payload = {
-                        "messaging_product": "whatsapp",
-                        "to": wa_id,
-                        "type": "template",
-                        "template": {
-                            "name": "welcome_msg",
-                            "language": {"code": "en_US"},
-                            **({"components": components} if components else {})
-                        }
-                    }
-
-                    resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
-                    if resp.status_code != 200:
-                        print("Failed to send welcome template:", resp.text)
-                    else:
-                        try:
-                            tpl_msg_id = resp.json()["messages"][0]["id"]
-                            tpl_message = MessageCreate(
-                                message_id=tpl_msg_id,
-                                from_wa_id=to_wa_id,
-                                to_wa_id=wa_id,
-                                type="template",
-                                body=f"Welcome template sent to {sender_name}",
-                                timestamp=datetime.now(),
-                                customer_id=customer.id,
-                                media_id=media_id if media_id else None
-                            )
-                            message_service.create_message(db, tpl_message)
-                            await manager.broadcast({
-                                "from": to_wa_id,
-                                "to": wa_id,
-                                "type": "template",
-                                "message": f"Welcome template sent to {sender_name}",
-                                "timestamp": datetime.now().isoformat(),
-                                **({"media_id": media_id} if media_id else {})
+                        components = []
+                        if media_id:
+                            components.append({
+                                "type": "header",
+                                "parameters": [{"type": "image", "image": {"id": media_id}}]
                             })
-                        except Exception:
-                            pass
-                except Exception as _:
-                    pass
+                        components.append({
+                            "type": "body",
+                            "parameters": [{"type": "text", "text": sender_name}]
+                        })
 
-        # Send onboarding prompt on very first message from this WA ID
-        prior_messages = message_service.get_messages_by_wa_id(db, wa_id)
-        if len(prior_messages) == 0:
-            await send_message_to_waid(wa_id, 'Type "Hi" or "Hello"', db)
-        # (prompt already sent above on very first message)
+                        payload = {
+                            "messaging_product": "whatsapp",
+                            "to": wa_id,
+                            "type": "template",
+                            "template": {
+                                "name": "welcome_msg",
+                                "language": {"code": "en_US"},
+                                **({"components": components} if components else {})
+                            }
+                        }
+
+                        resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
+                        if resp.status_code != 200:
+                            print("Failed to send welcome template:", resp.text)
+                        else:
+                            try:
+                                tpl_msg_id = resp.json()["messages"][0]["id"]
+                                tpl_message = MessageCreate(
+                                    message_id=tpl_msg_id,
+                                    from_wa_id=to_wa_id,
+                                    to_wa_id=wa_id,
+                                    type="template",
+                                    body=f"Welcome template sent to {sender_name}",
+                                    timestamp=datetime.now(),
+                                    customer_id=customer.id,
+                                    media_id=media_id if media_id else None
+                                )
+                                message_service.create_message(db, tpl_message)
+                                await manager.broadcast({
+                                    "from": to_wa_id,
+                                    "to": wa_id,
+                                    "type": "template",
+                                    "message": f"Welcome template sent to {sender_name}",
+                                    "timestamp": datetime.now().isoformat(),
+                                    **({"media_id": media_id} if media_id else {})
+                                })
+                            except Exception:
+                                pass
+                    except Exception as _:
+                        pass
+
+        # Note: Onboarding prompt already sent above for first message
 
         # (single hi/hello trigger handled above; removed duplicate block)
 
@@ -625,8 +624,8 @@ Phone Number:
             await manager.broadcast({
                 "from": from_wa_id,
                 "to": to_wa_id,
-                "type": "interactive",
-                "message": reply_text,
+                "type": "button",
+                "message": f"🔘 {reply_text}",
                 "timestamp": timestamp.isoformat(),
             })
 
