@@ -121,7 +121,19 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 ])
                 if looks_like_address:
                     if addr_errors:
-                        # First broadcast the user's address attempt
+                        # Save user's address attempt to database
+                        user_address_msg = MessageCreate(
+                            message_id=message_id,
+                            from_wa_id=from_wa_id,
+                            to_wa_id=to_wa_id,
+                            type="text",
+                            body=body_text,
+                            timestamp=timestamp,
+                            customer_id=customer.id,
+                        )
+                        message_service.create_message(db, user_address_msg)
+                        
+                        # Broadcast the user's address attempt
                         await manager.broadcast({
                             "from": from_wa_id,
                             "to": to_wa_id,
@@ -130,11 +142,11 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                             "timestamp": timestamp.isoformat()
                         })
                         
-                        # Send validation error to user
+                        # Send validation error to user (this also saves to DB)
                         error_text = format_errors_for_user(addr_errors)
                         await send_message_to_waid(wa_id, error_text, db)
                         
-                        # Then broadcast the error message to frontend
+                        # Broadcast the error message to frontend (already saved by send_message_to_waid)
                         await manager.broadcast({
                             "from": to_wa_id,
                             "to": from_wa_id,
@@ -197,8 +209,8 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                         ok = update_variant_price(variant_id, test_price)
                                         if not ok:
                                             print("Warning: Failed to update Shopify variant price for test")
-                            except Exception:
-                                pass
+            except Exception:
+                pass
 
                             if total_amount > 0:
                                 # Try proxy payment link first
@@ -563,11 +575,11 @@ Phone Number:
             )
             message_service.create_message(db, msg_button)
             
-            # Broadcast button click as a text message for frontend display
+            # Broadcast button click for frontend display
             await manager.broadcast({
                 "from": from_wa_id,
                 "to": to_wa_id,
-                "type": "text",
+                "type": "button",
                 "message": f"🔘 {reply_text}",
                 "timestamp": timestamp.isoformat(),
             })
