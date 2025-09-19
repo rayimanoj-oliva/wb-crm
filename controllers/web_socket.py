@@ -34,6 +34,10 @@ from utils.address_validator import analyze_address, format_errors_for_user
 router = APIRouter()
 
 
+# In-memory store: { wa_id: True/False }
+awaiting_address_users = {}
+
+
 # WebSocket endpoint
 @router.websocket("/channel")
 async def websocket_endpoint(websocket: WebSocket):
@@ -105,7 +109,186 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         # if len(prior_messages) == 0:
         #     await send_message_to_waid(wa_id, 'Type "Hi" or "Hello"', db)
 
-        # 2️⃣ Check if this looks like an address attempt
+        # 2️⃣ Force validation if user is awaiting address
+        if awaiting_address_users.get(wa_id, False):
+            if message_type != "text":
+                await send_message_to_waid(wa_id, "❌ Please provide your address in text format.", db)
+                return {"status": "awaiting_address", "message_id": message_id}
+
+            try:
+                parsed, addr_errors, _ = analyze_address(body_text)
+                looks_like_address = any([
+                    parsed.get("Pincode"), parsed.get("City"), parsed.get("State"),
+                    parsed.get("HouseStreet"), parsed.get("Locality")
+                ])
+
+                if not looks_like_address or addr_errors:
+                    # Broadcast the user's invalid attempt first
+                    await manager.broadcast({
+                        "from": from_wa_id,
+                        "to": to_wa_id,
+                        "type": "text",
+                        "message": body_text,
+                        "timestamp": timestamp.isoformat()
+                    })
+
+                    error_text = format_errors_for_user(addr_errors or ["Address format is incorrect."])
+                    await send_message_to_waid(wa_id, error_text, db)
+                    # Then broadcast the error back to the frontend
+                    await manager.broadcast({
+                        "from": to_wa_id,
+                        "to": from_wa_id,
+                        "type": "text",
+                        "message": error_text,
+                        "timestamp": datetime.now().isoformat()
+                    })
+                    return {"status": "awaiting_address", "message_id": message_id}
+
+                # Address is valid → save it
+                customer_service.update_customer_address(db, customer.id, body_text)
+                awaiting_address_users[wa_id] = False
+
+                # Save message and broadcast
+                message_data = MessageCreate(
+                    message_id=message_id,
+                    from_wa_id=from_wa_id,
+                    to_wa_id=to_wa_id,
+                    type="text",
+                    body=body_text,
+                    timestamp=datetime.now(),
+                    customer_id=customer.id,
+                )
+                new_msg = message_service.create_message(db, message_data)
+
+                await manager.broadcast({
+                    "from": from_wa_id,
+                    "to": to_wa_id,
+                    "type": "text",
+                    "message": new_msg.body,
+                    "timestamp": new_msg.timestamp.isoformat(),
+                })
+
+                await send_message_to_waid(wa_id, "✅ Your address has been saved successfully!", db)
+
+                # Continue with next steps (payment, etc.) using existing logic
+                try:
+                    latest_order = (
+                        db.query(order_service.Order)
+                        .filter(order_service.Order.customer_id == customer.id)
+                        .order_by(order_service.Order.timestamp.desc())
+                        .first()
+                    )
+                    total_amount = 0
+                    if latest_order:
+                        for item in latest_order.items:
+                            qty = item.quantity or 1
+                            price = item.item_price or item.price or 0
+                            total_amount += float(price) * int(qty)
+
+                    # --- Test override for Shopify tracking flow ---
+                    try:
+                        if os.getenv("TEST_SHOPIFY_TRACKING", "true").lower() in {"1", "true", "yes"}:
+                            test_price = int(os.getenv("TEST_CHECKOUT_PRICE_INR", "1"))
+                            test_shipping = int(os.getenv("TEST_SHIPPING_FEE_INR", "0"))
+                            total_amount = test_price + test_shipping
+
+                            variant_id = os.getenv("TEST_SHOPIFY_VARIANT_ID")
+                            if variant_id:
+                                ok = update_variant_price(variant_id, test_price)
+                                if not ok:
+                                    print("Warning: Failed to update Shopify variant price for test")
+                    except Exception:
+                        pass
+
+                    if total_amount > 0:
+                        # Try proxy payment link first
+                        pay_link = None
+                        try:
+                            bearer_token = None
+                            token_url = os.getenv("RAZORPAY_TOKEN_URL", "https://payments.olivaclinic.com/api/token")
+                            username = os.getenv("RAZORPAY_USERNAME") or os.getenv("RAZORPAY_PROXY_USERNAME")
+                            password = os.getenv("RAZORPAY_PASSWORD") or os.getenv("RAZORPAY_PROXY_PASSWORD")
+                            if username and password:
+                                token_headers = {
+                                    "Accept": "application/json",
+                                    "Content-Type": "application/x-www-form-urlencoded",
+                                }
+                                token_data = {
+                                    "username": username,
+                                    "password": password,
+                                }
+                                token_resp = requests.post(token_url, data=token_data, headers=token_headers, timeout=15)
+                                if token_resp.status_code == 200:
+                                    bearer_token = token_resp.json().get("access_token")
+                        except Exception:
+                            bearer_token = None
+
+                        bearer_token = bearer_token or os.getenv("RAZORPAY_PROXY_BEARER_TOKEN")
+                        payment_api_url = os.getenv("RAZORPAY_PROXY_PAYMENT_URL", "https://payments.olivaclinic.com/api/payment")
+                        center_name = os.getenv("OLIVA_CENTER_NAME", "Corporate Training Center")
+                        center_id = os.getenv("OLIVA_CENTER_ID", "90e79e59-6202-4feb-a64f-b647801469e4")
+
+                        if bearer_token:
+                            payload = {
+                                "customer_name": customer.name or "Customer",
+                                "phone_number": customer.wa_id,
+                                "email": customer.email or "",
+                                "amount": int(round(total_amount)),
+                                "center": center_name,
+                                "center_id": center_id,
+                                "personal_info_first_name": (customer.name or "").split(" ")[0] if (customer.name) else "",
+                                "personal_info_last_name": "",
+                                "personal_info_mobile_country_code": 91,
+                                "personal_info_mobile_number": customer.wa_id,
+                                "address_info_country_id": 95,
+                                "address_info_state_id": -2,
+                                "preferences_receive_transactional_email": True,
+                                "preferences_receive_transactional_sms": True,
+                                "preferences_receive_marketing_email": True,
+                                "preferences_receive_marketing_sms": True,
+                                "preferences_recieve_lp_stmt": True,
+                            }
+
+                            headers = {
+                                "Authorization": f"Bearer {bearer_token}",
+                                "Content-Type": "application/json",
+                                "Accept": "application/json, text/plain, */*",
+                            }
+                            resp = requests.post(payment_api_url, json=payload, headers=headers, timeout=20)
+                            if resp.status_code == 200:
+                                resp_json = resp.json()
+                                pay_link = resp_json.get("payment_link")
+                            else:
+                                print("Payment link creation via proxy failed:", resp.text)
+
+                        # Fallback to direct Razorpay link if proxy not available or failed
+                        if not pay_link:
+                            try:
+                                direct_resp = create_razorpay_payment_link(
+                                    amount=float(total_amount),
+                                    currency="INR",
+                                    description=f"WA Order {str(latest_order.id) if latest_order else ''}"
+                                )
+                                pay_link = direct_resp.get("short_url") if isinstance(direct_resp, dict) else None
+                            except Exception:
+                                pay_link = None
+
+                        if pay_link:
+                            await send_message_to_waid(wa_id, f"💳 Please complete your payment using this link: {pay_link}", db)
+                        else:
+                            print("Auto payment link send skipped: no link generated")
+                    else:
+                        print("No latest order or zero amount; skipping auto payment link send")
+                except Exception as pay_err:
+                    print("Auto payment link send error:", pay_err)
+
+                return {"status": "success", "message_id": message_id}
+            except Exception as e:
+                print("Address processing error:", e)
+                await send_message_to_waid(wa_id, "❌ Failed to process your address. Please try again.", db)
+                return {"status": "failed", "message_id": message_id}
+
+        # 3️⃣ Check if this looks like an address attempt
         is_address_candidate = message_type == "text" and len(body_text) > 30 and any(
             kw in body_text for kw in [
                 "Full Name:", "House No.", "HouseStreet:", "Locality:", "City:", "State:", "Pincode:", "Phone:", "Phone Number:"
@@ -462,6 +645,8 @@ Landmark (Optional):
 
 Phone Number:
                 """, db)
+            # Mark user as awaiting address
+            awaiting_address_users[wa_id] = True
         elif message_type == "location":
             location = message["location"]
             location_name = location.get("name", "")
