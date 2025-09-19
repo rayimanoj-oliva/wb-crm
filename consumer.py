@@ -12,14 +12,19 @@ def callback(ch, method, properties, body):
     """
     RabbitMQ worker callback to process each task.
     Supports both generic and template messages.
+    Handles both CRM customers and Excel-uploaded recipients.
     """
     db: Session = next(get_db())
     task = json.loads(body)
-    customer = task['customer']
     job_id = task['job_id']
     campaign_id = task['campaign_id']
 
     start_time = time.time()  # Start timing
+
+    # Determine if this is a customer or recipient task
+    is_recipient_task = 'recipient' in task
+    target_info = task['recipient'] if is_recipient_task else task['customer']
+    target_wa_id = target_info.get('phone_number') if is_recipient_task else target_info['wa_id']
 
     try:
         # Get latest WhatsApp token
@@ -31,11 +36,15 @@ def callback(ch, method, properties, body):
 
         # 🔹 Build payload depending on type
         if task['type'] == "template":
-            payload = whatsapp_service.build_template_payload(customer, task['content'])
+            if is_recipient_task:
+                # For Excel recipients, build template payload with their params
+                payload = whatsapp_service.build_template_payload_for_recipient(target_info, task['content'])
+            else:
+                payload = whatsapp_service.build_template_payload(target_info, task['content'])
         else:
             payload = {
                 "messaging_product": "whatsapp",
-                "to": customer['wa_id'],
+                "to": target_wa_id,
                 "recipient_type": "individual",
                 "type": task['type'],
                 task['type']: task['content']
@@ -46,19 +55,20 @@ def callback(ch, method, properties, body):
         status = "success" if res.status_code == 200 else "failure"
 
         if status == "failure":
-            print(f"Failed to send message to {customer['wa_id']}. Response: {res.text}")
+            print(f"Failed to send message to {target_wa_id}. Response: {res.text}")
 
     except Exception as e:
-        print(f"Error sending to {customer['wa_id']}: {e}")
+        print(f"Error sending to {target_wa_id}: {e}")
         status = "failure"
 
     end_time = time.time()
     duration = round(end_time - start_time, 2)
 
-    # Update JobStatus
-    job_status = db.query(JobStatus).filter_by(job_id=job_id, customer_id=customer['id']).first()
-    if job_status:
-        job_status.status = status
+    # Update JobStatus - only for customer tasks (recipients don't have JobStatus entries)
+    if not is_recipient_task:
+        job_status = db.query(JobStatus).filter_by(job_id=job_id, customer_id=target_info['id']).first()
+        if job_status:
+            job_status.status = status
 
     # Update Job and Campaign
     job = db.query(Job).filter_by(id=job_id).first()
@@ -68,8 +78,16 @@ def callback(ch, method, properties, body):
         if campaign:
             campaign.last_job_id = job_id
 
+    # Update recipient status if it's a recipient task
+    if is_recipient_task:
+        from models.models import CampaignRecipient
+        recipient = db.query(CampaignRecipient).filter_by(id=target_info['id']).first()
+        if recipient:
+            recipient.status = "SENT" if status == "success" else "FAILED"
+
     db.commit()
-    print(f"[{status.upper()}] {customer['wa_id']} - {duration}s")
+    task_type = "recipient" if is_recipient_task else "customer"
+    print(f"[{status.upper()}] {task_type}:{target_wa_id} - {duration}s")
 
     # Acknowledge message in RabbitMQ
     ch.basic_ack(delivery_tag=method.delivery_tag)

@@ -1,10 +1,10 @@
 from datetime import datetime
-
 from pydantic import BaseModel
 from typing import List, Optional, Literal
 from schemas.template_schema import TemplateParameter
 from uuid import UUID
 
+# ---- Bulk template sending (direct to wa_ids) ----
 class CampaignRecipient(BaseModel):
     wa_id: str
     parameters: List[TemplateParameter]
@@ -13,6 +13,7 @@ class BulkTemplateRequest(BaseModel):
     template_name: str
     clients: List[CampaignRecipient]
 
+# ---- Customer output ----
 class CustomerOut(BaseModel):
     id: UUID
     wa_id: str
@@ -21,7 +22,19 @@ class CustomerOut(BaseModel):
     class Config:
         orm_mode = True
 
+# ---- Campaign recipient (Excel uploads) ----
+class CampaignRecipientOut(BaseModel):
+    id: UUID
+    phone_number: str
+    name: Optional[str]
+    params: Optional[dict]
+    status: str
+    created_at: datetime
 
+    class Config:
+        orm_mode = True
+
+# ---- Campaign base/create/update ----
 AllowedTypes = Literal["text", "image", "document", "template", "interactive"]
 
 class CampaignBase(BaseModel):
@@ -43,14 +56,15 @@ class CampaignUpdate(BaseModel):
     type: Optional[AllowedTypes]
     campaign_cost_type: Optional[str] = None
 
-
+# ---- Campaign output ----
 class CampaignOut(CampaignBase):
     id: UUID
     created_at: datetime
     updated_at: datetime
     created_by: UUID
     updated_by: Optional[UUID]
-    customers: List[CustomerOut]  # ✅ include this
+    customers: List[CustomerOut] = []  # CRM linked customers
+    recipients: List[CampaignRecipientOut] = []  # Excel-uploaded recipients
     last_job_id: Optional[UUID]
 
     class Config:

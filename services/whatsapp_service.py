@@ -38,6 +38,37 @@ def build_template_payload(customer: dict, template_content: dict):
     }
     return payload
 
+def build_template_payload_for_recipient(recipient: dict, template_content: dict):
+    """
+    Build template payload for Excel-uploaded recipients.
+    Uses recipient's custom params instead of customer data.
+    """
+    template_name = template_content.get("name")
+    language_code = template_content.get("language", "en_US")
+    components = template_content.get("components", [])
+
+    # For recipients, we need to replace placeholders with their custom params
+    if components and recipient.get('params'):
+        # Create a mock customer dict with recipient's params for placeholder replacement
+        mock_customer = {
+            'wa_id': recipient['phone_number'],
+            'name': recipient.get('name', ''),
+            **recipient.get('params', {})  # Include custom params
+        }
+        components = fill_placeholders(components, mock_customer)
+
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": recipient['phone_number'],
+        "type": "template",
+        "template": {
+            "name": template_name,
+            "language": {"code": language_code},
+            "components": components
+        }
+    }
+    return payload
+
 def enqueue_template_message(to: str, template_name: str, parameters: list):
     payload = {
         "to": to,

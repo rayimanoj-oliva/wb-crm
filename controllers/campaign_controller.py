@@ -1,6 +1,7 @@
+import io
 from typing import List
-
-from fastapi import APIRouter, Depends
+import pandas as pd
+from fastapi import APIRouter, Depends, File, UploadFile
 from sqlalchemy.orm import Session
 
 from auth import get_current_user
@@ -11,7 +12,7 @@ from schemas.customer_schema import CustomerCreate
 from typing import List, Optional
 from pydantic import BaseModel
 from fastapi import HTTPException, Body
-from models.models import Cost, Template
+from models.models import Cost, Template, CampaignRecipient
 from services.campaign_service import create_campaign, get_all_campaigns
 import services.campaign_service as campaign_service
 from uuid import UUID
@@ -53,6 +54,62 @@ def run_campaign(campaign_id:UUID,db :Session = Depends(get_db),current_user: di
     campaign = campaign_service.get_campaign(db,campaign_id)
     return campaign_service.run_campaign(campaign,job,db)
 
+@router.post("/{campaign_id}/upload-excel")
+async def upload_campaign_excel(
+    campaign_id: UUID,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    """Upload Excel with phone_number, name, params -> add recipients to campaign."""
+    # Ensure campaign exists
+    campaign = campaign_service.get_campaign(db, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    # Read Excel file into DataFrame
+    try:
+        contents = await file.read()
+        df = pd.read_excel(io.BytesIO(contents))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid Excel file: {e}")
+
+    # Validate required column
+    if "phone_number" not in df.columns:
+        raise HTTPException(status_code=400, detail="Excel must have 'phone_number' column")
+
+    # Iterate and create recipients
+    recipients = []
+    for _, row in df.iterrows():
+        phone = str(row.get("phone_number"))
+        if not phone:
+            continue
+        rec = CampaignRecipient(
+            campaign_id=campaign_id,
+            phone_number=phone,
+            name=row.get("name"),
+            params={k: row[k] for k in df.columns if k not in ["phone_number", "name"] and pd.notnull(row[k])},
+            status="PENDING"
+        )
+        recipients.append(rec)
+
+    db.add_all(recipients)
+    db.commit()
+
+    return {"status": "uploaded", "count": len(recipients)}
+
+@router.get("/{campaign_id}/recipients")
+def get_campaign_recipients(
+    campaign_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    """Get all Excel-uploaded recipients for a campaign."""
+    campaign = campaign_service.get_campaign(db, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    
+    return campaign.recipients
 
 class QuickTemplateRunRequest(BaseModel):
     template_name: str

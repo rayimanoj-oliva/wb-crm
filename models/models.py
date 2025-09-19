@@ -319,6 +319,12 @@ class Campaign(Base):
     last_job = relationship("Job", foreign_keys=[last_job_id], post_update=True)
     cost = relationship("Cost", backref="campaigns")
     customers = relationship("Customer", secondary="campaign_customers", back_populates="campaigns")
+    recipients = relationship(
+        "CampaignRecipient",
+        back_populates="campaign",
+        cascade="all, delete-orphan",
+        passive_deletes=True
+    )
 
 
 campaign_customers = Table(
@@ -327,6 +333,20 @@ campaign_customers = Table(
     Column("campaign_id", UUID(as_uuid=True), ForeignKey("campaigns.id"), primary_key=True),
     Column("customer_id", UUID(as_uuid=True), ForeignKey("customers.id"), primary_key=True),
 )
+
+class CampaignRecipient(Base):
+    __tablename__ = "campaign_recipients"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    campaign_id = Column(UUID(as_uuid=True), ForeignKey("campaigns.id", ondelete="CASCADE"))
+    phone_number = Column(String(20), nullable=False)
+    name = Column(String(100), nullable=True)
+    params = Column(JSON, nullable=True)  # flexible key/value for template params
+    status = Column(String(20), default="PENDING")  # PENDING, SENT, FAILED
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    campaign = relationship("Campaign", back_populates="recipients")
+
 
 
 class Template(Base):

@@ -82,10 +82,11 @@ def publish_to_queue(message: dict, queue_name: str = "campaign_queue"):
     )
     connection.close()
 
-def run_campaign(campaign: Campaign,job:Job, db: Session):
+def run_campaign(campaign: Campaign, job: Job, db: Session):
+    # Handle normal customers (linked from CRM)
     for customer in campaign.customers:
         task = {
-            "job_id":job.id,
+            "job_id": job.id,
             "campaign_id": campaign.id,
             "customer": {
                 "id": str(customer.id),
@@ -96,4 +97,25 @@ def run_campaign(campaign: Campaign,job:Job, db: Session):
             "type": campaign.type
         }
         publish_to_queue(task)
+
+    # Handle uploaded Excel recipients
+    for recipient in campaign.recipients:
+        task = {
+            "job_id": job.id,
+            "campaign_id": campaign.id,
+            "recipient": {
+                "id": str(recipient.id),
+                "name": recipient.name,
+                "phone_number": recipient.phone_number,
+                "params": recipient.params
+            },
+            "content": campaign.content,
+            "type": campaign.type
+        }
+        publish_to_queue(task)
+
+        # Optionally mark as queued
+        recipient.status = "QUEUED"
+
+    db.commit()
     return job
