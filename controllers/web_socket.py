@@ -135,13 +135,13 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     error_text = format_errors_for_user(addr_errors or ["Address format is incorrect."])
                     await send_message_to_waid(wa_id, error_text, db)
                     # Then broadcast the error back to the frontend
-                    await manager.broadcast({
-                        "from": to_wa_id,
-                        "to": from_wa_id,
-                        "type": "text",
-                        "message": error_text,
-                        "timestamp": datetime.now().isoformat()
-                    })
+                    # await manager.broadcast({
+                    #     "from": to_wa_id,
+                    #     "to": from_wa_id,
+                    #     "type": "text",
+                    #     "message": error_text,
+                    #     "timestamp": datetime.now().isoformat()
+                    # })
                     return {"status": "awaiting_address", "message_id": message_id}
 
                 # Address is valid → save it
