@@ -310,7 +310,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         # 4️⃣ Hi/Hello auto-template
         raw = (body_text or "").strip()
         normalized = re.sub(r"[^a-z]", "", raw.lower())
-        if message_type == "text" and not awaiting_address_users.get(wa_id, False) and (normalized in {"hi", "hello", "hlo"} or ("hi" in normalized or "hello" in normalized)):
+        if message_type == "text" and (normalized in {"hi", "hello", "hlo"} or ("hi" in normalized or "hello" in normalized)):
             # call your existing welcome template sending logic here
             token_entry = get_latest_token(db)
             if token_entry and token_entry.token:
