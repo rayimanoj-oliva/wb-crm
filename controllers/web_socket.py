@@ -694,7 +694,6 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             # Buy Products button
             elif ("buy" in choice_text) or ("product" in choice_text) or (btn_id and str(btn_id).lower() in {"buy_products", "buy", "products"}):
                 try:
-                    # Only send catalog link, do NOT trigger address template here
                     await send_message_to_waid(wa_id, "🛍️ Browse our catalog: https://wa.me/c/917729992376", db)
                 except Exception:
                     pass
