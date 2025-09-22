@@ -77,3 +77,4 @@ app.include_router(cost_router, prefix="/cost")
 app.include_router(media_controller.router, prefix="/media")
 app.include_router(payment_router, prefix="/payments")
 app.include_router(address_router, prefix="/address")
+

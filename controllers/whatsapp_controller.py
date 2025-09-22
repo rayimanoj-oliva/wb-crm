@@ -41,7 +41,7 @@ def add_token(token_data: WhatsAppTokenCreate, db: Session = Depends(get_db)):
 @router.post("/send-message")
 async def send_whatsapp_message(
     wa_id: str = Form(...),
-    type: Literal["text", "image", "document", "interactive", "location", "template"] = Form(...),
+    type: Literal["text", "image", "document", "interactive", "location", "template", "flow"] = Form(...),
     body: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
     latitude: Optional[str] = Form(None),
@@ -56,6 +56,11 @@ async def send_whatsapp_message(
     template_body_expected: Optional[int] = Form(None),
     template_enforce_count: Optional[bool] = Form(False),
     template_media_id: Optional[str] = Form(None),
+    # Flow-specific (for type == "flow")
+    flow_id: Optional[str] = Form(None),
+    flow_cta: Optional[str] = Form("Provide Address"),
+    flow_token: Optional[str] = Form(None),
+    flow_payload_json: Optional[str] = Form(None),
     db: Session = Depends(get_db)
 ):
     try:
@@ -207,6 +212,35 @@ async def send_whatsapp_message(
             }
 
             body = f"TEMPLATE: {template_name} - Params: {template_params}"
+
+        # ---------------- Flow Interactive (opens native WhatsApp Flow) ----------------
+        elif type == "flow":
+            if not flow_id:
+                raise HTTPException(status_code=400, detail="flow_id is required for type=flow")
+
+            try:
+                action_payload = json.loads(flow_payload_json) if flow_payload_json else {}
+            except Exception:
+                action_payload = {}
+
+            payload["type"] = "interactive"
+            payload["interactive"] = {
+                "type": "flow",
+                "header": {"type": "text", "text": "\ud83d\udccd Address Collection"},
+                "body": {"text": body or "Please provide your delivery address using the form below."},
+                "footer": {"text": "All fields are required for delivery"},
+                "action": {
+                    "name": "flow",
+                    "parameters": {
+                        "flow_message_version": "3",
+                        "flow_id": flow_id,
+                        "flow_cta": flow_cta or "Open",
+                        **({"flow_token": flow_token} if flow_token else {}),
+                        **({"flow_action_payload": action_payload} if action_payload else {})
+                    }
+                }
+            }
+            body = f"FLOW: {flow_id}"
 
         # ---------------- Send Request ----------------
         res = requests.post(

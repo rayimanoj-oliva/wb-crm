@@ -84,7 +84,6 @@ class User(Base):
 
     customers = relationship("Customer", back_populates="user")
 
-
 class Customer(Base):
     __tablename__ = "customers"
 
@@ -92,17 +91,40 @@ class Customer(Base):
     wa_id = Column(String, unique=True, nullable=False)
     name = Column(String)
     email = Column(String, nullable=True)
-    address = Column(String, nullable=True)
+
+    # Optional default address shortcut
+    default_address_id = Column(UUID(as_uuid=True), ForeignKey("customer_addresses.id"), nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     last_message_at = Column(DateTime, nullable=True)
 
-    # relations
+    # Relations
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     user = relationship("User", back_populates="customers")
 
     orders = relationship("Order", back_populates="customer")
     campaigns = relationship("Campaign", secondary="campaign_customers", back_populates="customers")
-    addresses = relationship("CustomerAddress", back_populates="customer", cascade="all, delete-orphan")
+
+    # Fix: specify foreign_keys for addresses
+    addresses = relationship(
+        "CustomerAddress",
+        back_populates="customer",
+        cascade="all, delete-orphan",
+        foreign_keys="[CustomerAddress.customer_id]"  # explicitly tell SQLAlchemy which FK to use
+    )
+
+    # Default address relationship
+    default_address = relationship(
+        "CustomerAddress",
+        foreign_keys=[default_address_id],
+        post_update=True,
+    )
+
+    address_sessions = relationship(
+        "AddressCollectionSession",
+        back_populates="customer",
+        cascade="all, delete-orphan"
+    )
 
     customer_status = Column(
         SAEnum(CustomerStatusEnum, name="customer_status_enum", create_type=True),
@@ -141,6 +163,9 @@ class Message(Base):
     latitude = Column(Float, nullable=True)
     longitude = Column(Float, nullable=True)
 
+    # Relationship back to customer for convenient access
+    customer = relationship("Customer", backref="messages")
+
 
 class WhatsAppToken(Base):
     __tablename__ = "whatsapp_tokens"
@@ -162,9 +187,14 @@ class Order(Base):
     customer_id = Column(UUID(as_uuid=True), ForeignKey("customers.id"))
     catalog_id = Column(String)
     timestamp = Column(DateTime, default=datetime.utcnow)
+    # Shipping address associated with the order
+    shipping_address_id = Column(UUID(as_uuid=True), ForeignKey("customer_addresses.id"), nullable=True)
 
     customer = relationship("Customer", back_populates="orders")
     items = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
+    shipping_address = relationship("CustomerAddress")
+    payments = relationship("Payment", back_populates="order", cascade="all, delete-orphan")
+    address_sessions = relationship("AddressCollectionSession", back_populates="order")
 
 
 class Product(Base):
@@ -177,6 +207,13 @@ class Product(Base):
     description = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # New: Categorization
+    category_id = Column(UUID(as_uuid=True), ForeignKey("categories.id", ondelete="SET NULL"), nullable=True)
+    sub_category_id = Column(UUID(as_uuid=True), ForeignKey("sub_categories.id", ondelete="SET NULL"), nullable=True)
+
+    category = relationship("Category", back_populates="products")
+    sub_category = relationship("SubCategory", back_populates="products")
 
     def __repr__(self):
         return f"<Product(id={self.id}, name='{self.name}', sku='{self.sku}')>"
@@ -223,7 +260,7 @@ class Payment(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    order = relationship("Order")
+    order = relationship("Order", back_populates="payments")
 
 
 class PaymentTransaction(Base):
@@ -285,7 +322,7 @@ class CustomerAddress(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     customer_id = Column(UUID(as_uuid=True), ForeignKey("customers.id"), nullable=False)
-    
+
     # Address fields
     full_name = Column(String(100), nullable=False)
     house_street = Column(String(200), nullable=False)
@@ -295,23 +332,27 @@ class CustomerAddress(Base):
     pincode = Column(String(10), nullable=False)
     landmark = Column(String(100), nullable=True)
     phone = Column(String(15), nullable=False)
-    
+
     # Location data
     latitude = Column(Float, nullable=True)
     longitude = Column(Float, nullable=True)
-    
+
     # Address metadata
     address_type = Column(String(20), default="home")  # home, office, other
     is_default = Column(Boolean, default=False)
     is_verified = Column(Boolean, default=False)
-    
+
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
-    # Relationships
-    customer = relationship("Customer", back_populates="addresses")
-    
+
+    # Fix: specify foreign_keys for customer relationship
+    customer = relationship(
+        "Customer",
+        back_populates="addresses",
+        foreign_keys=[customer_id]
+    )
+
     def __repr__(self):
         return f"<CustomerAddress(id={self.id}, customer_id={self.customer_id}, city='{self.city}')>"
 
@@ -336,11 +377,56 @@ class AddressCollectionSession(Base):
     completed_at = Column(DateTime, nullable=True)
     
     # Relationships
-    customer = relationship("Customer")
-    order = relationship("Order")
+    customer = relationship("Customer", back_populates="address_sessions")
+    order = relationship("Order", back_populates="address_sessions")
     
     def __repr__(self):
         return f"<AddressCollectionSession(id={self.id}, customer_id={self.customer_id}, status='{self.status}')>"
+
+
+# ------------------------------
+# Catalog: Categories & Sub-Categories
+# ------------------------------
+
+class Category(Base):
+    __tablename__ = "categories"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(120), unique=True, nullable=False)
+    slug = Column(String(140), unique=True, nullable=True)
+    description = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    sub_categories = relationship(
+        "SubCategory",
+        back_populates="category",
+        cascade="all, delete-orphan"
+    )
+    products = relationship("Product", back_populates="category")
+
+    def __repr__(self):
+        return f"<Category(id={self.id}, name='{self.name}')>"
+
+
+class SubCategory(Base):
+    __tablename__ = "sub_categories"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    category_id = Column(UUID(as_uuid=True), ForeignKey("categories.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String(120), nullable=False)
+    slug = Column(String(140), unique=True, nullable=True)
+    description = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    category = relationship("Category", back_populates="sub_categories")
+    products = relationship("Product", back_populates="sub_category")
+
+    def __repr__(self):
+        return f"<SubCategory(id={self.id}, name='{self.name}', category_id={self.category_id})>"
 
 
 # ------------------------------

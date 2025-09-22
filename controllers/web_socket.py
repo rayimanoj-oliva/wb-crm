@@ -33,6 +33,8 @@ router = APIRouter()
 
 # In-memory store: { wa_id: True/False }
 awaiting_address_users = {}
+# Track whether we've already nudged the user to use the form to avoid repeats
+address_nudge_sent = {}
 
 
 # WebSocket endpoint
@@ -274,11 +276,16 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         # if len(prior_messages) == 0:
         #     await send_message_to_waid(wa_id, 'Type "Hi" or "Hello"', db)
 
-        # 2️⃣ ADDRESS COLLECTION - Only through structured form
+        # 2️⃣ ADDRESS COLLECTION - Only through structured form (nudge once, not repeatedly)
         if awaiting_address_users.get(wa_id, False):
-            # User is in address collection flow, but should use the structured form
-            await send_message_to_waid(wa_id, "📍 Please use the address form above to enter your details. Click the '📝 Fill Address Form' button.", db)
-            return {"status": "awaiting_address_form", "message_id": message_id}
+            raw_txt = (body_text or "") if message_type == "text" else ""
+            norm_txt = re.sub(r"[^a-z]", "", raw_txt.lower())
+            # Skip welcome flow while awaiting address and do not spam nudges
+            if message_type == "text" and norm_txt not in {"hi", "hello", "hlo"}:
+                if not address_nudge_sent.get(wa_id, False):
+                    await send_message_to_waid(wa_id, "📍 Please use the address form above to enter your details. Click the '📝 Fill Address Form' button.", db)
+                    address_nudge_sent[wa_id] = True
+                return {"status": "awaiting_address_form", "message_id": message_id}
 
         # 3️⃣ Regular text messages (non-address)
         if message_type == "text":
@@ -303,7 +310,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         # 4️⃣ Hi/Hello auto-template
         raw = (body_text or "").strip()
         normalized = re.sub(r"[^a-z]", "", raw.lower())
-        if message_type == "text" and (normalized in {"hi", "hello", "hlo"} or ("hi" in normalized or "hello" in normalized)):
+        if message_type == "text" and not awaiting_address_users.get(wa_id, False) and (normalized in {"hi", "hello", "hlo"} or ("hi" in normalized or "hello" in normalized)):
             # call your existing welcome template sending logic here
             token_entry = get_latest_token(db)
             if token_entry and token_entry.token:
@@ -470,8 +477,9 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                 "timestamp": datetime.now().isoformat()
                             })
                             
-                            # Mark user as awaiting address for button responses
+                            # Mark user as awaiting address for button responses and reset nudge flag
                             awaiting_address_users[wa_id] = True
+                            address_nudge_sent[wa_id] = False
                             
                         except Exception as e:
                             print(f"Error saving collect_address template message: {e}")
@@ -707,6 +715,20 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 flow_action_payload = flow_response.get("flow_action_payload", {})
                 
                 print(f"Flow response received: flow_id={flow_id}, flow_cta={flow_cta}")
+
+                # Broadcast raw flow response to frontend for visibility/debug
+                try:
+                    await manager.broadcast({
+                        "from": from_wa_id,
+                        "to": to_wa_id,
+                        "type": "flow_response",
+                        "flow_id": flow_id,
+                        "flow_cta": flow_cta,
+                        "payload": flow_action_payload,
+                        "timestamp": timestamp.isoformat(),
+                    })
+                except Exception:
+                    pass
                 
                 # Handle address collection flow
                 if flow_id == "address_collection_flow" or "address" in flow_id.lower():

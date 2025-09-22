@@ -84,11 +84,37 @@ async def upload_campaign_excel(
         phone = str(row.get("phone_number"))
         if not phone:
             continue
+        # Normalize pandas/numpy types in params to JSON-serializable primitives
+        def to_jsonable(val):
+            try:
+                import pandas as pd
+                import numpy as np
+                if isinstance(val, (pd.Timestamp,)):
+                    return val.isoformat()
+                if isinstance(val, (pd.Series, pd.DataFrame)):
+                    return val.to_dict()
+                if isinstance(val, (np.integer,)):
+                    return int(val)
+                if isinstance(val, (np.floating,)):
+                    return float(val)
+            except Exception:
+                pass
+            # Datetime from Python
+            try:
+                from datetime import datetime
+                if isinstance(val, datetime):
+                    return val.isoformat()
+            except Exception:
+                pass
+            return val
+
+        clean_params = {k: to_jsonable(row[k]) for k in df.columns if k not in ["phone_number", "name"] and pd.notnull(row[k])}
+
         rec = CampaignRecipient(
             campaign_id=campaign_id,
             phone_number=phone,
             name=row.get("name"),
-            params={k: row[k] for k in df.columns if k not in ["phone_number", "name"] and pd.notnull(row[k])},
+            params=clean_params,
             status="PENDING"
         )
         recipients.append(rec)
