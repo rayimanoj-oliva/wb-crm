@@ -21,7 +21,7 @@ class ReplyMaterialUpdate(BaseModel):
 class ReplyMaterialOut(ReplyMaterialBase):
     id: UUID
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 # Default Automation Rule
 class DefaultAutomationRuleBase(BaseModel):
@@ -41,7 +41,7 @@ class DefaultAutomationRuleUpdate(BaseModel):
 class DefaultAutomationRuleOut(DefaultAutomationRuleBase):
     id: UUID
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 # Keyword Actions
 class KeywordTermBase(BaseModel):
@@ -53,7 +53,7 @@ class KeywordTermCreate(KeywordTermBase):
 class KeywordTermOut(KeywordTermBase):
     id: UUID
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class KeywordReplyBase(BaseModel):
     material_id: UUID
@@ -64,7 +64,7 @@ class KeywordReplyCreate(KeywordReplyBase):
 class KeywordReplyOut(KeywordReplyBase):
     id: UUID
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class KeywordBase(BaseModel):
     matching_type: str
@@ -85,7 +85,7 @@ class KeywordOut(KeywordBase):
     terms: List[KeywordTermOut]
     replies: List[KeywordReplyOut]
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 # Routing Rule
 class RoutingRuleBase(BaseModel):
@@ -104,7 +104,7 @@ class RoutingRuleUpdate(BaseModel):
 class RoutingRuleOut(RoutingRuleBase):
     id: UUID
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 # Working Hours
 class Interval(BaseModel):
@@ -126,13 +126,13 @@ class WorkingHourUpdate(BaseModel):
 class WorkingHourOut(WorkingHourBase):
     id: UUID
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 # Holiday Config
 class HolidayConfigOut(BaseModel):
     holiday_mode: bool
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class HolidayConfigUpdate(BaseModel):
     holiday_mode: bool 

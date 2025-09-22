@@ -28,7 +28,7 @@ class CustomerOut(BaseModel):
     customer_status: Optional[CustomerStatusEnum] = None
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 # Schema for updating name/address (but NOT email)
 class CustomerUpdate(BaseModel):

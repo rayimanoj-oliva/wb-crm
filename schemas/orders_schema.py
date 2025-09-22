@@ -23,7 +23,7 @@ class OrderItemOut(BaseModel):
     currency: str
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class OrderOut(BaseModel):
     id: UUID
@@ -32,7 +32,7 @@ class OrderOut(BaseModel):
     items: List[OrderItemOut]
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class PaymentCreate(BaseModel):
     order_id: UUID
@@ -51,4 +51,4 @@ class PaymentOut(BaseModel):
     updated_at: datetime
 
     class Config:
-        orm_mode = True
+        from_attributes = True

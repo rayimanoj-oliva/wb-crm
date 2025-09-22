@@ -8,7 +8,7 @@ class JobStatusOut(BaseModel):
     status: str
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class JobOut(BaseModel):
     id: UUID
@@ -19,4 +19,4 @@ class JobOut(BaseModel):
     statuses: List[JobStatusOut]
 
     class Config:
-        orm_mode = True
+        from_attributes = True

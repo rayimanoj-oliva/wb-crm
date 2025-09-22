@@ -20,7 +20,7 @@ class CustomerOut(BaseModel):
     name: Optional[str]
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 # ---- Campaign recipient (Excel uploads) ----
 class CampaignRecipientOut(BaseModel):
@@ -32,7 +32,7 @@ class CampaignRecipientOut(BaseModel):
     created_at: datetime
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 # ---- Campaign base/create/update ----
 AllowedTypes = Literal["text", "image", "document", "template", "interactive"]
@@ -68,4 +68,4 @@ class CampaignOut(CampaignBase):
     last_job_id: Optional[UUID]
 
     class Config:
-        orm_mode = True
+        from_attributes = True

@@ -280,8 +280,14 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         if awaiting_address_users.get(wa_id, False):
             raw_txt = (body_text or "") if message_type == "text" else ""
             norm_txt = re.sub(r"[^a-z]", "", raw_txt.lower())
+            # While awaiting address, allow "buy/products/catalog" to pass through so catalog link is sent
+            allow_catalog_shortcut = (
+                message_type == "text" and (
+                    ("buy" in norm_txt) or ("product" in norm_txt) or ("catalog" in norm_txt)
+                )
+            )
             # Skip welcome flow while awaiting address and do not spam nudges
-            if message_type == "text" and norm_txt not in {"hi", "hello", "hlo"}:
+            if message_type == "text" and norm_txt not in {"hi", "hello", "hlo"} and not allow_catalog_shortcut:
                 if not address_nudge_sent.get(wa_id, False):
                     await send_message_to_waid(wa_id, "📍 Please use the address form above to enter your details. Click the '📝 Fill Address Form' button.", db)
                     address_nudge_sent[wa_id] = True
@@ -305,7 +311,16 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 "type": "text",
                 "message": body_text,
                 "timestamp": timestamp.isoformat()
-            })
+            }) 
+
+            # If user types buy/products, send catalog link immediately
+            try:
+                txt_norm = re.sub(r"[^a-z]", "", (body_text or "").lower())
+                if ("buy" in txt_norm) or ("product" in txt_norm):
+                    await send_message_to_waid(wa_id, "🛍️ Browse our catalog: https://wa.me/c/917729992376", db)
+                    return {"status": "success", "message_id": message_id}
+            except Exception:
+                pass
 
         # 4️⃣ Hi/Hello auto-template
         raw = (body_text or "").strip()
@@ -652,8 +667,16 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
 
             # Handle different button types
             choice_text = (reply_text or "").lower()
-            
-            # Address collection buttons (including collect_address template buttons and flow buttons)
+
+            # 1) Buy Products: ALWAYS send catalog link; do not trigger address here
+            if ("buy" in choice_text) or ("product" in choice_text) or (btn_id and str(btn_id).lower() in {"buy_products", "buy", "products"}):
+                try:
+                    await send_message_to_waid(wa_id, "🛍️ Browse our catalog: https://wa.me/c/917729992376", db)
+                except Exception:
+                    pass
+                return {"status": "success", "message_id": message_id}
+
+            # 2) Address collection buttons (including collect_address template buttons and flow buttons)
             if btn_id in ["ADD_DELIVERY_ADDRESS", "USE_CURRENT_LOCATION", "ENTER_NEW_ADDRESS", 
                          "USE_SAVED_ADDRESS", "CONFIRM_ADDRESS", "CHANGE_ADDRESS", "RETRY_ADDRESS",
                          "add_address", "use_location", "enter_manually", "saved_address",
@@ -686,17 +709,10 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 except Exception as e:
                     await send_message_to_waid(wa_id, f"❌ Error processing address request: {str(e)}", db)
             
-            # Generic handler for any button click when user is awaiting address
+            # 3) Generic handler for any button click when user is awaiting address (not for buy)
             elif awaiting_address_users.get(wa_id, False):
                 # If user is awaiting address and clicks any button, show the structured form
                 await send_address_form(wa_id, db)
-            
-            # Buy Products button
-            elif ("buy" in choice_text) or ("product" in choice_text) or (btn_id and str(btn_id).lower() in {"buy_products", "buy", "products"}):
-                try:
-                    await send_message_to_waid(wa_id, "🛍️ Browse our catalog: https://wa.me/c/917729992376", db)
-                except Exception:
-                    pass
 
             return {"status": "success", "message_id": message_id}
 

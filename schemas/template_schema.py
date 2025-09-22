@@ -52,7 +52,7 @@ class TemplateOut(TemplateCreate):
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 # ----------- Meta Template Creation Example Values -----------
 
