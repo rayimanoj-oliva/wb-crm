@@ -102,6 +102,7 @@ class Customer(Base):
 
     orders = relationship("Order", back_populates="customer")
     campaigns = relationship("Campaign", secondary="campaign_customers", back_populates="customers")
+    addresses = relationship("CustomerAddress", back_populates="customer", cascade="all, delete-orphan")
 
     customer_status = Column(
         SAEnum(CustomerStatusEnum, name="customer_status_enum", create_type=True),
@@ -273,6 +274,73 @@ class InventoryLog(Base):
 
     def __repr__(self):
         return f"<InventoryLog(id={self.id}, product_id={self.product_id}, change={self.quantity_change})>"
+
+
+# ------------------------------
+# Address Management
+# ------------------------------
+
+class CustomerAddress(Base):
+    __tablename__ = "customer_addresses"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    customer_id = Column(UUID(as_uuid=True), ForeignKey("customers.id"), nullable=False)
+    
+    # Address fields
+    full_name = Column(String(100), nullable=False)
+    house_street = Column(String(200), nullable=False)
+    locality = Column(String(100), nullable=False)
+    city = Column(String(50), nullable=False)
+    state = Column(String(50), nullable=False)
+    pincode = Column(String(10), nullable=False)
+    landmark = Column(String(100), nullable=True)
+    phone = Column(String(15), nullable=False)
+    
+    # Location data
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
+    
+    # Address metadata
+    address_type = Column(String(20), default="home")  # home, office, other
+    is_default = Column(Boolean, default=False)
+    is_verified = Column(Boolean, default=False)
+    
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    customer = relationship("Customer", back_populates="addresses")
+    
+    def __repr__(self):
+        return f"<CustomerAddress(id={self.id}, customer_id={self.customer_id}, city='{self.city}')>"
+
+
+class AddressCollectionSession(Base):
+    __tablename__ = "address_collection_sessions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    customer_id = Column(UUID(as_uuid=True), ForeignKey("customers.id"), nullable=False)
+    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id"), nullable=True)
+    
+    # Session state
+    status = Column(String(20), default="pending")  # pending, collecting, completed, cancelled
+    collection_method = Column(String(20), nullable=True)  # location, manual, saved
+    
+    # Session data
+    session_data = Column(JSONB, nullable=True)  # Store intermediate data
+    
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    
+    # Relationships
+    customer = relationship("Customer")
+    order = relationship("Order")
+    
+    def __repr__(self):
+        return f"<AddressCollectionSession(id={self.id}, customer_id={self.customer_id}, status='{self.status}')>"
 
 
 # ------------------------------

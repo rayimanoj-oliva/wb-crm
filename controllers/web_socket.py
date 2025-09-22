@@ -7,7 +7,6 @@ from fastapi.responses import JSONResponse
 from typing import List
 import re
 import mimetypes
-import mimetypes
 import asyncio
 import os
 import requests
@@ -22,8 +21,6 @@ from services import payment_service
 from schemas.customer_schema import CustomerCreate
 from schemas.message_schema import MessageCreate
 from utils.whatsapp import send_message_to_waid
-from services.whatsapp_service import get_latest_token
-from config.constants import get_messages_url, get_media_url
 from services.whatsapp_service import get_latest_token
 from config.constants import get_messages_url, get_media_url
 from utils.razorpay_utils import create_razorpay_payment_link
@@ -49,6 +46,116 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.disconnect(websocket)
 
 VERIFY_TOKEN = "Oliva@123"
+
+async def send_address_form(wa_id: str, db: Session):
+    """Send structured address collection form similar to JioMart"""
+    try:
+        # Get WhatsApp token
+        token_entry = get_latest_token(db)
+        if not token_entry or not token_entry.token:
+            await send_message_to_waid(wa_id, "❌ Unable to send address form. Please try again.", db)
+            return
+        
+        access_token = token_entry.token
+        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+        phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+        
+        # Create interactive form for address collection (using buttons as fallback)
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": wa_id,
+            "type": "interactive",
+            "interactive": {
+                "type": "button",
+                "header": {
+                    "type": "text",
+                    "text": "📍 New Address"
+                },
+                "body": {
+                    "text": "Please choose how you'd like to add your address:"
+                },
+                "footer": {
+                    "text": "All fields are required for delivery"
+                },
+                "action": {
+                    "buttons": [
+                        {
+                            "type": "reply",
+                            "reply": {
+                                "id": "fill_form_step1",
+                                "title": "📝 Fill Address Form"
+                            }
+                        },
+                        {
+                            "type": "reply",
+                            "reply": {
+                                "id": "share_location",
+                                "title": "📍 Share Location"
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+        
+        resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
+        if resp.status_code == 200:
+            try:
+                form_msg_id = resp.json()["messages"][0]["id"]
+                form_message = MessageCreate(
+                    message_id=form_msg_id,
+                    from_wa_id="917729992376",  # Your WhatsApp number
+                    to_wa_id=wa_id,
+                    type="interactive",
+                    body="Address collection form sent",
+                    timestamp=datetime.now(),
+                    customer_id=customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name="")).id
+                )
+                message_service.create_message(db, form_message)
+                
+                await manager.broadcast({
+                    "from": "917729992376",
+                    "to": wa_id,
+                    "type": "interactive",
+                    "message": "Address collection form sent",
+                    "timestamp": datetime.now().isoformat()
+                })
+                
+            except Exception as e:
+                print(f"Error saving address form message: {e}")
+        else:
+            print(f"Failed to send address form: {resp.text}")
+            # Fallback to simple text form
+            await send_message_to_waid(wa_id, "📝 Please enter your address in this format:", db)
+            await send_message_to_waid(wa_id, 
+                """*Contact Details:*
+Full Name: [Your Name]
+Phone: [10-digit number]
+
+*Address Details:*
+Pincode: [6-digit pincode]
+House No. & Street: [House number and street]
+Area/Locality: [Your area]
+City: [Your city]
+State: [Your state]
+Landmark: [Optional - nearby landmark]""", db)
+            
+    except Exception as e:
+        print(f"Error sending address form: {e}")
+        # Fallback to simple text form
+        await send_message_to_waid(wa_id, "📝 Please enter your address in this format:", db)
+        await send_message_to_waid(wa_id, 
+            """*Contact Details:*
+Full Name: [Your Name]
+Phone: [10-digit number]
+
+*Address Details:*
+Pincode: [6-digit pincode]
+House No. & Street: [House number and street]
+Area/Locality: [Your area]
+City: [Your city]
+State: [Your state]
+Landmark: [Optional - nearby landmark]""", db)
 
 def _upload_header_image(access_token: str, image_path_or_url: str, phone_id: str) -> str:
     try:
@@ -109,368 +216,11 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         # if len(prior_messages) == 0:
         #     await send_message_to_waid(wa_id, 'Type "Hi" or "Hello"', db)
 
-        # 2️⃣ Force validation if user is awaiting address
+        # 2️⃣ ADDRESS COLLECTION - Only through structured form
         if awaiting_address_users.get(wa_id, False):
-            if message_type != "text":
-                await send_message_to_waid(wa_id, "❌ Please provide your address in text format.", db)
-                return {"status": "awaiting_address", "message_id": message_id}
-
-            try:
-                parsed, addr_errors, _ = analyze_address(body_text)
-                looks_like_address = any([
-                    parsed.get("Pincode"), parsed.get("City"), parsed.get("State"),
-                    parsed.get("HouseStreet"), parsed.get("Locality")
-                ])
-
-                if not looks_like_address or addr_errors:
-                    # Broadcast the user's invalid attempt first
-                    await manager.broadcast({
-                        "from": from_wa_id,
-                        "to": to_wa_id,
-                        "type": "text",
-                        "message": body_text,
-                        "timestamp": timestamp.isoformat()
-                    })
-
-                    error_text = format_errors_for_user(addr_errors or ["Address format is incorrect."])
-                    await send_message_to_waid(wa_id, error_text, db)
-                    # Then broadcast the error back to the frontend
-                    # await manager.broadcast({
-                    #     "from": to_wa_id,
-                    #     "to": from_wa_id,
-                    #     "type": "text",
-                    #     "message": error_text,
-                    #     "timestamp": datetime.now().isoformat()
-                    # })
-                    return {"status": "awaiting_address", "message_id": message_id}
-
-                # Address is valid → save it
-                customer_service.update_customer_address(db, customer.id, body_text)
-                awaiting_address_users[wa_id] = False
-
-                # Save message and broadcast
-                message_data = MessageCreate(
-                    message_id=message_id,
-                    from_wa_id=from_wa_id,
-                    to_wa_id=to_wa_id,
-                    type="text",
-                    body=body_text,
-                    timestamp=datetime.now(),
-                    customer_id=customer.id,
-                )
-                new_msg = message_service.create_message(db, message_data)
-
-                await manager.broadcast({
-                    "from": from_wa_id,
-                    "to": to_wa_id,
-                    "type": "text",
-                    "message": new_msg.body,
-                    "timestamp": new_msg.timestamp.isoformat(),
-                })
-
-                await send_message_to_waid(wa_id, "✅ Your address has been saved successfully!", db)
-
-                # Continue with next steps (payment, etc.) using existing logic
-                try:
-                    latest_order = (
-                        db.query(order_service.Order)
-                        .filter(order_service.Order.customer_id == customer.id)
-                        .order_by(order_service.Order.timestamp.desc())
-                        .first()
-                    )
-                    total_amount = 0
-                    if latest_order:
-                        for item in latest_order.items:
-                            qty = item.quantity or 1
-                            price = item.item_price or item.price or 0
-                            total_amount += float(price) * int(qty)
-
-                    # --- Test override for Shopify tracking flow ---
-                    try:
-                        if os.getenv("TEST_SHOPIFY_TRACKING", "true").lower() in {"1", "true", "yes"}:
-                            test_price = int(os.getenv("TEST_CHECKOUT_PRICE_INR", "1"))
-                            test_shipping = int(os.getenv("TEST_SHIPPING_FEE_INR", "0"))
-                            total_amount = test_price + test_shipping
-
-                            variant_id = os.getenv("TEST_SHOPIFY_VARIANT_ID")
-                            if variant_id:
-                                ok = update_variant_price(variant_id, test_price)
-                                if not ok:
-                                    print("Warning: Failed to update Shopify variant price for test")
-                    except Exception:
-                        pass
-
-                    if total_amount > 0:
-                        # Try proxy payment link first
-                        pay_link = None
-                        try:
-                            bearer_token = None
-                            token_url = os.getenv("RAZORPAY_TOKEN_URL", "https://payments.olivaclinic.com/api/token")
-                            username = os.getenv("RAZORPAY_USERNAME") or os.getenv("RAZORPAY_PROXY_USERNAME")
-                            password = os.getenv("RAZORPAY_PASSWORD") or os.getenv("RAZORPAY_PROXY_PASSWORD")
-                            if username and password:
-                                token_headers = {
-                                    "Accept": "application/json",
-                                    "Content-Type": "application/x-www-form-urlencoded",
-                                }
-                                token_data = {
-                                    "username": username,
-                                    "password": password,
-                                }
-                                token_resp = requests.post(token_url, data=token_data, headers=token_headers, timeout=15)
-                                if token_resp.status_code == 200:
-                                    bearer_token = token_resp.json().get("access_token")
-                        except Exception:
-                            bearer_token = None
-
-                        bearer_token = bearer_token or os.getenv("RAZORPAY_PROXY_BEARER_TOKEN")
-                        payment_api_url = os.getenv("RAZORPAY_PROXY_PAYMENT_URL", "https://payments.olivaclinic.com/api/payment")
-                        center_name = os.getenv("OLIVA_CENTER_NAME", "Corporate Training Center")
-                        center_id = os.getenv("OLIVA_CENTER_ID", "90e79e59-6202-4feb-a64f-b647801469e4")
-
-                        if bearer_token:
-                            payload = {
-                                "customer_name": customer.name or "Customer",
-                                "phone_number": customer.wa_id,
-                                "email": customer.email or "",
-                                "amount": int(round(total_amount)),
-                                "center": center_name,
-                                "center_id": center_id,
-                                "personal_info_first_name": (customer.name or "").split(" ")[0] if (customer.name) else "",
-                                "personal_info_last_name": "",
-                                "personal_info_mobile_country_code": 91,
-                                "personal_info_mobile_number": customer.wa_id,
-                                "address_info_country_id": 95,
-                                "address_info_state_id": -2,
-                                "preferences_receive_transactional_email": True,
-                                "preferences_receive_transactional_sms": True,
-                                "preferences_receive_marketing_email": True,
-                                "preferences_receive_marketing_sms": True,
-                                "preferences_recieve_lp_stmt": True,
-                            }
-
-                            headers = {
-                                "Authorization": f"Bearer {bearer_token}",
-                                "Content-Type": "application/json",
-                                "Accept": "application/json, text/plain, */*",
-                            }
-                            resp = requests.post(payment_api_url, json=payload, headers=headers, timeout=20)
-                            if resp.status_code == 200:
-                                resp_json = resp.json()
-                                pay_link = resp_json.get("payment_link")
-                            else:
-                                print("Payment link creation via proxy failed:", resp.text)
-
-                        # Fallback to direct Razorpay link if proxy not available or failed
-                        if not pay_link:
-                            try:
-                                direct_resp = create_razorpay_payment_link(
-                                    amount=float(total_amount),
-                                    currency="INR",
-                                    description=f"WA Order {str(latest_order.id) if latest_order else ''}"
-                                )
-                                pay_link = direct_resp.get("short_url") if isinstance(direct_resp, dict) else None
-                            except Exception:
-                                pay_link = None
-
-                        if pay_link:
-                            await send_message_to_waid(wa_id, f"💳 Please complete your payment using this link: {pay_link}", db)
-                        else:
-                            print("Auto payment link send skipped: no link generated")
-                    else:
-                        print("No latest order or zero amount; skipping auto payment link send")
-                except Exception as pay_err:
-                    print("Auto payment link send error:", pay_err)
-
-                return {"status": "success", "message_id": message_id}
-            except Exception as e:
-                print("Address processing error:", e)
-                await send_message_to_waid(wa_id, "❌ Failed to process your address. Please try again.", db)
-                return {"status": "failed", "message_id": message_id}
-
-        # 3️⃣ Check if this looks like an address attempt
-        is_address_candidate = message_type == "text" and len(body_text) > 30 and any(
-            kw in body_text for kw in [
-                "Full Name:", "House No.", "HouseStreet:", "Locality:", "City:", "State:", "Pincode:", "Phone:", "Phone Number:"
-            ]
-        )
-
-        if message_type == "text" and is_address_candidate:
-            try:
-                parsed, addr_errors, _ = analyze_address(body_text)
-                looks_like_address = any([
-                    parsed.get("Pincode"), parsed.get("City"), parsed.get("State"),
-                    parsed.get("HouseStreet"), parsed.get("Locality")
-                ])
-                if looks_like_address:
-                    if addr_errors:
-                        # First broadcast the user's address attempt
-                        await manager.broadcast({
-                            "from": from_wa_id,
-                            "to": to_wa_id,
-                            "type": "text",
-                            "message": body_text,
-                            "timestamp": timestamp.isoformat()
-                        })
-                        
-                        # Send validation error to user
-                        error_text = format_errors_for_user(addr_errors)
-                        await send_message_to_waid(wa_id, error_text, db)
-                        
-                        # Then broadcast the error message to frontend
-                        await manager.broadcast({
-                            "from": to_wa_id,
-                            "to": from_wa_id,
-                            "type": "text",
-                            "message": error_text,
-                            "timestamp": datetime.now().isoformat()
-                        })
-                        return {"status": "validation_failed", "message_id": message_id}
-                    else:
-                        # Save address
-                        customer_service.update_customer_address(db, customer.id, body_text)
-                        message_data = MessageCreate(
-                            message_id=message_id,
-                            from_wa_id=from_wa_id,
-                            to_wa_id=to_wa_id,
-                            type="text",
-                            body=body_text,
-                            timestamp=datetime.now(),
-                            customer_id=customer.id,
-                        )
-                        new_msg = message_service.create_message(db, message_data)
-
-                        await manager.broadcast({
-                            "from": from_wa_id,
-                            "to": to_wa_id,
-                            "type": "text",
-                            "message": new_msg.body,
-                            "timestamp": new_msg.timestamp.isoformat(),
-                        })
-
-                        await send_message_to_waid(wa_id, "✅ Your address has been saved successfully!", db)
-
-                        # After saving address, send payment link
-                        try:
-                            # Compute order total for this customer (latest order)
-                            latest_order = (
-                                db.query(order_service.Order)
-                                .filter(order_service.Order.customer_id == customer.id)
-                                .order_by(order_service.Order.timestamp.desc())
-                                .first()
-                            )
-                            total_amount = 0
-                            if latest_order:
-                                for item in latest_order.items:
-                                    qty = item.quantity or 1
-                                    price = item.item_price or item.price or 0
-                                    total_amount += float(price) * int(qty)
-
-                            # --- Test override for Shopify tracking flow ---
-                            try:
-                                # Default ON: freeze totals for test unless explicitly disabled
-                                if os.getenv("TEST_SHOPIFY_TRACKING", "true").lower() in {"1", "true", "yes"}:
-                                    test_price = int(os.getenv("TEST_CHECKOUT_PRICE_INR", "1"))
-                                    test_shipping = int(os.getenv("TEST_SHIPPING_FEE_INR", "0"))
-                                    total_amount = test_price + test_shipping
-
-                                    # Optional: update a specific Shopify variant to this test price
-                                    variant_id = os.getenv("TEST_SHOPIFY_VARIANT_ID")
-                                    if variant_id:
-                                        ok = update_variant_price(variant_id, test_price)
-                                        if not ok:
-                                            print("Warning: Failed to update Shopify variant price for test")
-                            except Exception:
-                                pass
-
-                            if total_amount > 0:
-                                # Try proxy payment link first
-                                pay_link = None
-                                try:
-                                    bearer_token = None
-                                    token_url = os.getenv("RAZORPAY_TOKEN_URL", "https://payments.olivaclinic.com/api/token")
-                                    username = os.getenv("RAZORPAY_USERNAME") or os.getenv("RAZORPAY_PROXY_USERNAME")
-                                    password = os.getenv("RAZORPAY_PASSWORD") or os.getenv("RAZORPAY_PROXY_PASSWORD")
-                                    if username and password:
-                                        token_headers = {
-                                            "Accept": "application/json",
-                                            "Content-Type": "application/x-www-form-urlencoded",
-                                        }
-                                        token_data = {
-                                            "username": username,
-                                            "password": password,
-                                        }
-                                        token_resp = requests.post(token_url, data=token_data, headers=token_headers, timeout=15)
-                                        if token_resp.status_code == 200:
-                                            bearer_token = token_resp.json().get("access_token")
-                                except Exception:
-                                    bearer_token = None
-
-                                bearer_token = bearer_token or os.getenv("RAZORPAY_PROXY_BEARER_TOKEN")
-                                payment_api_url = os.getenv("RAZORPAY_PROXY_PAYMENT_URL", "https://payments.olivaclinic.com/api/payment")
-                                center_name = os.getenv("OLIVA_CENTER_NAME", "Corporate Training Center")
-                                center_id = os.getenv("OLIVA_CENTER_ID", "90e79e59-6202-4feb-a64f-b647801469e4")
-
-                                if bearer_token:
-                                    payload = {
-                                        "customer_name": customer.name or "Customer",
-                                        "phone_number": customer.wa_id,
-                                        "email": customer.email or "",
-                                        "amount": int(round(total_amount)),
-                                        "center": center_name,
-                                        "center_id": center_id,
-                                        "personal_info_first_name": (customer.name or "").split(" ")[0] if (customer.name) else "",
-                                        "personal_info_last_name": "",
-                                        "personal_info_mobile_country_code": 91,
-                                        "personal_info_mobile_number": customer.wa_id,
-                                        "address_info_country_id": 95,
-                                        "address_info_state_id": -2,
-                                        "preferences_receive_transactional_email": True,
-                                        "preferences_receive_transactional_sms": True,
-                                        "preferences_receive_marketing_email": True,
-                                        "preferences_receive_marketing_sms": True,
-                                        "preferences_recieve_lp_stmt": True,
-                                    }
-
-                                    headers = {
-                                        "Authorization": f"Bearer {bearer_token}",
-                                        "Content-Type": "application/json",
-                                        "Accept": "application/json, text/plain, */*",
-                                    }
-                                    resp = requests.post(payment_api_url, json=payload, headers=headers, timeout=20)
-                                    if resp.status_code == 200:
-                                        resp_json = resp.json()
-                                        pay_link = resp_json.get("payment_link")
-                                    else:
-                                        print("Payment link creation via proxy failed:", resp.text)
-
-                                # Fallback to direct Razorpay link if proxy not available or failed
-                                if not pay_link:
-                                    try:
-                                        direct_resp = create_razorpay_payment_link(
-                                            amount=float(total_amount),
-                                            currency="INR",
-                                            description=f"WA Order {str(latest_order.id) if latest_order else ''}"
-                                        )
-                                        pay_link = direct_resp.get("short_url") if isinstance(direct_resp, dict) else None
-                                    except Exception:
-                                        pay_link = None
-
-                                if pay_link:
-                                    await send_message_to_waid(wa_id, f"💳 Please complete your payment using this link: {pay_link}", db)
-                                else:
-                                    print("Auto payment link send skipped: no link generated")
-                            else:
-                                print("No latest order or zero amount; skipping auto payment link send")
-                        except Exception as pay_err:
-                            print("Auto payment link send error:", pay_err)
-
-                        return {"status": "success", "message_id": message_id}
-
-            except Exception as e:
-                print("Address processing error:", e)
-                await send_message_to_waid(wa_id, "❌ Failed to process your address. Please try again.", db)
-                return {"status": "failed", "message_id": message_id}
+            # User is in address collection flow, but should use the structured form
+            await send_message_to_waid(wa_id, "📍 Please use the address form above to enter your details. Click the '📝 Fill Address Form' button.", db)
+            return {"status": "awaiting_address_form", "message_id": message_id}
 
         # 3️⃣ Regular text messages (non-address)
         if message_type == "text":
@@ -616,37 +366,70 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 "timestamp": timestamp.isoformat(),
             })
 
-            # Create Razorpay payment link for the order total
-            # try:
-            #     total_amount = sum([p.get("item_price", 0) * p.get("quantity", 1) for p in order["product_items"]])
-            #     payment_payload = PaymentCreate(order_id=order_obj.id, amount=float(total_amount), currency=order["product_items"][0].get("currency", "INR"))
-            #     payment = payment_service.create_payment_link(db, payment_payload)
-            #     if payment.razorpay_short_url:
-            #         await send_message_to_waid(wa_id, f"💳 Please complete your payment of ₹{int(total_amount)} using this link: {payment.razorpay_short_url}", db)
-            # except Exception as e:
-            #     print("Payment link creation failed:", e)
-
-            await send_message_to_waid(wa_id, "📌 Please enter your full delivery address in the format below:", db)
-            await send_message_to_waid(wa_id,
-                """
-Full Name:
-
-House No. + Street:
-
-Area / Locality:
-
-City:
-
-State:
-
-Pincode:
-
-Landmark (Optional):
-
-Phone Number:
-                """, db)
-            # Mark user as awaiting address
-            awaiting_address_users[wa_id] = True
+            # NEW ADDRESS COLLECTION SYSTEM - Send "collect_address" template from Meta
+            try:
+                # Calculate order total
+                total_amount = sum([p.get("item_price", 0) * p.get("quantity", 1) for p in order["product_items"]])
+                
+                # Get WhatsApp token
+                token_entry = get_latest_token(db)
+                if token_entry and token_entry.token:
+                    access_token = token_entry.token
+                    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+                    phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+                    
+                    # Send collect_address template from Meta (no parameters)
+                    payload = {
+                        "messaging_product": "whatsapp",
+                        "to": wa_id,
+                        "type": "template",
+                        "template": {
+                            "name": "collect_address",
+                            "language": {"code": "en_US"}
+                        }
+                    }
+                    
+                    resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
+                    if resp.status_code == 200:
+                        try:
+                            tpl_msg_id = resp.json()["messages"][0]["id"]
+                            tpl_message = MessageCreate(
+                                message_id=tpl_msg_id,
+                                from_wa_id=to_wa_id,
+                                to_wa_id=wa_id,
+                                type="template",
+                                body=f"Address collection template sent to {customer.name or 'Customer'}",
+                                timestamp=datetime.now(),
+                                customer_id=customer.id
+                            )
+                            message_service.create_message(db, tpl_message)
+                            
+                            await manager.broadcast({
+                                "from": to_wa_id,
+                                "to": wa_id,
+                                "type": "template",
+                                "message": f"Address collection template sent to {customer.name or 'Customer'}",
+                                "timestamp": datetime.now().isoformat()
+                            })
+                            
+                            # Mark user as awaiting address for button responses
+                            awaiting_address_users[wa_id] = True
+                            
+                        except Exception as e:
+                            print(f"Error saving collect_address template message: {e}")
+                    else:
+                        print(f"Failed to send collect_address template: {resp.text}")
+                        # Fallback to structured form
+                        await send_address_form(wa_id, db)
+                else:
+                    print("No WhatsApp token available for collect_address template")
+                    # Fallback to structured form
+                    await send_address_form(wa_id, db)
+                    
+            except Exception as e:
+                print(f"Error sending collect_address template: {e}")
+                # Fallback to structured form
+                await send_address_form(wa_id, db)
         elif message_type == "location":
             location = message["location"]
             location_name = location.get("name", "")
@@ -662,6 +445,50 @@ Phone Number:
             else:
                 location_body = f"Shared Location - Lat: {latitude}, Lng: {longitude}"
 
+            # NEW: Check if this is part of address collection
+            try:
+                from services.address_collection_service import AddressCollectionService
+                address_service = AddressCollectionService(db)
+                result = await address_service.handle_location_message(
+                    wa_id=wa_id,
+                    latitude=latitude,
+                    longitude=longitude,
+                    location_name=location_name,
+                    location_address=location_address
+                )
+                
+                if result["success"]:
+                    # Address collection handled successfully
+                    message_data = MessageCreate(
+                        message_id=message_id,
+                        from_wa_id=from_wa_id,
+                        to_wa_id=to_wa_id,
+                        type="location",
+                        body=location_body,
+                        timestamp=timestamp,
+                        customer_id=customer.id,
+                        latitude=latitude,
+                        longitude=longitude,
+                    )
+                    message_service.create_message(db, message_data)
+                    
+                    await manager.broadcast({
+                        "from": from_wa_id,
+                        "to": to_wa_id,
+                        "type": "location",
+                        "latitude": latitude,
+                        "longitude": longitude,
+                        "timestamp": timestamp.isoformat(),
+                    })
+                    return {"status": "address_collected", "message_id": message_id}
+                else:
+                    # Fallback to old location handling
+                    pass
+            except Exception as e:
+                print(f"Address collection location handling failed: {e}")
+                # Fallback to old location handling
+
+            # OLD LOCATION HANDLING (fallback)
             message_data = MessageCreate(
                 message_id=message_id,
                 from_wa_id=from_wa_id,
@@ -757,9 +584,43 @@ Phone Number:
                 "timestamp": timestamp.isoformat(),
             })
 
-            # If user tapped Buy Products on welcome template → send catalog link
+            # Handle different button types
             choice_text = (reply_text or "").lower()
-            if ("buy" in choice_text) or ("product" in choice_text) or (btn_id and str(btn_id).lower() in {"buy_products", "buy", "products"}):
+            
+            # Address collection buttons (including collect_address template buttons)
+            if btn_id in ["ADD_DELIVERY_ADDRESS", "USE_CURRENT_LOCATION", "ENTER_NEW_ADDRESS", 
+                         "USE_SAVED_ADDRESS", "CONFIRM_ADDRESS", "CHANGE_ADDRESS", "RETRY_ADDRESS",
+                         "add_address", "use_location", "enter_manually", "saved_address",
+                         "fill_form_step1", "share_location"]:
+                try:
+                    # Handle collect_address template buttons - any button from collect_address template opens the form
+                    if btn_id in ["add_address", "use_location", "enter_manually", "saved_address", "fill_form_step1", "share_location"]:
+                        if btn_id == "add_address" or btn_id == "enter_manually" or btn_id == "fill_form_step1":
+                            # Show structured address form using WhatsApp interactive message
+                            await send_address_form(wa_id, db)
+                        elif btn_id == "use_location" or btn_id == "share_location":
+                            await send_message_to_waid(wa_id, "📍 Please share your current location by tapping the location icon below.", db)
+                        elif btn_id == "saved_address":
+                            await send_message_to_waid(wa_id, "💾 You can use a previously saved address. Please enter your address manually for now.", db)
+                            await send_address_form(wa_id, db)
+                    else:
+                        # Handle other address collection buttons using the service
+                        from services.address_collection_service import AddressCollectionService
+                        address_service = AddressCollectionService(db)
+                        result = await address_service.handle_address_button_click(wa_id, btn_id)
+                        
+                        if not result["success"]:
+                            await send_message_to_waid(wa_id, f"❌ {result.get('error', 'Something went wrong')}", db)
+                except Exception as e:
+                    await send_message_to_waid(wa_id, f"❌ Error processing address request: {str(e)}", db)
+            
+            # Generic handler for any button click when user is awaiting address
+            elif awaiting_address_users.get(wa_id, False):
+                # If user is awaiting address and clicks any button, show the structured form
+                await send_address_form(wa_id, db)
+            
+            # Buy Products button
+            elif ("buy" in choice_text) or ("product" in choice_text) or (btn_id and str(btn_id).lower() in {"buy_products", "buy", "products"}):
                 try:
                     await send_message_to_waid(wa_id, "🛍️ Browse our catalog: https://wa.me/c/917729992376", db)
                 except Exception:
@@ -772,6 +633,83 @@ Phone Number:
             i_type = interactive.get("type")
             title = None
             reply_id = None
+            
+            # Handle form submission
+            if i_type == "form":
+                form_response = interactive.get("form_response", {})
+                form_name = form_response.get("name", "")
+                form_data = form_response.get("data", [])
+                
+                if form_name == "address_form":
+                    # Process address form submission
+                    try:
+                        address_data = {}
+                        for item in form_data:
+                            field_id = item.get("id", "")
+                            field_value = item.get("value", "")
+                            address_data[field_id] = field_value
+                        
+                        # Validate and save address
+                        if address_data.get("full_name") and address_data.get("phone_number") and address_data.get("pincode"):
+                            # Create address using the new address service
+                            from schemas.address_schema import CustomerAddressCreate
+                            from services.address_service import create_customer_address
+                            
+                            address_create = CustomerAddressCreate(
+                                customer_id=customer.id,
+                                full_name=address_data.get("full_name", ""),
+                                house_street=address_data.get("house_street", ""),
+                                locality=address_data.get("locality", ""),
+                                city=address_data.get("city", ""),
+                                state=address_data.get("state", ""),
+                                pincode=address_data.get("pincode", ""),
+                                landmark=address_data.get("landmark", ""),
+                                phone=address_data.get("phone_number", customer.wa_id),
+                                address_type="home",
+                                is_default=True
+                            )
+                            
+                            saved_address = create_customer_address(db, address_create)
+                            
+                            # Send confirmation
+                            await send_message_to_waid(wa_id, "✅ Address saved successfully!", db)
+                            await send_message_to_waid(wa_id, f"📍 {saved_address.full_name}, {saved_address.house_street}, {saved_address.locality}, {saved_address.city} - {saved_address.pincode}", db)
+                            
+                            # Clear awaiting address flag
+                            awaiting_address_users[wa_id] = False
+                            
+                            # Continue with payment flow
+                            try:
+                                latest_order = (
+                                    db.query(order_service.Order)
+                                    .filter(order_service.Order.customer_id == customer.id)
+                                    .order_by(order_service.Order.timestamp.desc())
+                                    .first()
+                                )
+                                total_amount = 0
+                                if latest_order:
+                                    for item in latest_order.items:
+                                        qty = item.quantity or 1
+                                        price = item.item_price or item.price or 0
+                                        total_amount += float(price) * int(qty)
+
+                                if total_amount > 0:
+                                    # Send payment link (using existing payment logic)
+                                    await send_message_to_waid(wa_id, f"💳 Please complete your payment of ₹{int(total_amount)} using the payment link that will be sent shortly.", db)
+                            except Exception as pay_err:
+                                print("Payment flow error:", pay_err)
+                            
+                            return {"status": "address_saved", "message_id": message_id}
+                        else:
+                            await send_message_to_waid(wa_id, "❌ Please fill in all required fields (Name, Phone, Pincode, House & Street, Area, City, State).", db)
+                            return {"status": "form_incomplete", "message_id": message_id}
+                            
+                    except Exception as e:
+                        print(f"Error processing address form: {e}")
+                        await send_message_to_waid(wa_id, "❌ Error processing your address. Please try again.", db)
+                        return {"status": "form_error", "message_id": message_id}
+            
+            # Handle other interactive types (buttons, lists)
             try:
                 if i_type == "button_reply":
                     title = interactive.get("button_reply", {}).get("title")
