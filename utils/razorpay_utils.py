@@ -5,10 +5,7 @@ import requests
 import base64
 from typing import Dict, Any
 
-# Razorpay Configuration
-RAZORPAY_KEY_ID = "rzp_live_uMx1leMLvqdOxv"
-RAZORPAY_SECRET = "0TbD6fORvP9sBVte5IJxN6g0"
-RAZORPAY_BASE_URL = "https://api.razorpay.com/v1"
+
 
 def validate_razorpay_signature(data: bytes, received_signature: str, secret: str) -> bool:
     """

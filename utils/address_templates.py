@@ -7,6 +7,76 @@ from typing import Dict, Any, Optional
 from datetime import datetime
 
 
+def create_flow_button_payload(wa_id: str, flow_id: str, flow_cta: str, flow_token: str = "", 
+                              flow_action_payload: Dict[str, Any] = None) -> Dict[str, Any]:
+    """
+    Create a WhatsApp Flow button payload for address collection
+    
+    Args:
+        wa_id: WhatsApp ID of the recipient
+        flow_id: The flow ID created in Meta Business Manager
+        flow_cta: Call-to-action text for the button
+        flow_token: Optional flow token for tracking
+        flow_action_payload: Optional payload data for the flow
+    
+    Returns:
+        Dict containing the flow button payload
+    """
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": wa_id,
+        "type": "interactive",
+        "interactive": {
+            "type": "flow",
+            "header": {
+                "type": "text",
+                "text": "📍 Address Collection"
+            },
+            "body": {
+                "text": "Please provide your delivery address using the form below."
+            },
+            "footer": {
+                "text": "All fields are required for delivery"
+            },
+            "action": {
+                "name": "flow",
+                "parameters": {
+                    "flow_message_version": "3",
+                    "flow_token": flow_token,
+                    "flow_id": flow_id,
+                    "flow_cta": flow_cta,
+                    "flow_action_payload": flow_action_payload or {}
+                }
+            }
+        }
+    }
+    
+    return payload
+
+
+def get_address_collection_flow_template(wa_id: str, customer_name: str = "Customer") -> Dict[str, Any]:
+    """
+    Get the address collection flow template with flow button
+    
+    Args:
+        wa_id: WhatsApp ID of the recipient
+        customer_name: Name of the customer
+    
+    Returns:
+        Dict containing the flow template payload
+    """
+    return create_flow_button_payload(
+        wa_id=wa_id,
+        flow_id="address_collection_flow",  # This should match your flow ID in Meta Business Manager
+        flow_cta="Provide Address",
+        flow_token=f"address_flow_{wa_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+        flow_action_payload={
+            "customer_name": customer_name,
+            "flow_type": "address_collection"
+        }
+    )
+
+
 def get_order_confirmation_template(customer_name: str, order_total: float, order_items: list) -> Dict[str, Any]:
     """
     Template sent after order placement - includes 'Add Delivery Address' button

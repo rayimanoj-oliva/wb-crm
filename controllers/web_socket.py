@@ -157,6 +157,64 @@ City: [Your city]
 State: [Your state]
 Landmark: [Optional - nearby landmark]""", db)
 
+
+async def send_address_flow_button(wa_id: str, db: Session, customer_name: str = "Customer"):
+    """Send WhatsApp Flow button for address collection"""
+    try:
+        # Get WhatsApp token
+        token_entry = get_latest_token(db)
+        if not token_entry or not token_entry.token:
+            await send_message_to_waid(wa_id, "❌ Unable to send address flow. Please try again.", db)
+            return
+        
+        access_token = token_entry.token
+        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+        phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+        
+        # Import the flow template
+        from utils.address_templates import get_address_collection_flow_template
+        
+        # Get the flow payload
+        payload = get_address_collection_flow_template(wa_id, customer_name)
+        
+        resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
+        if resp.status_code == 200:
+            try:
+                flow_msg_id = resp.json()["messages"][0]["id"]
+                flow_message = MessageCreate(
+                    message_id=flow_msg_id,
+                    from_wa_id="917729992376",  # Your WhatsApp number
+                    to_wa_id=wa_id,
+                    type="interactive",
+                    body="Address collection flow sent",
+                    timestamp=datetime.now(),
+                    customer_id=customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name="")).id
+                )
+                message_service.create_message(db, flow_message)
+                
+                await manager.broadcast({
+                    "from": "917729992376",
+                    "to": wa_id,
+                    "type": "interactive",
+                    "message": "Address collection flow sent",
+                    "timestamp": datetime.now().isoformat()
+                })
+                
+                print(f"Address flow button sent successfully: {flow_msg_id}")
+                
+            except Exception as e:
+                print(f"Error saving address flow message: {e}")
+        else:
+            print(f"Failed to send address flow: {resp.text}")
+            # Fallback to regular form
+            await send_address_form(wa_id, db)
+            
+    except Exception as e:
+        print(f"Error sending address flow: {e}")
+        # Fallback to regular form
+        await send_address_form(wa_id, db)
+
+
 def _upload_header_image(access_token: str, image_path_or_url: str, phone_id: str) -> str:
     try:
         content = None
@@ -587,14 +645,20 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             # Handle different button types
             choice_text = (reply_text or "").lower()
             
-            # Address collection buttons (including collect_address template buttons)
+            # Address collection buttons (including collect_address template buttons and flow buttons)
             if btn_id in ["ADD_DELIVERY_ADDRESS", "USE_CURRENT_LOCATION", "ENTER_NEW_ADDRESS", 
                          "USE_SAVED_ADDRESS", "CONFIRM_ADDRESS", "CHANGE_ADDRESS", "RETRY_ADDRESS",
                          "add_address", "use_location", "enter_manually", "saved_address",
-                         "fill_form_step1", "share_location"]:
+                         "fill_form_step1", "share_location", "provide_address", "address_flow"]:
                 try:
+                    # Handle WhatsApp Flow buttons
+                    if btn_id in ["provide_address", "address_flow"]:
+                        # Flow button clicked - send the WhatsApp Flow
+                        customer = customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
+                        await send_address_flow_button(wa_id, db, customer.name or "Customer")
+                    
                     # Handle collect_address template buttons - any button from collect_address template opens the form
-                    if btn_id in ["add_address", "use_location", "enter_manually", "saved_address", "fill_form_step1", "share_location"]:
+                    elif btn_id in ["add_address", "use_location", "enter_manually", "saved_address", "fill_form_step1", "share_location"]:
                         if btn_id == "add_address" or btn_id == "enter_manually" or btn_id == "fill_form_step1":
                             # Show structured address form using WhatsApp interactive message
                             await send_address_form(wa_id, db)
@@ -634,8 +698,116 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             title = None
             reply_id = None
             
+            # Handle WhatsApp Flow submission
+            if i_type == "flow":
+                flow_response = interactive.get("flow_response", {})
+                flow_token = flow_response.get("flow_token", "")
+                flow_id = flow_response.get("flow_id", "")
+                flow_cta = flow_response.get("flow_cta", "")
+                flow_action_payload = flow_response.get("flow_action_payload", {})
+                
+                print(f"Flow response received: flow_id={flow_id}, flow_cta={flow_cta}")
+                
+                # Handle address collection flow
+                if flow_id == "address_collection_flow" or "address" in flow_id.lower():
+                    try:
+                        # Extract address data from flow response
+                        address_data = {}
+                        
+                        # Parse flow action payload for address fields
+                        if flow_action_payload:
+                            # Common field mappings for address flows
+                            field_mappings = {
+                                "full_name": ["full_name", "name", "customer_name"],
+                                "phone_number": ["phone_number", "phone", "mobile"],
+                                "house_street": ["house_street", "address_line_1", "street"],
+                                "locality": ["locality", "area", "neighborhood"],
+                                "city": ["city", "town"],
+                                "state": ["state", "province"],
+                                "pincode": ["pincode", "postal_code", "zip_code"],
+                                "landmark": ["landmark", "landmark_nearby"]
+                            }
+                            
+                            for field_name, possible_keys in field_mappings.items():
+                                for key in possible_keys:
+                                    if key in flow_action_payload:
+                                        address_data[field_name] = flow_action_payload[key]
+                                        break
+                        
+                        # Validate and save address
+                        if address_data.get("full_name") and address_data.get("phone_number") and address_data.get("pincode"):
+                            from schemas.address_schema import CustomerAddressCreate
+                            from services.address_service import create_customer_address
+                            
+                            address_create = CustomerAddressCreate(
+                                customer_id=customer.id,
+                                full_name=address_data.get("full_name", ""),
+                                house_street=address_data.get("house_street", ""),
+                                locality=address_data.get("locality", ""),
+                                city=address_data.get("city", ""),
+                                state=address_data.get("state", ""),
+                                pincode=address_data.get("pincode", ""),
+                                landmark=address_data.get("landmark", ""),
+                                phone=address_data.get("phone_number", customer.wa_id),
+                                address_type="home",
+                                is_default=True
+                            )
+                            
+                            saved_address = create_customer_address(db, address_create)
+                            
+                            # Send confirmation
+                            await send_message_to_waid(wa_id, "✅ Address saved successfully!", db)
+                            await send_message_to_waid(wa_id, f"📍 {saved_address.full_name}, {saved_address.house_street}, {saved_address.locality}, {saved_address.city} - {saved_address.pincode}", db)
+                            
+                            # Clear awaiting address flag
+                            awaiting_address_users[wa_id] = False
+                            
+                            # Continue with payment flow
+                            try:
+                                latest_order = (
+                                    db.query(order_service.Order)
+                                    .filter(order_service.Order.customer_id == customer.id)
+                                    .order_by(order_service.Order.timestamp.desc())
+                                    .first()
+                                )
+                                total_amount = 0
+                                if latest_order:
+                                    for item in latest_order.items:
+                                        qty = item.quantity or 1
+                                        price = item.item_price or item.price or 0
+                                        total_amount += float(price) * int(qty)
+                                
+                                if total_amount > 0:
+                                    # Send payment link (using existing payment logic)
+                                    from utils.razorpay_utils import create_razorpay_payment_link
+                                    try:
+                                        payment_resp = create_razorpay_payment_link(
+                                            amount=float(total_amount),
+                                            currency="INR",
+                                            description=f"WA Order {str(latest_order.id) if latest_order else ''}"
+                                        )
+                                        pay_link = payment_resp.get("short_url") if isinstance(payment_resp, dict) else None
+                                        if pay_link:
+                                            await send_message_to_waid(wa_id, f"💳 Please complete your payment using this link: {pay_link}", db)
+                                    except Exception as pay_err:
+                                        print("Payment flow error:", pay_err)
+                            except Exception as e:
+                                print("Error in payment flow after address collection:", e)
+                            
+                            return {"status": "address_saved", "message_id": message_id}
+                        else:
+                            await send_message_to_waid(wa_id, "❌ Please fill in all required fields (Name, Phone, Pincode, House & Street, Area, City, State).", db)
+                            return {"status": "flow_incomplete", "message_id": message_id}
+                            
+                    except Exception as e:
+                        print(f"Error processing flow response: {e}")
+                        await send_message_to_waid(wa_id, "❌ Error processing your address. Please try again.", db)
+                        return {"status": "flow_error", "message_id": message_id}
+                
+                return {"status": "flow_processed", "message_id": message_id}
+            
             # Handle form submission
-            if i_type == "form":
+            elif i_type == "form":
                 form_response = interactive.get("form_response", {})
                 form_name = form_response.get("name", "")
                 form_data = form_response.get("data", [])
