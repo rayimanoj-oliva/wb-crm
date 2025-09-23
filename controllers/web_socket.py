@@ -313,19 +313,12 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 "timestamp": timestamp.isoformat()
             }) 
 
-            # If user types buy/products, send catalog link immediately
-            try:
-                txt_norm = re.sub(r"[^a-z]", "", (body_text or "").lower())
-                if ("buy" in txt_norm) or ("product" in txt_norm):
-                    await send_message_to_waid(wa_id, "🛍️ Browse our catalog: https://wa.me/c/917729992376", db)
-                    return {"status": "success", "message_id": message_id}
-            except Exception:
-                pass
+            # Catalog link is sent only on explicit button clicks; no text keyword trigger
 
-        # 4️⃣ Hi/Hello auto-template
+        # 4️⃣ Hi/Hello auto-template (trigger only on whole-word greetings)
         raw = (body_text or "").strip()
-        normalized = re.sub(r"[^a-z]", "", raw.lower())
-        if message_type == "text" and (normalized in {"hi", "hello", "hlo"} or ("hi" in normalized or "hello" in normalized)):
+        raw_lower = raw.lower()
+        if message_type == "text" and re.search(r"\b(hi|hello|hlo)\b", raw_lower):
             # call your existing welcome template sending logic here
             token_entry = get_latest_token(db)
             if token_entry and token_entry.token:
@@ -668,8 +661,8 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             # Handle different button types
             choice_text = (reply_text or "").lower()
 
-            # 1) Buy Products: ALWAYS send catalog link; do not trigger address here
-            if ("buy" in choice_text) or ("product" in choice_text) or (btn_id and str(btn_id).lower() in {"buy_products", "buy", "products"}):
+            # 1) Buy Products: send catalog link ONLY for explicit Buy Products button
+            if (btn_id and str(btn_id).lower() == "buy_products") or ((btn_text or "").strip().lower() == "buy products"):
                 try:
                     await send_message_to_waid(wa_id, "🛍️ Browse our catalog: https://wa.me/c/917729992376", db)
                 except Exception:
@@ -951,9 +944,9 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 "timestamp": timestamp.isoformat(),
             })
 
-            # If user chose Buy Products → send only the WhatsApp catalog link
-            choice_text = (reply_text or "").lower()
-            if ("buy" in choice_text) or ("product" in choice_text) or (reply_id and reply_id.lower() in {"buy_products", "buy", "products"}):
+            # If user chose Buy Products → send only the WhatsApp catalog link (strict match)
+            choice_text = (reply_text or "").strip().lower()
+            if (reply_id and reply_id.lower() == "buy_products") or (choice_text == "buy products"):
                 try:
                     await send_message_to_waid(wa_id, "🛍️ Browse our catalog: https://wa.me/c/917729992376", db)
                 except Exception:

@@ -5,6 +5,10 @@ from fastapi import HTTPException
 import requests
 
 from schemas.customer_schema import CustomerCreate
+from sqlalchemy.orm import Session
+from models.models import Category, SubCategory, Product
+from config.constants import get_messages_url
+import os
 from schemas.message_schema import MessageCreate
 from services import whatsapp_service, customer_service, message_service
 from utils.ws_manager import manager
@@ -55,6 +59,118 @@ async def send_message_to_waid(wa_id: str, message_body: str, db, from_wa_id="91
     })
 
     return new_msg
+
+
+def _get_headers(db):
+    token_obj = whatsapp_service.get_latest_token(db)
+    if not token_obj:
+        raise HTTPException(status_code=400, detail="Token not available")
+    return {
+        "Authorization": f"Bearer {token_obj.token}",
+        "Content-Type": "application/json"
+    }
+
+
+async def send_category_list(wa_id: str, db: Session):
+    headers = _get_headers(db)
+    phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+    categories = db.query(Category).all()
+    rows = []
+    for c in categories:
+        rows.append({
+            "id": str(c.id),
+            "title": c.name[:24],
+            "description": (c.description or "")[:72]
+        })
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": wa_id,
+        "type": "interactive",
+        "interactive": {
+            "type": "list",
+            "header": {"type": "text", "text": "Browse Categories"},
+            "body": {"text": "Choose a category"},
+            "action": {
+                "button": "Choose",
+                "sections": [{
+                    "title": "Categories",
+                    "rows": rows or [{"id": "noop", "title": "No categories", "description": "Add from admin"}]
+                }]
+            }
+        }
+    }
+    res = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
+    if res.status_code != 200:
+        raise HTTPException(status_code=500, detail=f"Failed to send categories: {res.text}")
+
+
+async def send_subcategory_list(wa_id: str, category_id: str, db: Session):
+    headers = _get_headers(db)
+    phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+    subs = db.query(SubCategory).filter(SubCategory.category_id == category_id).all()
+    rows = []
+    for s in subs:
+        rows.append({
+            "id": str(s.id),
+            "title": s.name[:24],
+            "description": (s.description or "")[:72]
+        })
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": wa_id,
+        "type": "interactive",
+        "interactive": {
+            "type": "list",
+            "header": {"type": "text", "text": "Subcategories"},
+            "body": {"text": "Choose a subcategory"},
+            "action": {
+                "button": "Choose",
+                "sections": [{
+                    "title": "Subcategories",
+                    "rows": rows or [{"id": f"cat:{category_id}", "title": "All items", "description": "No subcategories"}]
+                }]
+            }
+        }
+    }
+    res = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
+    if res.status_code != 200:
+        raise HTTPException(status_code=500, detail=f"Failed to send subcategories: {res.text}")
+
+
+async def send_products_list(wa_id: str, category_id: str = None, subcategory_id: str = None, db: Session = None):
+    headers = _get_headers(db)
+    phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+    q = db.query(Product)
+    if subcategory_id:
+        q = q.filter(Product.sub_category_id == subcategory_id)
+    elif category_id:
+        q = q.filter(Product.category_id == category_id)
+    products = q.limit(10).all()
+    rows = []
+    for p in products:
+        rows.append({
+            "id": str(p.id),
+            "title": p.name[:24],
+            "description": f"₹{int(p.price)} | Stock: {p.stock}"
+        })
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": wa_id,
+        "type": "interactive",
+        "interactive": {
+            "type": "list",
+            "header": {"type": "text", "text": "Products"},
+            "body": {"text": "Pick a product"},
+            "action": {
+                "button": "Choose",
+                "sections": [{"title": "Products", "rows": rows or [{"id": "noop", "title": "No products available"}]}]
+            }
+        }
+    }
+    res = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
+    if res.status_code != 200:
+        raise HTTPException(status_code=500, detail=f"Failed to send products: {res.text}")
+
 async def send_location_to_waid(wa_id: str, latitude: float, longitude: float, name: str, address: str, db, from_wa_id="917729992376"):
     token_obj = whatsapp_service.get_latest_token(db)
     if not token_obj:

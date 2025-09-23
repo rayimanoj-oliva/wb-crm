@@ -205,6 +205,8 @@ class Product(Base):
     sku = Column(String(100), unique=True, index=True)
     price = Column(Float, nullable=False)
     description = Column(Text)
+    image_url = Column(String(500), nullable=True)
+    stock = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -395,6 +397,7 @@ class Category(Base):
     name = Column(String(120), unique=True, nullable=False)
     slug = Column(String(140), unique=True, nullable=True)
     description = Column(Text, nullable=True)
+    image_url = Column(String(500), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
