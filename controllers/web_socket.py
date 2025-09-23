@@ -311,7 +311,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 "type": "text",
                 "message": body_text,
                 "timestamp": timestamp.isoformat()
-            }) 
+            })
 
             # Catalog link is sent only on explicit button clicks; no text keyword trigger
 
@@ -319,7 +319,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         raw = (body_text or "").strip()
         raw_lower = raw.lower()
         if message_type == "text" and re.search(r"\b(hi|hello|hlo)\b", raw_lower):
-            # call your existing welcome template sending logic here
+                # call your existing welcome template sending logic here
             token_entry = get_latest_token(db)
             if token_entry and token_entry.token:
                 try:
