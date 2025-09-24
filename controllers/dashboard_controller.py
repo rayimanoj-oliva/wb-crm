@@ -44,6 +44,24 @@ def agent_avg_response_time(agent_id: str, center_id: Optional[str] = None, db: 
 def template_status(db: Session = Depends(get_db)):
     return get_template_status(db)
 
+# Breakdown endpoints for individual template status counts
+@router.get("/template-status/approved")
+def template_status_approved(db: Session = Depends(get_db)):
+    stats = get_template_status(db)
+    return {"count": stats.get("approved_templates", 0)}
+
+@router.get("/template-status/failed")
+def template_status_failed(db: Session = Depends(get_db)):
+    stats = get_template_status(db)
+    # "failed" maps to rejected templates in current schema
+    return {"count": stats.get("rejected", 0)}
+
+@router.get("/template-status/review")
+def template_status_review(db: Session = Depends(get_db)):
+    stats = get_template_status(db)
+    # "review" maps to pending_review in current schema
+    return {"count": stats.get("pending_review", 0)}
+
 # 🆕 Add Recent Failed Messages API
 @router.get("/recent-failed-messages")
 def recent_failed_messages(db: Session = Depends(get_db)):

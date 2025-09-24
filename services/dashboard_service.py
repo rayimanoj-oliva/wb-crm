@@ -102,9 +102,17 @@ def get_template_status(db: Session):
     """
     Returns counts of approved, pending, and rejected templates
     """
-    approved = db.query(Template).filter(Template.template_body["status"].astext == "approved").count()
-    pending = db.query(Template).filter(Template.template_body["status"].astext == "pending").count()
-    rejected = db.query(Template).filter(Template.template_body["status"].astext == "rejected").count()
+    # Status stored from Meta is typically uppercase (e.g., "APPROVED", "PENDING", "REJECTED").
+    # Normalize to lowercase for robust matching.
+    status_expr = func.lower(Template.template_body["status"].astext)
+
+    approved = db.query(Template).filter(status_expr == "approved").count()
+
+    # Treat various review-like states as pending review
+    pending_statuses = ["pending", "in_appeal", "in_review", "review"]
+    pending = db.query(Template).filter(status_expr.in_(pending_statuses)).count()
+
+    rejected = db.query(Template).filter(status_expr == "rejected").count()
 
     return {
         "approved_templates": approved,
