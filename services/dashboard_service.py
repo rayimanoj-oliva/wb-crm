@@ -115,9 +115,9 @@ def get_template_status(db: Session):
     rejected = db.query(Template).filter(status_expr == "rejected").count()
 
     return {
-        "approved_templates": approved,
-        "pending_review": pending,
-        "rejected": rejected
+        "approved": approved,
+        "pending": pending,
+        "failed": rejected,
     }
 
 

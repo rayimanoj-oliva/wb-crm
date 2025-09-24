@@ -29,7 +29,23 @@ def get_all_templates_from_meta(db: Session = Depends(get_db)) -> TemplatesRespo
     if response.status_code != 200:
         raise HTTPException(status_code=response.status_code, detail=response.json())
 
-    return TemplatesResponse(**response.json())
+    # Parse and persist into local DB so dashboard reflects without manual sync
+    parsed = TemplatesResponse(**response.json())
+    try:
+        for item in parsed.data:
+            body = {
+                "name": item.name,
+                "language": item.language,
+                "status": item.status,
+                "category": item.category,
+                "components": [c.model_dump() for c in (item.components or [])],
+            }
+            upsert_template_record(db, template_name=item.name, template_body=body, template_vars={})
+    except Exception:
+        # Non-fatal: do not block response to client
+        pass
+
+    return parsed
 
 def create_template_on_meta(payload: CreateMetaTemplateRequest, db: Session):
     token_entry = get_latest_token(db)
@@ -116,6 +132,14 @@ def delete_template_from_meta(template_name: str, db: Session):
 
     if response.status_code != 200:
         raise HTTPException(status_code=response.status_code, detail=response.json())
+    # Also delete from local DB to keep dashboard counts accurate
+    try:
+        rec = db.query(Template).filter(Template.template_name == template_name).first()
+        if rec:
+            db.delete(rec)
+            db.commit()
+    except Exception:
+        pass
 
     return {"status": "success", "detail": response.json()}
 

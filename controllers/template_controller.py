@@ -11,7 +11,6 @@ from services.template_service import (
     create_template_on_meta,
     send_template_to_facebook,
     delete_template_from_meta,
-    sync_templates_from_meta_to_db,
 )
 
 router = APIRouter(tags=["Templates"])
@@ -37,12 +36,7 @@ def delete_template(template_name: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/sync")
-def sync_templates(db: Session = Depends(get_db)):
-    try:
-        return sync_templates_from_meta_to_db(db)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# Removed explicit sync endpoint; templates are persisted automatically when fetched/created/deleted
 
 
 @router.get("/local")
