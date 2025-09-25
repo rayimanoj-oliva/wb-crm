@@ -1,7 +1,7 @@
 import io
 from typing import List
 import pandas as pd
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, UploadFile, Response
 from sqlalchemy.orm import Session
 
 from auth import get_current_user
@@ -13,10 +13,26 @@ from typing import List, Optional
 from pydantic import BaseModel
 from fastapi import HTTPException, Body
 from models.models import Cost, Template, CampaignRecipient
-from services.campaign_service import create_campaign, get_all_campaigns
+from services.campaign_service import (
+    create_campaign,
+    get_all_campaigns,
+    get_campaign_reports,
+    export_campaign_reports_excel,
+    get_single_campaign_report,
+    get_campaigns_running_in_date_range,
+    export_single_campaign_report_excel,
+)
 import services.campaign_service as campaign_service
 from uuid import UUID
 router = APIRouter(tags=["Campaign"])
+
+# ------------------------------
+# Campaign Reports Endpoints (placed before dynamic /{campaign_id})
+# ------------------------------
+
+
+
+
 
 @router.post("/send-template")
 def send_bulk_template(req: BulkTemplateRequest):
@@ -355,3 +371,70 @@ def run_saved_template_campaign(
         "expected_body": expected_body,
         "expected_header_text": expected_header_text
     }
+
+
+# ------------------------------
+# Campaign Reports Endpoints
+# ------------------------------
+
+
+@router.get("/reports/running")
+def campaigns_running(
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    type: Optional[str] = None,
+    search: Optional[str] = None,
+    page: int = 1,
+    limit: int = 25,
+    sort_by: Optional[str] = None,
+    sort_dir: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    # Parse dates in YYYY-MM-DD or DD-MM-YYYY
+    def parse_d(d: Optional[str]):
+        if not d:
+            return None
+        from datetime import datetime
+        for fmt in ("%Y-%m-%d", "%d-%m-%Y"):
+            try:
+                return datetime.strptime(d, fmt).date()
+            except Exception:
+                continue
+        return None
+    fd = parse_d(from_date)
+    td = parse_d(to_date)
+
+    rows = get_campaigns_running_in_date_range(
+        db,
+        from_date=fd,
+        to_date=td,
+        type_filter=type,
+        search=search,
+        page=page,
+        limit=limit,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+    )
+    return rows
+@router.get("/{campaign_id}/report")
+def campaign_report_detail(
+    campaign_id: str,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    return get_single_campaign_report(db, campaign_id)
+
+@router.get("/{campaign_id}/report/export")
+def campaign_report_export(
+    campaign_id: str,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    content = export_single_campaign_report_excel(db, campaign_id)
+    filename = f"campaign_{campaign_id}_report.xlsx"
+    headers = {
+        "Content-Disposition": f"attachment; filename={filename}",
+        "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    }
+    return Response(content=content, media_type=headers["Content-Type"], headers=headers)
