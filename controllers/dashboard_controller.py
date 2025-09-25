@@ -48,19 +48,19 @@ def template_status(db: Session = Depends(get_db)):
 @router.get("/template-status/approved")
 def template_status_approved(db: Session = Depends(get_db)):
     stats = get_template_status(db)
-    return {"count": stats.get("approved_templates", 0)}
+    return {"count": stats.get("approved", 0)}
 
 @router.get("/template-status/failed")
 def template_status_failed(db: Session = Depends(get_db)):
     stats = get_template_status(db)
     # "failed" maps to rejected templates in current schema
-    return {"count": stats.get("rejected", 0)}
+    return {"count": stats.get("failed", 0)}
 
 @router.get("/template-status/review")
 def template_status_review(db: Session = Depends(get_db)):
     stats = get_template_status(db)
-    # "review" maps to pending_review in current schema
-    return {"count": stats.get("pending_review", 0)}
+    # "review" maps to pending in current schema
+    return {"count": stats.get("pending", 0)}
 
 # 🆕 Add Recent Failed Messages API
 @router.get("/recent-failed-messages")
