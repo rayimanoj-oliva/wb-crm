@@ -912,6 +912,89 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             # Handle different button types
             choice_text = (reply_text or "").lower()
 
+            # NEW: Support Skin/Hair/Body coming as type="button" (payload/text), not interactive.button_reply
+            topic = (btn_id or btn_text or "").strip().lower()
+            if topic in {"skin", "hair", "body"}:
+                try:
+                    token_entry2 = get_latest_token(db)
+                    if token_entry2 and token_entry2.token:
+                        access_token2 = token_entry2.token
+                        phone_id2 = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+                        from controllers.auto_welcome_controller import _send_template
+                        lang_code = os.getenv("WELCOME_TEMPLATE_LANG", "en_US")
+
+                        if topic == "skin":
+                            # Send skin_treat_flow then the Skin concerns list (to mirror interactive path)
+                            resp_skin = _send_template(wa_id=wa_id, template_name="skin_treat_flow", access_token=access_token2, phone_id=phone_id2, components=None, lang_code=lang_code)
+                            try:
+                                await manager.broadcast({
+                                    "from": to_wa_id,
+                                    "to": wa_id,
+                                    "type": "template" if resp_skin.status_code == 200 else "template_error",
+                                    "message": "skin_treat_flow sent" if resp_skin.status_code == 200 else "skin_treat_flow failed",
+                                    **({"status_code": resp_skin.status_code} if resp_skin.status_code != 200 else {}),
+                                })
+                            except Exception:
+                                pass
+
+                            headers2 = {"Authorization": f"Bearer {access_token2}", "Content-Type": "application/json"}
+                            payload_list = {
+                                "messaging_product": "whatsapp",
+                                "to": wa_id,
+                                "type": "interactive",
+                                "interactive": {
+                                    "type": "list",
+                                    "body": {"text": "Please select your Skin concern:"},
+                                    "action": {
+                                        "button": "Select Concern",
+                                        "sections": [
+                                            {
+                                                "title": "Skin Concerns",
+                                                "rows": [
+                                                    {"id": "acne", "title": "Acne / Acne Scars"},
+                                                    {"id": "pigmentation", "title": "Pigmentation & Uneven Skin Tone"},
+                                                    {"id": "antiaging", "title": "Anti-Aging & Skin Rejuvenation"},
+                                                    {"id": "laser", "title": "Laser Hair Removal"},
+                                                    {"id": "other_skin", "title": "Other Skin Concerns"}
+                                                ]
+                                            }
+                                        ]
+                                    }
+                                }
+                            }
+                            requests.post(get_messages_url(phone_id2), headers=headers2, json=payload_list)
+                            return {"status": "list_sent", "message_id": message_id}
+
+                        if topic == "hair":
+                            resp_hair = _send_template(wa_id=wa_id, template_name="hair_treat_flow", access_token=access_token2, phone_id=phone_id2, components=None, lang_code=lang_code)
+                            try:
+                                await manager.broadcast({
+                                    "from": to_wa_id,
+                                    "to": wa_id,
+                                    "type": "template" if resp_hair.status_code == 200 else "template_error",
+                                    "message": "hair_treat_flow sent" if resp_hair.status_code == 200 else "hair_treat_flow failed",
+                                    **({"status_code": resp_hair.status_code} if resp_hair.status_code != 200 else {}),
+                                })
+                            except Exception:
+                                pass
+                            return {"status": "hair_template_sent", "message_id": message_id}
+
+                        if topic == "body":
+                            resp_body = _send_template(wa_id=wa_id, template_name="body_treat_flow", access_token=access_token2, phone_id=phone_id2, components=None, lang_code=lang_code)
+                            try:
+                                await manager.broadcast({
+                                    "from": to_wa_id,
+                                    "to": wa_id,
+                                    "type": "template" if resp_body.status_code == 200 else "template_error",
+                                    "message": "body_treat_flow sent" if resp_body.status_code == 200 else "body_treat_flow failed",
+                                    **({"status_code": resp_body.status_code} if resp_body.status_code != 200 else {}),
+                                })
+                            except Exception:
+                                pass
+                            return {"status": "body_template_sent", "message_id": message_id}
+                except Exception:
+                    pass
+
             # 1) Buy Products: send catalog link ONLY for explicit Buy Products button
             if (btn_id and str(btn_id).lower() == "buy_products") or ((btn_text or "").strip().lower() == "buy products"):
                 try:
@@ -1447,16 +1530,16 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
 
             # Save user's interactive reply (fallback if not already broadcasted above)
             if not interactive_broadcasted:
-                reply_text = title or reply_id or "[Interactive Reply]"
-                msg_interactive = MessageCreate(
-                    message_id=message_id,
-                    from_wa_id=from_wa_id,
-                    to_wa_id=to_wa_id,
-                    type="interactive",
-                    body=reply_text,
-                    timestamp=timestamp,
-                    customer_id=customer.id,
-                )
+            reply_text = title or reply_id or "[Interactive Reply]"
+            msg_interactive = MessageCreate(
+                message_id=message_id,
+                from_wa_id=from_wa_id,
+                to_wa_id=to_wa_id,
+                type="interactive",
+                body=reply_text,
+                timestamp=timestamp,
+                customer_id=customer.id,
+            )
             message_service.create_message(db, msg_interactive)
             await manager.broadcast({
                 "from": from_wa_id,
