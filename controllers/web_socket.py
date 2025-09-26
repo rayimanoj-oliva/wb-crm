@@ -37,6 +37,10 @@ awaiting_address_users = {}
 # Track whether we've already nudged the user to use the form to avoid repeats
 address_nudge_sent = {}
 
+# In-memory appointment scheduling state per user
+# Structure: { wa_id: { "date": "YYYY-MM-DD" } }
+appointment_state = {}
+
 
 # WebSocket endpoint
 @router.websocket("/channel")
@@ -217,6 +221,154 @@ async def send_address_flow_button(wa_id: str, db: Session, customer_name: str =
         # Fallback to regular form
         await send_address_form(wa_id, db)
 
+
+def _generate_next_dates(num_days: int = 7):
+    try:
+        today = datetime.now()
+        rows = []
+        for i in range(num_days):
+            d = today + timedelta(days=i + 1)
+            date_id = d.strftime("date_%Y-%m-%d")
+            title = d.strftime("%d %b %Y (%A)")
+            rows.append({"id": date_id, "title": title})
+        return rows
+    except Exception:
+        return []
+
+
+async def send_date_list(wa_id: str, db: Session, header_text: str | None = None):
+    try:
+        token_entry = get_latest_token(db)
+        if not token_entry or not token_entry.token:
+            await send_message_to_waid(wa_id, "❌ Unable to fetch appointment dates right now.", db)
+            return {"success": False}
+
+        access_token = token_entry.token
+        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+        phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+
+        rows = _generate_next_dates(7)
+        if not rows:
+            await send_message_to_waid(wa_id, "❌ No dates available. Please try again later.", db)
+            return {"success": False}
+
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": wa_id,
+            "type": "interactive",
+            "interactive": {
+                "type": "list",
+                **({"header": {"type": "text", "text": header_text}} if header_text else {}),
+                "body": {"text": "Please select your preferred appointment date \ud83d\udcc5"},
+                "action": {
+                    "button": "Choose Date",
+                    "sections": [
+                        {"title": "Available Dates", "rows": rows}
+                    ]
+                }
+            }
+        }
+
+        resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
+        if resp.status_code == 200:
+            try:
+                display_from = os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376")
+                await manager.broadcast({
+                    "from": display_from,
+                    "to": wa_id,
+                    "type": "interactive",
+                    "message": "Please select your preferred appointment date",
+                    "timestamp": datetime.now().isoformat(),
+                    "meta": {"kind": "list", "section": "Available Dates"}
+                })
+            except Exception:
+                pass
+            return {"success": True}
+        else:
+            await send_message_to_waid(wa_id, "❌ Could not send date options. Please try again.", db)
+            return {"success": False, "error": resp.text}
+    except Exception as e:
+        await send_message_to_waid(wa_id, f"❌ Error sending date options: {str(e)}", db)
+        return {"success": False, "error": str(e)}
+
+
+async def send_time_buttons(wa_id: str, db: Session):
+    try:
+        token_entry = get_latest_token(db)
+        if not token_entry or not token_entry.token:
+            await send_message_to_waid(wa_id, "❌ Unable to fetch time slots right now.", db)
+            return {"success": False}
+        access_token = token_entry.token
+        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+        phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+
+        selected_date = (appointment_state.get(wa_id) or {}).get("date")
+        date_note = f" for {selected_date}" if selected_date else ""
+
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": wa_id,
+            "type": "interactive",
+            "interactive": {
+                "type": "button",
+                "body": {"text": f"Great! Now choose a preferred time slot \u23F0{date_note}"},
+                "action": {
+                    "buttons": [
+                        {"type": "reply", "reply": {"id": "time_10_00", "title": "10:00 AM"}},
+                        {"type": "reply", "reply": {"id": "time_14_00", "title": "2:00 PM"}},
+                        {"type": "reply", "reply": {"id": "time_18_00", "title": "6:00 PM"}}
+                    ]
+                }
+            }
+        }
+
+        resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
+        if resp.status_code == 200:
+            try:
+                display_from = os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376")
+                await manager.broadcast({
+                    "from": display_from,
+                    "to": wa_id,
+                    "type": "interactive",
+                    "message": "Choose a preferred time slot",
+                    "timestamp": datetime.now().isoformat(),
+                    "meta": {"kind": "buttons", "options": ["10:00 AM", "2:00 PM", "6:00 PM"]}
+                })
+            except Exception:
+                pass
+            return {"success": True}
+        else:
+            await send_message_to_waid(wa_id, "❌ Could not send time slots. Please try again.", db)
+            return {"success": False, "error": resp.text}
+    except Exception as e:
+        await send_message_to_waid(wa_id, f"❌ Error sending time slots: {str(e)}", db)
+        return {"success": False, "error": str(e)}
+
+
+async def _confirm_appointment(wa_id: str, db: Session, date_iso: str, time_label: str):
+    try:
+        # Confirmation to user
+        await send_message_to_waid(wa_id, f"✅ Thank you! Your preferred appointment is {date_iso} at {time_label}. Our team will call and confirm shortly.", db)
+        # Clear state
+        try:
+            if wa_id in appointment_state:
+                appointment_state.pop(wa_id, None)
+        except Exception:
+            pass
+        # Broadcast
+        try:
+            await manager.broadcast({
+                "from": "system",
+                "to": wa_id,
+                "type": "system",
+                "message": f"Appointment preference captured: {date_iso} {time_label}",
+                "timestamp": datetime.now().isoformat()
+            })
+        except Exception:
+            pass
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 def _upload_header_image(access_token: str, image_path_or_url: str, phone_id: str) -> str:
     try:
@@ -543,6 +695,31 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 except Exception as e:
                     print(f"[ws_webhook] DEBUG - Error in validation flow: {e}")
                 handled_text = True
+
+        # Manual date-time fallback parsing before other generic text handling
+        if message_type == "text" and not handled_text:
+            try:
+                # Pattern: DD-MM-YYYY, HH:MM AM/PM (also supports / as separator)
+                m_dt = re.search(r"\b(\d{1,2})[\-\/](\d{1,2})[\-\/]?(\d{2,4})\b\s*,?\s*(\d{1,2}):(\d{2})\s*([APap][Mm])", body_text)
+                m_d = re.search(r"\b(\d{1,2})[\-\/]((\d{1,2}))[\-\/]?(\d{2,4})\b", body_text)
+                if m_dt:
+                    dd, mm, yyyy, hh, mins, ampm = m_dt.groups()
+                    yyyy = yyyy if len(yyyy) == 4 else ("20" + yyyy)
+                    date_iso = f"{int(yyyy):04d}-{int(mm):02d}-{int(dd):02d}"
+                    time_label = f"{int(hh):02d}:{int(mins):02d} {ampm.upper()}"
+                    appointment_state[wa_id] = {"date": date_iso}
+                    await _confirm_appointment(wa_id, db, date_iso, time_label)
+                    return {"status": "appointment_captured", "message_id": message_id}
+                elif m_d:
+                    dd, mm, _, yyyy = m_d.groups()
+                    yyyy = yyyy if len(yyyy) == 4 else ("20" + yyyy)
+                    date_iso = f"{int(yyyy):04d}-{int(mm):02d}-{int(dd):02d}"
+                    appointment_state[wa_id] = {"date": date_iso}
+                    await send_message_to_waid(wa_id, f"✅ Date noted: {date_iso}", db)
+                    await send_time_buttons(wa_id, db)
+                    return {"status": "date_selected", "message_id": message_id}
+            except Exception:
+                pass
 
         # 4️⃣ Regular text messages (non-address) - only if not already handled above
         if message_type == "text" and not handled_text:
@@ -1081,6 +1258,50 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     pass
                 return {"status": "success", "message_id": message_id}
 
+            # Appointment booking: trigger date list
+            if ((btn_id or "").lower() == "book_appointment" or 
+                (btn_text or "").strip().lower() == "book an appointment" or
+                (btn.get("payload") or "").strip().lower() == "book an appointment"):
+                try:
+                    await send_date_list(wa_id, db)
+                except Exception:
+                    pass
+                return {"status": "date_list_sent", "message_id": message_id}
+
+            # Request a Call Back acknowledgement
+            if ((btn_id or "").lower() == "request_callback" or 
+                (btn_text or "").strip().lower() == "request a call back" or
+                (btn.get("payload") or "").strip().lower() == "request a call back"):
+                try:
+                    await send_message_to_waid(wa_id, "📌 Thank you for your interest! One of our team members will contact you shortly to assist further.", db)
+                except Exception:
+                    pass
+                return {"status": "callback_ack", "message_id": message_id}
+
+            # Time selection via template button
+            if ((btn_id or "").lower().startswith("time_") or 
+                (btn_text or "").strip() in ["10:00 AM", "2:00 PM", "6:00 PM"] or
+                (btn.get("payload") or "").strip() in ["10:00 AM", "2:00 PM", "6:00 PM"]):
+                try:
+                    time_map = {
+                        "time_10_00": "10:00 AM",
+                        "time_14_00": "2:00 PM",
+                        "time_18_00": "6:00 PM",
+                    }
+                    time_label = (time_map.get((btn_id or "").lower()) or 
+                                (btn_text or "").strip() or 
+                                (btn.get("payload") or "").strip())
+                    date_iso = (appointment_state.get(wa_id) or {}).get("date")
+                    if date_iso and time_label:
+                        await _confirm_appointment(wa_id, db, date_iso, time_label)
+                        return {"status": "appointment_captured", "message_id": message_id}
+                    else:
+                        await send_message_to_waid(wa_id, "Please select a date first.", db)
+                        await send_date_list(wa_id, db)
+                        return {"status": "need_date_first", "message_id": message_id}
+                except Exception:
+                    pass
+
             # 2) Address collection buttons (including collect_address template buttons and flow buttons)
             if btn_id in ["ADD_DELIVERY_ADDRESS", "USE_CURRENT_LOCATION", "ENTER_NEW_ADDRESS", 
                          "USE_SAVED_ADDRESS", "CONFIRM_ADDRESS", "CHANGE_ADDRESS", "RETRY_ADDRESS",
@@ -1530,6 +1751,64 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         # Send to WhatsApp API (no extra websocket broadcast here to avoid duplicates)
                         requests.post(get_messages_url(phone_id2), headers=headers2, json=payload_list)
                         return {"status": "list_sent", "message_id": message_id}
+            except Exception:
+                pass
+
+            # Appointment booking entry shortcuts
+            try:
+                if i_type == "button_reply":
+                    button_reply = interactive.get("button_reply", {})
+                    button_id = button_reply.get("id", "")
+                    button_title = button_reply.get("title", "")
+                    
+                    if ((button_id or "").lower() == "book_appointment" or 
+                        (button_title or "").strip().lower() == "book an appointment"):
+                        await send_date_list(wa_id, db)
+                        return {"status": "date_list_sent", "message_id": message_id}
+                    
+                    if ((button_id or "").lower() == "request_callback" or 
+                        (button_title or "").strip().lower() == "request a call back"):
+                        await send_message_to_waid(wa_id, "📌 Thank you for your interest! One of our team members will contact you shortly to assist further.", db)
+                        return {"status": "callback_ack", "message_id": message_id}
+            except Exception:
+                pass
+
+            # Date picked from list
+            try:
+                if i_type == "list_reply" and (reply_id or "").lower().startswith("date_"):
+                    date_iso = (reply_id or "")[5:]
+                    if re.match(r"^\d{4}-\d{2}-\d{2}$", date_iso):
+                        appointment_state[wa_id] = {"date": date_iso}
+                        await send_message_to_waid(wa_id, f"✅ Date selected: {date_iso}", db)
+                        await send_time_buttons(wa_id, db)
+                        return {"status": "date_selected", "message_id": message_id}
+            except Exception:
+                pass
+
+            # Time picked from button reply (interactive path)
+            try:
+                if i_type == "button_reply":
+                    button_reply = interactive.get("button_reply", {})
+                    button_id = button_reply.get("id", "")
+                    button_title = button_reply.get("title", "")
+                    
+                    if ((button_id or "").lower().startswith("time_") or 
+                        (button_title or "").strip() in ["10:00 AM", "2:00 PM", "6:00 PM"]):
+                        time_map = {
+                            "time_10_00": "10:00 AM",
+                            "time_14_00": "2:00 PM", 
+                            "time_18_00": "6:00 PM",
+                        }
+                        time_label = (time_map.get((button_id or "").lower()) or 
+                                    (button_title or "").strip())
+                        date_iso = (appointment_state.get(wa_id) or {}).get("date")
+                        if date_iso and time_label:
+                            await _confirm_appointment(wa_id, db, date_iso, time_label)
+                            return {"status": "appointment_captured", "message_id": message_id}
+                        else:
+                            await send_message_to_waid(wa_id, "Please select a date first.", db)
+                            await send_date_list(wa_id, db)
+                            return {"status": "need_date_first", "message_id": message_id}
             except Exception:
                 pass
 
