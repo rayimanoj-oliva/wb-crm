@@ -1530,16 +1530,16 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
 
             # Save user's interactive reply (fallback if not already broadcasted above)
             if not interactive_broadcasted:
-            reply_text = title or reply_id or "[Interactive Reply]"
-            msg_interactive = MessageCreate(
-                message_id=message_id,
-                from_wa_id=from_wa_id,
-                to_wa_id=to_wa_id,
-                type="interactive",
-                body=reply_text,
-                timestamp=timestamp,
-                customer_id=customer.id,
-            )
+                reply_text = title or reply_id or "[Interactive Reply]"
+                msg_interactive = MessageCreate(
+                    message_id=message_id,
+                    from_wa_id=from_wa_id,
+                    to_wa_id=to_wa_id,
+                    type="interactive",
+                    body=reply_text,
+                    timestamp=timestamp,
+                    customer_id=customer.id,
+                )
             message_service.create_message(db, msg_interactive)
             await manager.broadcast({
                 "from": from_wa_id,
