@@ -9,6 +9,7 @@ import re
 import mimetypes
 import asyncio
 import os
+import json
 import requests
 
 from sqlalchemy.orm import Session
@@ -253,6 +254,16 @@ def _upload_header_image(access_token: str, image_path_or_url: str, phone_id: st
 async def receive_message(request: Request, db: Session = Depends(get_db)):
     try:
         body = await request.json()
+        # Persist raw webhook payload to file for debugging/auditing
+        try:
+            log_dir = "webhook_logs"
+            os.makedirs(log_dir, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            log_path = os.path.join(log_dir, f"webhook_{ts}.json")
+            with open(log_path, "w", encoding="utf-8") as lf:
+                lf.write(json.dumps(body, ensure_ascii=False, indent=2))
+        except Exception:
+            pass
         value = body["entry"][0]["changes"][0]["value"]
         contact = value["contacts"][0]
         message = value["messages"][0]
