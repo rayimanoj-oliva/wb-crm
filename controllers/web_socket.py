@@ -995,6 +995,84 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 except Exception:
                     pass
 
+            # NEW: Support list selections arriving as type="button" (payload/text)
+            norm_btn = (btn_id or btn_text or "").strip().lower()
+            skin_concerns = {
+                "acne / acne scars",
+                "pigmentation & uneven skin tone",
+                "anti-aging & skin rejuvenation",
+                "laser hair removal",
+                "other skin concerns",
+            }
+            hair_concerns = {
+                "hair loss / hair fall",
+                "hair transplant",
+                "dandruff & scalp care",
+                "other hair concerns",
+            }
+            body_concerns = {
+                "weight management",
+                "body contouring",
+                "weight loss",
+                "other body concerns",
+            }
+
+            if norm_btn in skin_concerns or norm_btn in hair_concerns or norm_btn in body_concerns:
+                # Mirror list_reply handling: send booking_appoint, then next-step buttons
+                try:
+                    token_entry_book = get_latest_token(db)
+                    if token_entry_book and token_entry_book.token:
+                        phone_id_book = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+                        lang_code_book = os.getenv("WELCOME_TEMPLATE_LANG", "en_US")
+                        from controllers.auto_welcome_controller import _send_template
+                        resp_book = _send_template(
+                            wa_id=wa_id,
+                            template_name="booking_appoint",
+                            access_token=token_entry_book.token,
+                            phone_id=phone_id_book,
+                            components=None,
+                            lang_code=lang_code_book
+                        )
+                        try:
+                            await manager.broadcast({
+                                "from": to_wa_id,
+                                "to": wa_id,
+                                "type": "template" if resp_book.status_code == 200 else "template_error",
+                                "message": "booking_appoint sent" if resp_book.status_code == 200 else "booking_appoint failed",
+                                **({"status_code": resp_book.status_code} if resp_book.status_code != 200 else {}),
+                            })
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                # Send action buttons
+                try:
+                    token_entry3 = get_latest_token(db)
+                    if token_entry3 and token_entry3.token:
+                        access_token3 = token_entry3.token
+                        headers3 = {"Authorization": f"Bearer {access_token3}", "Content-Type": "application/json"}
+                        phone_id3 = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+                        payload_buttons = {
+                            "messaging_product": "whatsapp",
+                            "to": wa_id,
+                            "type": "interactive",
+                            "interactive": {
+                                "type": "button",
+                                "body": {"text": "Please choose one option:"},
+                                "action": {
+                                    "buttons": [
+                                        {"type": "reply", "reply": {"id": "book_appointment", "title": "\ud83d\udcc5 Book an Appointment"}},
+                                        {"type": "reply", "reply": {"id": "request_callback", "title": "\ud83d\udcde Request a Call Back"}}
+                                    ]
+                                }
+                            }
+                        }
+                        requests.post(get_messages_url(phone_id3), headers=headers3, json=payload_buttons)
+                        return {"status": "next_actions_sent", "message_id": message_id}
+                except Exception:
+                    pass
+
             # 1) Buy Products: send catalog link ONLY for explicit Buy Products button
             if (btn_id and str(btn_id).lower() == "buy_products") or ((btn_text or "").strip().lower() == "buy products"):
                 try:
