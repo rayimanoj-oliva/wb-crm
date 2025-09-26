@@ -383,20 +383,7 @@ async def whatsapp_auto_welcome_webhook(request: Request, db: Session = Depends(
                                 rows = list_rows(["Weight Management", "Body Contouring", "Weight Loss", "Other Body Concerns"])
                                 section_title = "Body"
 
-                            payload_list = {
-                                "messaging_product": "whatsapp",
-                                "to": wa_id,
-                                "type": "interactive",
-                                "interactive": {
-                                    "type": "list",
-                                    "header": {"type": "text", "text": "Select a treatment"},
-                                    "body": {"text": "Please choose one option:"},
-                                    "action": {
-                                        "button": "Choose",
-                                        "sections": [{"title": section_title, "rows": rows}]
-                                    }
-                                }
-                            }
+                         
                             requests.post(get_messages_url(phone_id2), headers=headers2, json=payload_list)
                             try:
                                 await manager.broadcast({
@@ -425,80 +412,80 @@ async def whatsapp_auto_welcome_webhook(request: Request, db: Session = Depends(
             print("[auto_webhook] allowed_variants[0]=", allowed_variants[0])
         except Exception:
             pass
-        
+
         # If this is the prefill message, send mr_welcome_temp and return
         if normalized_body in allowed_variants:
             print("[auto_webhook] Prefill message detected, sending mr_welcome_temp")
-            token_entry = get_latest_token(db)
-            if not token_entry or not token_entry.token:
-                print("[auto_webhook] no WhatsApp token available")
-                return {"status": "no_token"}
+        token_entry = get_latest_token(db)
+        if not token_entry or not token_entry.token:
+            print("[auto_webhook] no WhatsApp token available")
+            return {"status": "no_token"}
 
-            access_token = token_entry.token
-            phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
-            lang_code = os.getenv("WELCOME_TEMPLATE_LANG", "en_US")
-            
+        access_token = token_entry.token
+        phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+        lang_code = os.getenv("WELCOME_TEMPLATE_LANG", "en_US")
+
             # Prepare components to satisfy template params (expects 1 body param). We pass customer name.
-            body_components = [{
-                "type": "body",
-                "parameters": [
-                    {"type": "text", "text": (sender_name or wa_id or "there")}
-                ]
-            }]
+        body_components = [{
+            "type": "body",
+            "parameters": [
+                {"type": "text", "text": (sender_name or wa_id or "there")}
+            ]
+        }]
 
+        try:
+            await manager.broadcast({
+                "from": to_wa_id,
+                "to": wa_id,
+                "type": "template_attempt",
+                "message": "Sending mr_welcome_temp...",
+                "params": {"body_param_1": (sender_name or wa_id or "there")},
+                "timestamp": datetime.now().isoformat()
+            })
+        except Exception:
+            pass
+
+        resp = _send_template(
+            wa_id=wa_id,
+            template_name="mr_welcome_temp",
+            access_token=access_token,
+            phone_id=phone_id,
+            components=body_components,
+            lang_code=lang_code
+        )
+
+        if resp.status_code == 200:
             try:
-                await manager.broadcast({
-                    "from": to_wa_id,
-                    "to": wa_id,
-                    "type": "template_attempt",
-                    "message": "Sending mr_welcome_temp...",
-                    "params": {"body_param_1": (sender_name or wa_id or "there")},
-                    "timestamp": datetime.now().isoformat()
-                })
+                tpl_msg_id = resp.json()["messages"][0]["id"]
+                tpl_message = MessageCreate(
+                    message_id=tpl_msg_id,
+                    from_wa_id=to_wa_id,
+                    to_wa_id=wa_id,
+                    type="template",
+                    body=f"mr_welcome_temp sent to {sender_name or wa_id}",
+                    timestamp=datetime.now(),
+                    customer_id=customer.id,
+                )
+                message_service.create_message(db, tpl_message)
+                try:
+                    # Broadcast template send event to websocket clients
+                    await manager.broadcast({
+                        "from": to_wa_id,
+                        "to": wa_id,
+                        "type": "template",
+                        "message": f"mr_welcome_temp sent to {sender_name or wa_id}",
+                        "timestamp": datetime.now().isoformat()
+                    })
+                except Exception:
+                    pass
             except Exception:
                 pass
-
-            resp = _send_template(
-                wa_id=wa_id,
-                template_name="mr_welcome_temp",
-                access_token=access_token,
-                phone_id=phone_id,
-                components=body_components,
-                lang_code=lang_code
-            )
-
-            if resp.status_code == 200:
-                try:
-                    tpl_msg_id = resp.json()["messages"][0]["id"]
-                    tpl_message = MessageCreate(
-                        message_id=tpl_msg_id,
-                        from_wa_id=to_wa_id,
-                        to_wa_id=wa_id,
-                        type="template",
-                        body=f"mr_welcome_temp sent to {sender_name or wa_id}",
-                        timestamp=datetime.now(),
-                        customer_id=customer.id,
-                    )
-                    message_service.create_message(db, tpl_message)
-                    try:
-                        # Broadcast template send event to websocket clients
-                        await manager.broadcast({
-                            "from": to_wa_id,
-                            "to": wa_id,
-                            "type": "template",
-                            "message": f"mr_welcome_temp sent to {sender_name or wa_id}",
-                            "timestamp": datetime.now().isoformat()
-                        })
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
                 return {"status": "welcome_sent", "message_id": message_id}
-            else:
-                try:
+        else:
+            try:
                     print("[auto_webhook] mr_welcome_temp send failed:", resp.status_code, resp.text[:500])
-                except Exception:
-                    pass
+            except Exception:
+                pass
                 return {"status": "welcome_failed", "error": resp.text}
         
         # If not prefill message, continue with name/phone validation flow

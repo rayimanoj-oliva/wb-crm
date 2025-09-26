@@ -1167,7 +1167,34 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 title = None
                 reply_id = None
 
-            # Step 2 → 3: If user selected Skin/Hair/Body button, send concerns list
+            # NEW: Immediately persist and broadcast ANY interactive reply before branching,
+            # so UI always shows the user's selection even if we return early later.
+            interactive_broadcasted = False
+            try:
+                if i_type in {"button_reply", "list_reply"}:
+                    reply_text_any = (title or reply_id or "[Interactive Reply]")
+                    msg_interactive_any = MessageCreate(
+                        message_id=message_id,
+                        from_wa_id=from_wa_id,
+                        to_wa_id=to_wa_id,
+                        type="interactive",
+                        body=reply_text_any,
+                        timestamp=timestamp,
+                        customer_id=customer.id,
+                    )
+                    message_service.create_message(db, msg_interactive_any)
+                    await manager.broadcast({
+                        "from": from_wa_id,
+                        "to": to_wa_id,
+                        "type": "interactive",
+                        "message": reply_text_any,
+                        "timestamp": timestamp.isoformat(),
+                    })
+                    interactive_broadcasted = True
+            except Exception:
+                pass
+
+            # Step 2 → 3: If user selected Skin/Hair/Body button, save+broadcast reply, then send concerns list
             try:
                 if i_type == "button_reply" and (reply_id or "").lower() in {"skin", "hair", "body"}:
                     token_entry2 = get_latest_token(db)
@@ -1177,6 +1204,80 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         phone_id2 = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
 
                         topic = (reply_id or "").lower()
+                        # If SKIN selected, trigger template skin_treat_flow (no params assumed)
+                        if topic == "skin":
+                            try:
+                                from controllers.auto_welcome_controller import _send_template
+                                lang_code_skin = os.getenv("WELCOME_TEMPLATE_LANG", "en_US")
+                                resp_skin = _send_template(
+                                    wa_id=wa_id,
+                                    template_name="skin_treat_flow",
+                                    access_token=token_entry2.token,
+                                    phone_id=phone_id2,
+                                    components=None,
+                                    lang_code=lang_code_skin
+                                )
+                                try:
+                                    await manager.broadcast({
+                                        "from": to_wa_id,
+                                        "to": wa_id,
+                                        "type": "template" if resp_skin.status_code == 200 else "template_error",
+                                        "message": "skin_treat_flow sent" if resp_skin.status_code == 200 else "skin_treat_flow failed",
+                                        **({"status_code": resp_skin.status_code} if resp_skin.status_code != 200 else {}),
+                                        **({"error": (resp_skin.text[:500] if isinstance(resp_skin.text, str) else str(resp_skin.text))} if resp_skin.status_code != 200 else {}),
+                                        "timestamp": datetime.now().isoformat()
+                                    })
+                                except Exception:
+                                    pass
+                            except Exception as e:
+                                try:
+                                    await manager.broadcast({
+                                        "from": to_wa_id,
+                                        "to": wa_id,
+                                        "type": "template_error",
+                                        "message": f"skin_treat_flow exception: {str(e)[:120]}",
+                                        "timestamp": datetime.now().isoformat()
+                                    })
+                                except Exception:
+                                    pass
+                        # If HAIR selected, trigger template hair_treat_flow (no params assumed) and STOP
+                        elif topic == "hair":
+                            try:
+                                from controllers.auto_welcome_controller import _send_template
+                                lang_code_hair = os.getenv("WELCOME_TEMPLATE_LANG", "en_US")
+                                resp_hair = _send_template(
+                                    wa_id=wa_id,
+                                    template_name="hair_treat_flow",
+                                    access_token=token_entry2.token,
+                                    phone_id=phone_id2,
+                                    components=None,
+                                    lang_code=lang_code_hair
+                                )
+                                try:
+                                    await manager.broadcast({
+                                        "from": to_wa_id,
+                                        "to": wa_id,
+                                        "type": "template" if resp_hair.status_code == 200 else "template_error",
+                                        "message": "hair_treat_flow sent" if resp_hair.status_code == 200 else "hair_treat_flow failed",
+                                        **({"status_code": resp_hair.status_code} if resp_hair.status_code != 200 else {}),
+                                        **({"error": (resp_hair.text[:500] if isinstance(resp_hair.text, str) else str(resp_hair.text))} if resp_hair.status_code != 200 else {}),
+                                        "timestamp": datetime.now().isoformat()
+                                    })
+                                except Exception:
+                                    pass
+                                # Do not send any further lists or flows for hair; exit early
+                                return {"status": "hair_template_sent", "message_id": message_id}
+                            except Exception as e:
+                                try:
+                                    await manager.broadcast({
+                                        "from": to_wa_id,
+                                        "to": wa_id,
+                                        "type": "template_error",
+                                        "message": f"hair_treat_flow exception: {str(e)[:120]}",
+                                        "timestamp": datetime.now().isoformat()
+                                    })
+                                except Exception:
+                                    pass
                         def list_rows(items):
                             return [{"id": f"{topic}:{i}", "title": title} for i, title in enumerate(items, start=1)]
 
@@ -1206,63 +1307,94 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                     }
                                 }
                             }
-                            # Broadcast first
-                            try:
-                                await manager.broadcast({
-                                    "from": to_wa_id,
-                                    "to": wa_id,
-                                    "type": "interactive",
-                                    "message": "Please select your Skin concern:",
-                                    "timestamp": timestamp.isoformat(),
-                                    "meta": {"kind": "list", "section": "Skin Concerns"}
-                                })
-                            except Exception:
-                                pass
-                            # Then send to WA API
+                            # Send to WA API (no websocket broadcast of list to avoid duplicates)
                             requests.post(get_messages_url(phone_id2), headers=headers2, json=payload_list)
                             return {"status": "list_sent", "message_id": message_id}
                         elif topic == "hair":
                             rows = list_rows(["Hair Loss / Hair Fall", "Hair Transplant", "Dandruff & Scalp Care", "Other Hair Concerns"])
                             section_title = "Hair"
                         else:
+                            # If BODY selected, trigger template body_treat_flow (no params) and STOP
+                            if topic == "body":
+                                try:
+                                    from controllers.auto_welcome_controller import _send_template
+                                    lang_code_body = os.getenv("WELCOME_TEMPLATE_LANG", "en_US")
+                                    resp_body = _send_template(
+                                        wa_id=wa_id,
+                                        template_name="body_treat_flow",
+                                        access_token=token_entry2.token,
+                                        phone_id=phone_id2,
+                                        components=None,
+                                        lang_code=lang_code_body
+                                    )
+                                    try:
+                                        await manager.broadcast({
+                                            "from": to_wa_id,
+                                            "to": wa_id,
+                                            "type": "template" if resp_body.status_code == 200 else "template_error",
+                                            "message": "body_treat_flow sent" if resp_body.status_code == 200 else "body_treat_flow failed",
+                                            **({"status_code": resp_body.status_code} if resp_body.status_code != 200 else {}),
+                                            **({"error": (resp_body.text[:500] if isinstance(resp_body.text, str) else str(resp_body.text))} if resp_body.status_code != 200 else {}),
+                                            "timestamp": datetime.now().isoformat()
+                                        })
+                                    except Exception:
+                                        pass
+                                    return {"status": "body_template_sent", "message_id": message_id}
+                                except Exception as e:
+                                    try:
+                                        await manager.broadcast({
+                                            "from": to_wa_id,
+                                            "to": wa_id,
+                                            "type": "template_error",
+                                            "message": f"body_treat_flow exception: {str(e)[:120]}",
+                                            "timestamp": datetime.now().isoformat()
+                                        })
+                                    except Exception:
+                                        pass
                             rows = list_rows(["Weight Management", "Body Contouring", "Weight Loss", "Other Body Concerns"])
                             section_title = "Body"
 
-                        payload_list = {
-                            "messaging_product": "whatsapp",
-                            "to": wa_id,
-                            "type": "interactive",
-                            "interactive": {
-                                "type": "list",
-                                "header": {"type": "text", "text": "Select a treatment"},
-                                "body": {"text": "Please choose one option:"},
-                                "action": {
-                                    "button": "Choose",
-                                    "sections": [{"title": section_title, "rows": rows}]
-                                }
-                            }
-                        }
-                        # Broadcast first so UI shows event even if WA API fails
-                        try:
-                            await manager.broadcast({
-                                "from": to_wa_id,
-                                "to": wa_id,
-                                "type": "interactive",
-                                "message": "Please choose one option:",
-                                "timestamp": timestamp.isoformat(),
-                                "meta": {"kind": "list", "section": section_title}
-                            })
-                        except Exception:
-                            pass
-                        # Then attempt to send to WhatsApp API
+                      
+                        # Send to WhatsApp API (no extra websocket broadcast here to avoid duplicates)
                         requests.post(get_messages_url(phone_id2), headers=headers2, json=payload_list)
                         return {"status": "list_sent", "message_id": message_id}
             except Exception:
                 pass
 
-            # Step 3 → 6: After a list selection, present next-step action buttons
+            # Step 3 → 6: After a list selection, save+broadcast reply, then present next-step action buttons
             try:
                 if i_type == "list_reply" and (reply_id or title):
+                    # Do NOT rebroadcast here; unified early broadcast already did it.
+                    # Trigger booking_appoint template right after treatment selection
+                    try:
+                        token_entry_book = get_latest_token(db)
+                        if token_entry_book and token_entry_book.token:
+                            phone_id_book = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+                            lang_code_book = os.getenv("WELCOME_TEMPLATE_LANG", "en_US")
+                            from controllers.auto_welcome_controller import _send_template
+                            resp_book = _send_template(
+                                wa_id=wa_id,
+                                template_name="booking_appoint",
+                                access_token=token_entry_book.token,
+                                phone_id=phone_id_book,
+                                components=None,
+                                lang_code=lang_code_book
+                            )
+                            try:
+                                await manager.broadcast({
+                                    "from": to_wa_id,
+                                    "to": wa_id,
+                                    "type": "template" if resp_book.status_code == 200 else "template_error",
+                                    "message": "booking_appoint sent" if resp_book.status_code == 200 else "booking_appoint failed",
+                                    **({"status_code": resp_book.status_code} if resp_book.status_code != 200 else {}),
+                                    **({"error": (resp_book.text[:500] if isinstance(resp_book.text, str) else str(resp_book.text))} if resp_book.status_code != 200 else {}),
+                                    "timestamp": datetime.now().isoformat()
+                                })
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+
                     token_entry3 = get_latest_token(db)
                     if token_entry3 and token_entry3.token:
                         access_token3 = token_entry3.token
@@ -1302,17 +1434,18 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             except Exception:
                 pass
 
-            # Save user's interactive reply
-            reply_text = title or reply_id or "[Interactive Reply]"
-            msg_interactive = MessageCreate(
-                message_id=message_id,
-                from_wa_id=from_wa_id,
-                to_wa_id=to_wa_id,
-                type="interactive",
-                body=reply_text,
-                timestamp=timestamp,
-                customer_id=customer.id,
-            )
+            # Save user's interactive reply (fallback if not already broadcasted above)
+            if not interactive_broadcasted:
+                reply_text = title or reply_id or "[Interactive Reply]"
+                msg_interactive = MessageCreate(
+                    message_id=message_id,
+                    from_wa_id=from_wa_id,
+                    to_wa_id=to_wa_id,
+                    type="interactive",
+                    body=reply_text,
+                    timestamp=timestamp,
+                    customer_id=customer.id,
+                )
             message_service.create_message(db, msg_interactive)
             await manager.broadcast({
                 "from": from_wa_id,
@@ -1323,6 +1456,10 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             })
 
             # If user chose Buy Products → send only the WhatsApp catalog link (strict match)
+            try:
+                reply_text  # may be undefined if we already broadcast earlier
+            except NameError:
+                reply_text = title or reply_id or ""
             choice_text = (reply_text or "").strip().lower()
             if (reply_id and reply_id.lower() == "buy_products") or (choice_text == "buy products"):
                 try:
