@@ -75,6 +75,8 @@ async def send_whatsapp_message(
         caption = None
         filename = None
         mime_type = None
+        # Always define; used later when saving message even for non-template types
+        effective_media_id = None
 
         # ---------------- Upload media if file is provided ----------------
         if file:
