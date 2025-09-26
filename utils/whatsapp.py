@@ -13,8 +13,7 @@ from schemas.message_schema import MessageCreate
 from services import whatsapp_service, customer_service, message_service
 from utils.ws_manager import manager
 
-WHATSAPP_API_URL ="https://graph.facebook.com/v22.0/367633743092037/messages"
-
+WHATSAPP_API_URL = "https://graph.facebook.com/v22.0/367633743092037/messages"
 
 async def send_message_to_waid(wa_id: str, message_body: str, db, from_wa_id="917729992376"):
     token_obj = whatsapp_service.get_latest_token(db)
@@ -33,14 +32,8 @@ async def send_message_to_waid(wa_id: str, message_body: str, db, from_wa_id="91
         "text": { "body": message_body }
     }
 
-    phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
-    url = get_messages_url(phone_id)
-    res = requests.post(url, headers=headers, json=payload)
+    res = requests.post(WHATSAPP_API_URL, headers=headers, json=payload)
     if res.status_code != 200:
-        try:
-            print(f"[send_message_to_waid] status={res.status_code} body={str(res.text)[:500]}")
-        except Exception:
-            pass
         raise HTTPException(status_code=500, detail=f"Failed to send message: {res.text}")
 
     message_id = res.json()["messages"][0]["id"]
@@ -204,14 +197,8 @@ async def send_location_to_waid(wa_id: str, latitude: float, longitude: float, n
         "location": location_data
     }
 
-    phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
-    url = get_messages_url(phone_id)
-    res = requests.post(url, headers=headers, json=payload)
+    res = requests.post(WHATSAPP_API_URL, headers=headers, json=payload)
     if res.status_code != 200:
-        try:
-            print(f"[send_location_to_waid] status={res.status_code} body={str(res.text)[:500]}")
-        except Exception:
-            pass
         raise HTTPException(status_code=500, detail=f"Failed to send location message: {res.text}")
 
     message_id = res.json()["messages"][0]["id"]

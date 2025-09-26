@@ -1212,8 +1212,46 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                             return [{"id": f"{topic}:{i}", "title": title} for i, title in enumerate(items, start=1)]
 
                         if topic == "skin":
-                            rows = list_rows(["Acne / Acne Scars", "Pigmentation & Uneven Skin Tone", "Anti-Aging & Skin Rejuvenation", "Laser Hair Removal", "Other Skin Concerns"])
-                            section_title = "Skin"
+                            # Send exactly as requested for Skin: custom ids and labels, no header
+                            payload_list = {
+                                "messaging_product": "whatsapp",
+                                "to": wa_id,
+                                "type": "interactive",
+                                "interactive": {
+                                    "type": "list",
+                                    "body": {"text": "Please select your Skin concern:"},
+                                    "action": {
+                                        "button": "Select Concern",
+                                        "sections": [
+                                            {
+                                                "title": "Skin Concerns",
+                                                "rows": [
+                                                    {"id": "acne", "title": "Acne / Acne Scars"},
+                                                    {"id": "pigmentation", "title": "Pigmentation & Uneven Skin Tone"},
+                                                    {"id": "antiaging", "title": "Anti-Aging & Skin Rejuvenation"},
+                                                    {"id": "laser", "title": "Laser Hair Removal"},
+                                                    {"id": "other_skin", "title": "Other Skin Concerns"}
+                                                ]
+                                            }
+                                        ]
+                                    }
+                                }
+                            }
+                            # Broadcast first
+                            try:
+                                await manager.broadcast({
+                                    "from": to_wa_id,
+                                    "to": wa_id,
+                                    "type": "interactive",
+                                    "message": "Please select your Skin concern:",
+                                    "timestamp": timestamp.isoformat(),
+                                    "meta": {"kind": "list", "section": "Skin Concerns"}
+                                })
+                            except Exception:
+                                pass
+                            # Then send to WA API
+                            requests.post(get_messages_url(phone_id2), headers=headers2, json=payload_list)
+                            return {"status": "list_sent", "message_id": message_id}
                         elif topic == "hair":
                             rows = list_rows(["Hair Loss / Hair Fall", "Hair Transplant", "Dandruff & Scalp Care", "Other Hair Concerns"])
                             section_title = "Hair"
