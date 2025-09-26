@@ -43,38 +43,7 @@ async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
-            # Try to receive JSON first; if that fails, fall back to text
-            message_payload = None
-            try:
-                message_payload = await websocket.receive_json()
-            except Exception:
-                try:
-                    text_payload = await websocket.receive_text()
-                    message_payload = {
-                        "type": "client_text",
-                        "message": text_payload
-                    }
-                except Exception:
-                    # If neither JSON nor text was received, continue loop
-                    continue
-
-            # Basic ping handling from client
-            if isinstance(message_payload, dict) and message_payload.get("type") == "ping":
-                try:
-                    await websocket.send_json({"type": "pong"})
-                except Exception:
-                    pass
-                continue
-
-            # Enrich and broadcast incoming client message to all subscribers
-            try:
-                enriched = message_payload if isinstance(message_payload, dict) else {"message": str(message_payload)}
-                enriched.setdefault("type", "client")
-                enriched.setdefault("timestamp", datetime.now().isoformat())
-                await manager.broadcast(enriched)
-            except Exception:
-                # Ignore broadcast errors to keep the socket alive
-                pass
+            await websocket.receive_text()  # Keeping connection alive
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
