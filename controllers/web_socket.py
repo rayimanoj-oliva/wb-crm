@@ -347,8 +347,18 @@ async def send_time_buttons(wa_id: str, db: Session):
 
 async def _confirm_appointment(wa_id: str, db: Session, date_iso: str, time_label: str):
     try:
-        # Confirmation to user
-        await send_message_to_waid(wa_id, f"✅ Thank you! Your preferred appointment is {date_iso} at {time_label}. Our team will call and confirm shortly.", db)
+        # Get referrer information for center details
+        center_info = ""
+        try:
+            from services.referrer_service import referrer_service
+            referrer = referrer_service.get_referrer_by_wa_id(db, wa_id)
+            if referrer and referrer.center_name:
+                center_info = f" at {referrer.center_name}, {referrer.location}"
+        except Exception:
+            pass
+        
+        # Confirmation to user with center information
+        await send_message_to_waid(wa_id, f"✅ Thank you! Your preferred appointment is {date_iso} at {time_label}{center_info}. Our team will call and confirm shortly.", db)
         # Clear state
         try:
             if wa_id in appointment_state:
@@ -430,11 +440,50 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         body_text = message[message_type].get("body", "")
         handled_text = False
 
+        # Check prior messages first (before any early returns)
+        prior_messages = message_service.get_messages_by_wa_id(db, wa_id)
+
         # Fetch or create customer
         customer = customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=sender_name))
 
-        # Check prior messages
-        prior_messages = message_service.get_messages_by_wa_id(db, wa_id)
+        # Check for referrer tracking in first message
+        if len(prior_messages) == 0 and body_text:
+            try:
+                from services.referrer_service import referrer_service
+                from schemas.referrer_schema import ReferrerTrackingCreate
+                
+                # Get referrer URL from request headers if available
+                referrer_url = request.headers.get("referer", "")
+                
+                # Detect center information from message and referrer URL
+                center_info = referrer_service.detect_center_from_message(body_text, referrer_url)
+                
+                # Try to extract UTM parameters from the message
+                utm_data = referrer_service.parse_utm_parameters(body_text)
+                
+                # Create referrer tracking record
+                referrer_data = ReferrerTrackingCreate(
+                    wa_id=wa_id,
+                    utm_source=utm_data.get('utm_source', ''),
+                    utm_medium=utm_data.get('utm_medium', ''),
+                    utm_campaign=utm_data.get('utm_campaign', ''),
+                    utm_content=utm_data.get('utm_content', ''),
+                    referrer_url=referrer_url,
+                    center_name=center_info['center_name'],
+                    location=center_info['location'],
+                    customer_id=customer.id
+                )
+                referrer_service.create_referrer_tracking(db, referrer_data)
+                
+                # Log the detected center for debugging
+                print(f"Detected center: {center_info['center_name']}, Location: {center_info['location']}")
+                if referrer_url:
+                    print(f"Referrer URL: {referrer_url}")
+                    
+            except Exception as e:
+                print(f"Error tracking referrer: {e}")
+                import traceback
+                traceback.print_exc()
 
         # 1️⃣ Onboarding prompt (only for first message)
         # if len(prior_messages) == 0:
@@ -759,7 +808,9 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     media_id = os.getenv("WELCOME_TEMPLATE_MEDIA_ID") or "2185668755244609"
                     if not media_id:
                         try:
-                            last_images = [m for m in reversed(prior_messages) if m.type == "image" and m.media_id]
+                            # Get prior messages for this user to find last image
+                            user_prior_messages = message_service.get_messages_by_wa_id(db, wa_id)
+                            last_images = [m for m in reversed(user_prior_messages) if m.type == "image" and m.media_id]
                             if last_images:
                                 media_id = last_images[0].media_id
                         except Exception:
@@ -818,7 +869,6 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     pass
 
         # Send onboarding prompt on very first message from this WA ID
-        prior_messages = message_service.get_messages_by_wa_id(db, wa_id)
         if len(prior_messages) == 0:
             await send_message_to_waid(wa_id, 'Type "Hi" or "Hello"', db)
         # (prompt already sent above on very first message)

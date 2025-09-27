@@ -18,7 +18,7 @@ from controllers import (
     auth_controller,
     customer_controller,
     web_hook, web_socket, messages_controller, whatsapp_controller, order_controller, campaign_controller,
-    template_controller, files_controller, job_controller, dashboard_controller
+    template_controller, files_controller, job_controller, dashboard_controller, referrer_controller
 )
 from controllers.payment_controller import router as payment_router
 from controllers.address_controller import router as address_router
@@ -72,6 +72,7 @@ app.include_router(template_controller.router, prefix="/templates")
 app.include_router(files_controller.router, prefix="/files")
 app.include_router(job_controller.router, prefix="/job")
 app.include_router(dashboard_controller.router, prefix="/dashboard")
+app.include_router(referrer_controller.router)
 # app.include_router(automation_router,prefix="/automation")
 app.include_router(clients_router, prefix="/client")
 app.include_router(zenoti_router, prefix="/zenoti")
