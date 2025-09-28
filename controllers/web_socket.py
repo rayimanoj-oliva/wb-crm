@@ -799,15 +799,11 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                             if len(digits) != 10:
                                 issues.append("- Phone must be 10 digits (Indian mobile)")
 
-                        reason = verification.get("reason")
-                        details = ("\n" + reason) if isinstance(reason, str) and reason else ""
-
                         corrective = (
                             "❌ I couldn't verify your details.\n"
                             + ("\n".join(issues) + "\n" if issues else "")
                             + "\nPlease reply with your full name and a 10-digit mobile number in one message.\n"
                               "Example: Rahul Sharma 9876543210"
-                            + details
                         )
                         # Broadcast failure with details for UI/agents
                         try:
