@@ -655,17 +655,19 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             # Check for phone number patterns or name keywords
             has_phone = re.search(r"\b\d{10}\b", normalized_body) or re.search(r"\+91", normalized_body)
             has_name_keywords = any(keyword in normalized_body for keyword in ["name", "i am", "my name", "call me"])
-            # Broader detection: two-word name + at least 7 digits anywhere triggers verification
+            # Broader detection: at least one name-like token + at least 7 digits triggers verification
             digit_count = len(re.findall(r"\d", normalized_body))
-            has_two_word_name = bool(re.search(r"\b[A-Za-z]{2,}\s+[A-Za-z]{2,}\b", body_text))
-            should_verify = bool(has_phone or has_name_keywords or (has_two_word_name and digit_count >= 7))
+            name_token_count = len(re.findall(r"[A-Za-z][A-Za-z\-']+", body_text))
+            has_any_name_token = name_token_count >= 1
+            should_verify = bool(has_phone or has_name_keywords or (has_any_name_token and digit_count >= 7))
             
             print(f"[ws_webhook] DEBUG - message_type: {message_type}")
             print(f"[ws_webhook] DEBUG - normalized_body: '{normalized_body}'")
             print(f"[ws_webhook] DEBUG - has_phone: {has_phone}")
             print(f"[ws_webhook] DEBUG - has_name_keywords: {has_name_keywords}")
             print(f"[ws_webhook] DEBUG - digit_count: {digit_count}")
-            print(f"[ws_webhook] DEBUG - has_two_word_name: {has_two_word_name}")
+            print(f"[ws_webhook] DEBUG - name_token_count: {name_token_count}")
+            print(f"[ws_webhook] DEBUG - has_any_name_token: {has_any_name_token}")
             print(f"[ws_webhook] DEBUG - should_verify: {should_verify}")
             
             if should_verify:
