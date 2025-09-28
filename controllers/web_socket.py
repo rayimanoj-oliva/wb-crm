@@ -817,8 +817,88 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                             })
                         except Exception:
                             pass
-                        await send_message_to_waid(wa_id, corrective, db)
-                        print(f"[ws_webhook] DEBUG - Corrective message sent")
+                        # Broadcast attempt so online UI can track
+                        try:
+                            await manager.broadcast({
+                                "from": to_wa_id,
+                                "to": wa_id,
+                                "type": "contact_verification_corrective_attempt",
+                                "message": corrective,
+                                "timestamp": datetime.now().isoformat()
+                            })
+                        except Exception:
+                            pass
+
+                        # Try sending via utility first
+                        try:
+                            await send_message_to_waid(wa_id, corrective, db)
+                            print(f"[ws_webhook] DEBUG - Corrective message sent (utility)")
+                            try:
+                                await manager.broadcast({
+                                    "from": to_wa_id,
+                                    "to": wa_id,
+                                    "type": "contact_verification_corrective_sent",
+                                    "via": "utility",
+                                    "timestamp": datetime.now().isoformat()
+                                })
+                            except Exception:
+                                pass
+                        except Exception as send_err:
+                            print(f"[ws_webhook] DEBUG - Corrective via utility failed: {send_err}")
+                            # Fallback: send directly via WhatsApp API
+                            try:
+                                token_entry_fb = get_latest_token(db)
+                                if token_entry_fb and token_entry_fb.token:
+                                    access_token_fb = token_entry_fb.token
+                                    try:
+                                        incoming_phone_id_fb = (value.get("metadata") or {}).get("phone_number_id")
+                                    except Exception:
+                                        incoming_phone_id_fb = None
+                                    phone_id_fb = incoming_phone_id_fb or os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+                                    headers_fb = {"Authorization": f"Bearer {access_token_fb}", "Content-Type": "application/json"}
+                                    payload_fb = {
+                                        "messaging_product": "whatsapp",
+                                        "to": wa_id,
+                                        "type": "text",
+                                        "text": {"body": corrective}
+                                    }
+                                    resp_fb = requests.post(get_messages_url(phone_id_fb), headers=headers_fb, json=payload_fb)
+                                    print(f"[ws_webhook] DEBUG - Corrective fallback status={resp_fb.status_code}")
+                                    try:
+                                        await manager.broadcast({
+                                            "from": to_wa_id,
+                                            "to": wa_id,
+                                            "type": "contact_verification_corrective_sent",
+                                            "via": "fallback",
+                                            "status_code": resp_fb.status_code,
+                                            "timestamp": datetime.now().isoformat()
+                                        })
+                                    except Exception:
+                                        pass
+                                else:
+                                    print(f"[ws_webhook] DEBUG - Corrective fallback skipped: no token available")
+                                    try:
+                                        await manager.broadcast({
+                                            "from": to_wa_id,
+                                            "to": wa_id,
+                                            "type": "contact_verification_corrective_failed",
+                                            "reason": "no_token",
+                                            "timestamp": datetime.now().isoformat()
+                                        })
+                                    except Exception:
+                                        pass
+                            except Exception as fb_err:
+                                print(f"[ws_webhook] DEBUG - Corrective fallback failed: {fb_err}")
+                                try:
+                                    await manager.broadcast({
+                                        "from": to_wa_id,
+                                        "to": wa_id,
+                                        "type": "contact_verification_corrective_failed",
+                                        "reason": str(fb_err)[:200],
+                                        "timestamp": datetime.now().isoformat()
+                                    })
+                                except Exception:
+                                    pass
                 except Exception as e:
                     print(f"[ws_webhook] DEBUG - Error in validation flow: {e}")
                 handled_text = True
