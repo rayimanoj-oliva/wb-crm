@@ -51,6 +51,7 @@
             font-weight: bold;
             transition: all 0.3s ease;
             box-shadow: 0 4px 15px rgba(37, 211, 102, 0.3);
+            cursor: pointer;
         }
         .whatsapp-btn:hover {
             background: #128C7E;
@@ -72,6 +73,7 @@
             margin-left: 10px;
         }
         .status.live { background: #4caf50; }
+        .hidden { display: none; }
     </style>
 </head>
 <body>
@@ -86,10 +88,9 @@
         <div class="center-card">
             <div class="center-name">🏥 Oliva Clinics Banjara Hills</div>
             <div class="center-location">📍 Hyderabad, Telangana</div>
-            <a href="https://wa.link/zixq1n?utm_source=olivaclinics&utm_medium=website&utm_campaign=banjara_hills&utm_content=hyderabad" 
-               class="whatsapp-btn" target="_blank">
+            <button class="whatsapp-btn" onclick="openWhatsApp('banjara_hills', 'hyderabad')">
                 💬 WhatsApp Banjara Hills
-            </a>
+            </button>
             <span class="status live">LIVE</span>
         </div>
 
@@ -97,10 +98,9 @@
         <div class="center-card">
             <div class="center-name">🏥 Oliva Clinics Jubilee Hills</div>
             <div class="center-location">📍 Hyderabad, Telangana</div>
-            <a href="https://wa.link/zixq1n?utm_source=olivaclinics&utm_medium=website&utm_campaign=jubilee_hills&utm_content=hyderabad" 
-               class="whatsapp-btn" target="_blank">
+            <button class="whatsapp-btn" onclick="openWhatsApp('jubilee_hills', 'hyderabad')">
                 💬 WhatsApp Jubilee Hills
-            </a>
+            </button>
             <span class="status live">LIVE</span>
         </div>
 
@@ -108,10 +108,9 @@
         <div class="center-card">
             <div class="center-name">🏥 Oliva Clinics Gachibowli</div>
             <div class="center-location">📍 Hyderabad, Telangana</div>
-            <a href="https://wa.link/zixq1n?utm_source=olivaclinics&utm_medium=website&utm_campaign=gachibowli&utm_content=hyderabad" 
-               class="whatsapp-btn" target="_blank">
+            <button class="whatsapp-btn" onclick="openWhatsApp('gachibowli', 'hyderabad')">
                 💬 WhatsApp Gachibowli
-            </a>
+            </button>
             <span class="status live">LIVE</span>
         </div>
 
@@ -119,10 +118,9 @@
         <div class="center-card">
             <div class="center-name">🏥 Oliva Clinics Bandra</div>
             <div class="center-location">📍 Mumbai, Maharashtra</div>
-            <a href="https://wa.link/zixq1n?utm_source=olivaclinics&utm_medium=website&utm_campaign=mumbai_bandra&utm_content=mumbai" 
-               class="whatsapp-btn" target="_blank">
+            <button class="whatsapp-btn" onclick="openWhatsApp('mumbai_bandra', 'mumbai')">
                 💬 WhatsApp Bandra
-            </a>
+            </button>
             <span class="status live">LIVE</span>
         </div>
 
@@ -130,10 +128,9 @@
         <div class="center-card">
             <div class="center-name">🏥 Oliva Clinics Gurgaon</div>
             <div class="center-location">📍 Delhi NCR, Haryana</div>
-            <a href="https://wa.link/zixq1n?utm_source=olivaclinics&utm_medium=website&utm_campaign=delhi_gurgaon&utm_content=delhi" 
-               class="whatsapp-btn" target="_blank">
+            <button class="whatsapp-btn" onclick="openWhatsApp('delhi_gurgaon', 'delhi')">
                 💬 WhatsApp Gurgaon
-            </a>
+            </button>
             <span class="status live">LIVE</span>
         </div>
 
@@ -150,22 +147,72 @@
     </div>
 
     <script>
-        // Track clicks for analytics
-        document.querySelectorAll('.whatsapp-btn').forEach(btn => {
-            btn.addEventListener('click', function() {
-                const center = this.textContent.replace('💬 WhatsApp ', '');
-                console.log(`WhatsApp clicked for: ${center}`);
-                
-                // Google Analytics tracking (if you have it)
-                if (typeof gtag !== 'undefined') {
-                    gtag('event', 'whatsapp_click', {
-                        'event_category': 'engagement',
-                        'event_label': center,
-                        'value': 1
-                    });
-                }
-            });
-        });
+        // Center mapping for tracking
+        const centerMapping = {
+            'banjara_hills': {
+                name: 'Oliva Clinics Banjara Hills',
+                location: 'Hyderabad'
+            },
+            'jubilee_hills': {
+                name: 'Oliva Clinics Jubilee Hills', 
+                location: 'Hyderabad'
+            },
+            'gachibowli': {
+                name: 'Oliva Clinics Gachibowli',
+                location: 'Hyderabad'
+            },
+            'mumbai_bandra': {
+                name: 'Oliva Clinics Bandra',
+                location: 'Mumbai'
+            },
+            'delhi_gurgaon': {
+                name: 'Oliva Clinics Gurgaon',
+                location: 'Delhi'
+            }
+        };
+
+        function openWhatsApp(campaign, content) {
+            const center = centerMapping[campaign];
+            if (!center) return;
+
+            // Create a pre-filled message with center information
+            const message = `Hi! I want to book an appointment at ${center.name}, ${center.location}. utm_source=olivaclinics&utm_medium=website&utm_campaign=${campaign}&utm_content=${content}`;
+            
+            // Encode the message for WhatsApp
+            const encodedMessage = encodeURIComponent(message);
+            
+            // Open WhatsApp with the pre-filled message
+            const whatsappUrl = `https://wa.me/918309866859?text=${encodedMessage}`;
+            
+            // Track the click
+            console.log(`WhatsApp clicked for: ${center.name}`);
+            console.log(`Campaign: ${campaign}, Content: ${content}`);
+            
+            // Open WhatsApp
+            window.open(whatsappUrl, '_blank');
+            
+            // Optional: Send tracking data to your server
+            trackClick(campaign, content, center);
+        }
+
+        function trackClick(campaign, content, center) {
+            // Optional: Send tracking data to your CRM
+            fetch('/api/track-click', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    campaign: campaign,
+                    content: content,
+                    center_name: center.name,
+                    location: center.location,
+                    timestamp: new Date().toISOString(),
+                    user_agent: navigator.userAgent,
+                    referrer: document.referrer
+                })
+            }).catch(err => console.log('Tracking failed:', err));
+        }
 
         // Display current URL for debugging
         console.log('Current page URL:', window.location.href);

@@ -426,14 +426,27 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 lf.write(json.dumps(body, ensure_ascii=False, indent=2))
         except Exception:
             pass
-        value = body["entry"][0]["changes"][0]["value"]
-        contact = value["contacts"][0]
-        message = value["messages"][0]
-
-        wa_id = contact["wa_id"]
-        sender_name = contact["profile"]["name"]
-        from_wa_id = message["from"]
-        to_wa_id = value["metadata"]["display_phone_number"]
+        # Handle different payload structures
+        if "entry" in body:
+            # Standard WhatsApp Business API webhook structure
+            print(f"[ws_webhook] DEBUG - Using standard webhook structure")
+            value = body["entry"][0]["changes"][0]["value"]
+            contact = value["contacts"][0]
+            message = value["messages"][0]
+            wa_id = contact["wa_id"]
+            sender_name = contact["profile"]["name"]
+            from_wa_id = message["from"]
+            to_wa_id = value["metadata"]["display_phone_number"]
+        else:
+            # Alternative payload structure (direct structure)
+            print(f"[ws_webhook] DEBUG - Using alternative payload structure")
+            contact = body["contacts"][0]
+            message = body["messages"][0]
+            wa_id = contact["wa_id"]
+            sender_name = contact["profile"]["name"]
+            from_wa_id = message["from"]
+            to_wa_id = body.get("phone_number_id", "367633743092037")
+            print(f"[ws_webhook] DEBUG - phone_number_id: {to_wa_id}")
         timestamp = datetime.fromtimestamp(int(message["timestamp"]))
         message_type = message["type"]
         message_id = message["id"]
@@ -554,9 +567,14 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 print(f"[ws_webhook] DEBUG - Prefill detected, sending mr_welcome_temp")
                 try:
                     token_entry_prefill = get_latest_token(db)
+                    # Prefer phone_number_id from incoming webhook metadata if available
+                    try:
+                        incoming_phone_id = (value.get("metadata") or {}).get("phone_number_id")
+                    except Exception:
+                        incoming_phone_id = None
                     if token_entry_prefill and token_entry_prefill.token:
                         access_token_prefill = token_entry_prefill.token
-                        phone_id_prefill = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+                        phone_id_prefill = incoming_phone_id or os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
                         lang_code_prefill = os.getenv("WELCOME_TEMPLATE_LANG", "en_US")
                         body_components_prefill = [{
                             "type": "body",
@@ -570,7 +588,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                 "to": wa_id,
                                 "type": "template_attempt",
                                 "message": "Sending mr_welcome_temp...",
-                                "params": {"body_param_1": (sender_name or wa_id or "there"), "lang": lang_code_prefill},
+                                "params": {"body_param_1": (sender_name or wa_id or "there"), "lang": lang_code_prefill, "phone_id": phone_id_prefill},
                                 "timestamp": datetime.now().isoformat()
                             })
                         except Exception:
@@ -617,6 +635,19 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                 pass
                             handled_text = True
                             return {"status": "welcome_failed", "message_id": message_id}
+                    else:
+                        # No token available in this environment — broadcast for visibility
+                        try:
+                            await manager.broadcast({
+                                "from": to_wa_id,
+                                "to": wa_id,
+                                "type": "template_error",
+                                "message": "mr_welcome_temp not sent: no WhatsApp token",
+                                "timestamp": datetime.now().isoformat()
+                            })
+                        except Exception:
+                            pass
+                        print(f"[ws_webhook] DEBUG - mr_welcome_temp not sent: no token available. incoming_phone_id={incoming_phone_id} env_phone_id={os.getenv('WHATSAPP_PHONE_ID')} lang={os.getenv('WELCOME_TEMPLATE_LANG')}")
                 except Exception as e:
                     print(f"[ws_webhook] DEBUG - mr_welcome_temp send error: {e}")
                 # Even if sending fails, continue to other logic below
@@ -624,13 +655,20 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             # Check for phone number patterns or name keywords
             has_phone = re.search(r"\b\d{10}\b", normalized_body) or re.search(r"\+91", normalized_body)
             has_name_keywords = any(keyword in normalized_body for keyword in ["name", "i am", "my name", "call me"])
+            # Broader detection: two-word name + at least 7 digits anywhere triggers verification
+            digit_count = len(re.findall(r"\d", normalized_body))
+            has_two_word_name = bool(re.search(r"\b[A-Za-z]{2,}\s+[A-Za-z]{2,}\b", body_text))
+            should_verify = bool(has_phone or has_name_keywords or (has_two_word_name and digit_count >= 7))
             
             print(f"[ws_webhook] DEBUG - message_type: {message_type}")
             print(f"[ws_webhook] DEBUG - normalized_body: '{normalized_body}'")
             print(f"[ws_webhook] DEBUG - has_phone: {has_phone}")
             print(f"[ws_webhook] DEBUG - has_name_keywords: {has_name_keywords}")
+            print(f"[ws_webhook] DEBUG - digit_count: {digit_count}")
+            print(f"[ws_webhook] DEBUG - has_two_word_name: {has_two_word_name}")
+            print(f"[ws_webhook] DEBUG - should_verify: {should_verify}")
             
-            if has_phone or has_name_keywords:
+            if should_verify:
                 print(f"[ws_webhook] DEBUG - Triggering contact verification")
                 # Import the verification function from auto_welcome_controller
                 from controllers.auto_welcome_controller import _verify_contact_with_openai
@@ -738,9 +776,53 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         except Exception as e:
                             print(f"[ws_webhook] DEBUG - Template sending failed: {e}")
                     else:
-                        print(f"[ws_webhook] DEBUG - Verification not valid, sending error message")
-                        await send_message_to_waid(wa_id, "❌ Please share a valid full name and a 10-digit phone number.", db)
-                        print(f"[ws_webhook] DEBUG - Error message sent")
+                        print(f"[ws_webhook] DEBUG - Verification not valid, composing corrective message")
+                        issues = []
+                        name_val = (verification.get('name') or '').strip() if isinstance(verification.get('name'), str) else None
+                        phone_val = (verification.get('phone') or '').strip() if isinstance(verification.get('phone'), str) else None
+
+                        # Name validation: at least 2 words, alphabetic
+                        if not name_val:
+                            issues.append("- Name missing")
+                        else:
+                            name_tokens = re.findall(r"[A-Za-z][A-Za-z\-']+", name_val)
+                            if len(name_tokens) < 2:
+                                issues.append("- Name should have at least 2 words")
+
+                        # Phone validation: +91XXXXXXXXXX or 10 digits
+                        if not phone_val:
+                            issues.append("- Phone number missing")
+                        else:
+                            digits = re.sub(r"\D", "", phone_val)
+                            if digits.startswith("91") and len(digits) == 12:
+                                digits = digits[2:]
+                            if len(digits) != 10:
+                                issues.append("- Phone must be 10 digits (Indian mobile)")
+
+                        reason = verification.get("reason")
+                        details = ("\n" + reason) if isinstance(reason, str) and reason else ""
+
+                        corrective = (
+                            "❌ I couldn't verify your details.\n"
+                            + ("\n".join(issues) + "\n" if issues else "")
+                            + "\nPlease reply with your full name and a 10-digit mobile number in one message.\n"
+                              "Example: Rahul Sharma 9876543210"
+                            + details
+                        )
+                        # Broadcast failure with details for UI/agents
+                        try:
+                            await manager.broadcast({
+                                "from": to_wa_id,
+                                "to": wa_id,
+                                "type": "contact_verification_failed",
+                                "issues": issues,
+                                "verification": verification,
+                                "timestamp": datetime.now().isoformat()
+                            })
+                        except Exception:
+                            pass
+                        await send_message_to_waid(wa_id, corrective, db)
+                        print(f"[ws_webhook] DEBUG - Corrective message sent")
                 except Exception as e:
                     print(f"[ws_webhook] DEBUG - Error in validation flow: {e}")
                 handled_text = True
@@ -1226,8 +1308,10 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             norm_btn = (btn_id or btn_text or "").strip().lower()
             skin_concerns = {
                 "acne / acne scars",
-                "pigmentation & uneven skin tone",
-                "anti-aging & skin rejuvenation",
+                "pigmentation",
+                "uneven skin tone",
+                "anti-aging ",
+                "skin rejuvenation",
                 "laser hair removal",
                 "other skin concerns",
             }
