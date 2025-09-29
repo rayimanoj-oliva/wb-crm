@@ -48,7 +48,12 @@ async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
-            await websocket.receive_text()  # Keeping connection alive
+            # Keeping connection alive; log pings occasionally
+            try:
+                _ = await websocket.receive_text()
+            except Exception:
+                # Ignore non-text frames
+                await asyncio.sleep(0.5)
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
@@ -465,10 +470,22 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 from services.referrer_service import referrer_service
                 
                 # Get referrer URL from request headers if available
-                referrer_url = request.headers.get("referer", "")
+                referrer_url = (
+                    request.headers.get("referer", "")
+                    or request.headers.get("referrer", "")
+                    or request.headers.get("x-forwarded-referer", "")
+                    or request.headers.get("x-forwarded-referrer", "")
+                    or request.headers.get("origin", "")
+                )
+
+                # Also include any query params on the webhook URL itself (defensive in prod)
+                request_query = str(request.url.query) if getattr(request, "url", None) else ""
+                combined_body = (
+                    f"{body_text}&{request_query}" if request_query else body_text
+                )
                 
                 # Track message interaction and extract UTM parameters
-                referrer_record = referrer_service.track_message_interaction(db, wa_id, body_text, referrer_url)
+                referrer_record = referrer_service.track_message_interaction(db, wa_id, combined_body, referrer_url)
                 
                 if referrer_record:
                     print(f"Referrer tracking completed for {wa_id}")
@@ -476,6 +493,15 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     print(f"UTM Campaign: {referrer_record.utm_campaign}")
                     print(f"Center: {referrer_record.center_name}")
                     print(f"Location: {referrer_record.location}")
+                else:
+                    # Add explicit diagnostics to understand prod behavior
+                    print("Referrer tracking yielded no record. Diagnostics:")
+                    print(f"Headers referer={request.headers.get('referer', '')}")
+                    print(f"Headers referrer={request.headers.get('referrer', '')}")
+                    print(f"Headers x-forwarded-referer={request.headers.get('x-forwarded-referer', '')}")
+                    print(f"Headers x-forwarded-referrer={request.headers.get('x-forwarded-referrer', '')}")
+                    print(f"origin={request.headers.get('origin', '')}")
+                    print(f"request_query={request_query}")
                     
             except Exception as e:
                 print(f"Error tracking referrer: {e}")
@@ -610,13 +636,14 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
 
             normalized_body = _normalize(body_text)
             
-            # Prefill detection: if user sent the wa.link prefill message, send mr_welcome_temp
-            allowed_variants = [
-                _normalize("Hi, I’m interested in knowing more about your services. Please share details."),
-                _normalize("Hi, I'm interested in knowing more about your services. Please share details."),
-                _normalize("Hi I'm interested in knowing more about your services. Please share details."),
+            # Prefill detection (new pattern): trigger mr_welcome_temp when user sends
+            # "Hi, Oliva I want to know more about services in <Center>, <City> clinic"
+            prefill_regexes = [
+                r"^hi,?\s*oliva\s+i\s+want\s+to\s+know\s+more\s+about\s+services\s+in\s+[a-z\s]+,\s*[a-z\s]+\s+clinic$",
+                r"^hi,?\s*oliva\s+i\s+want\s+to\s+know\s+more\s+about\s+your\s+services$",
             ]
-            if normalized_body in allowed_variants:
+            prefill_detected = any(re.match(rx, normalized_body, flags=re.IGNORECASE) for rx in prefill_regexes)
+            if prefill_detected:
                 print(f"[ws_webhook] DEBUG - Prefill detected, sending mr_welcome_temp")
                 try:
                     token_entry_prefill = get_latest_token(db)

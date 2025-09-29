@@ -361,7 +361,10 @@ class ReferrerService:
     
     @staticmethod
     def track_message_interaction(db: Session, wa_id: str, message_body: str, referrer_url: str = None) -> Optional[ReferrerTracking]:
-        """Track every message interaction and extract UTM parameters"""
+        """Track every message interaction and extract UTM parameters.
+        Creates a NEW referrer_tracking row for each message that carries
+        UTM params in the text or a referrer URL, so multiple messages from
+        the same wa_id are tracked independently."""
         try:
             # Extract UTM parameters from message
             utm_data = ReferrerService.parse_utm_parameters(message_body)
@@ -376,52 +379,16 @@ class ReferrerService:
             
             # Get center information
             center_info = ReferrerService.detect_center_from_message(message_body, referrer_url)
-            
-            # Check if referrer record exists
-            existing_referrer = ReferrerService.get_referrer_by_wa_id(db, wa_id)
-            
-            if existing_referrer:
-                # Update existing record with new UTM data
-                updated = False
-                if utm_data.get('utm_source') and utm_data['utm_source'] != existing_referrer.utm_source:
-                    existing_referrer.utm_source = utm_data['utm_source']
-                    updated = True
-                if utm_data.get('utm_medium') and utm_data['utm_medium'] != existing_referrer.utm_medium:
-                    existing_referrer.utm_medium = utm_data['utm_medium']
-                    updated = True
-                if utm_data.get('utm_campaign') and utm_data['utm_campaign'] != existing_referrer.utm_campaign:
-                    existing_referrer.utm_campaign = utm_data['utm_campaign']
-                    updated = True
-                if utm_data.get('utm_content') and utm_data['utm_content'] != existing_referrer.utm_content:
-                    existing_referrer.utm_content = utm_data['utm_content']
-                    updated = True
-                if referrer_url and referrer_url != existing_referrer.referrer_url:
-                    existing_referrer.referrer_url = referrer_url
-                    updated = True
-                if center_info['center_name'] != 'Oliva Clinics' and center_info['center_name'] != existing_referrer.center_name:
-                    existing_referrer.center_name = center_info['center_name']
-                    updated = True
-                if center_info['location'] != 'Multiple Locations' and center_info['location'] != existing_referrer.location:
-                    existing_referrer.location = center_info['location']
-                    updated = True
-                
-                if updated:
-                    db.commit()
-                    db.refresh(existing_referrer)
-                    print(f"Updated referrer record for {wa_id} with new UTM data")
-                
-                return existing_referrer
-            else:
-                # Create new referrer record
+
+            # If there is any UTM data or a referrer header, create a NEW row
+            if utm_data or referrer_url:
                 from schemas.referrer_schema import ReferrerTrackingCreate
                 from services.customer_service import CustomerService
-                
-                # Get or create customer
                 from schemas.customer_schema import CustomerCreate
-                
+
                 customer_service = CustomerService()
                 customer = customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name="Unknown"))
-                
+
                 referrer_data = ReferrerTrackingCreate(
                     wa_id=wa_id,
                     utm_source=utm_data.get('utm_source', ''),
@@ -433,10 +400,14 @@ class ReferrerService:
                     location=center_info['location'],
                     customer_id=customer.id
                 )
-                
+
                 new_referrer = ReferrerService.create_referrer_tracking(db, referrer_data)
-                print(f"Created new referrer record for {wa_id}")
+                print(f"Created new referrer record for {wa_id} (per-message)")
                 return new_referrer
+
+            # Otherwise, skip creating a row for this message
+            print(f"No UTM/referrer found for wa_id={wa_id}; skipping create for this message")
+            return None
                 
         except Exception as e:
             print(f"Error tracking message interaction: {e}")
