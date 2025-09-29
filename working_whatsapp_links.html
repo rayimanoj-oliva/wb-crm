@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Working WhatsApp Links for Oliva Clinics</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .container {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 30px;
+            border-radius: 15px;
+            backdrop-filter: blur(10px);
+        }
+        h1 {
+            text-align: center;
+            margin-bottom: 30px;
+            color: #fff;
+        }
+        .center-card {
+            background: rgba(255, 255, 255, 0.2);
+            margin: 20px 0;
+            padding: 20px;
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+        }
+        .center-name {
+            font-size: 1.2em;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+        .center-location {
+            color: #e0e0e0;
+            margin-bottom: 15px;
+        }
+        .whatsapp-btn {
+            background: #25D366;
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 25px;
+            text-decoration: none;
+            display: inline-block;
+            font-weight: bold;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(37, 211, 102, 0.3);
+            cursor: pointer;
+        }
+        .whatsapp-btn:hover {
+            background: #128C7E;
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(37, 211, 102, 0.4);
+        }
+        .info-section {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 20px;
+            font-size: 0.9em;
+        }
+        .status {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.8em;
+            margin-left: 10px;
+        }
+        .status.working { background: #4caf50; }
+        .code-block {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 10px;
+            border-radius: 5px;
+            font-family: monospace;
+            font-size: 0.8em;
+            margin: 10px 0;
+            word-break: break-all;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🏥 Working WhatsApp Links - Oliva Clinics</h1>
+        
+        <div class="info-section">
+            <strong>✅ WORKING SOLUTION:</strong> These links will properly track center information and show correct appointment confirmations.
+        </div>
+
+        <!-- Banjara Hills -->
+        <div class="center-card">
+            <div class="center-name">🏥 Oliva Clinics Banjara Hills</div>
+            <div class="center-location">📍 Hyderabad, Telangana</div>
+            <button class="whatsapp-btn" onclick="openWhatsApp('banjara_hills', 'hyderabad')">
+                💬 WhatsApp Banjara Hills
+            </button>
+            <span class="status working">WORKING</span>
+            <div class="code-block">
+                Direct Link: <a href="javascript:void(0)" onclick="openWhatsApp('banjara_hills', 'hyderabad')" style="color: #25D366;">Click to open WhatsApp with pre-filled message</a>
+            </div>
+        </div>
+
+        <!-- Jubilee Hills -->
+        <div class="center-card">
+            <div class="center-name">🏥 Oliva Clinics Jubilee Hills</div>
+            <div class="center-location">📍 Hyderabad, Telangana</div>
+            <button class="whatsapp-btn" onclick="openWhatsApp('jubilee_hills', 'hyderabad')">
+                💬 WhatsApp Jubilee Hills
+            </button>
+            <span class="status working">WORKING</span>
+        </div>
+
+        <!-- Gachibowli -->
+        <div class="center-card">
+            <div class="center-name">🏥 Oliva Clinics Gachibowli</div>
+            <div class="center-location">📍 Hyderabad, Telangana</div>
+            <button class="whatsapp-btn" onclick="openWhatsApp('gachibowli', 'hyderabad')">
+                💬 WhatsApp Gachibowli
+            </button>
+            <span class="status working">WORKING</span>
+        </div>
+
+        <!-- Mumbai Bandra -->
+        <div class="center-card">
+            <div class="center-name">🏥 Oliva Clinics Bandra</div>
+            <div class="center-location">📍 Mumbai, Maharashtra</div>
+            <button class="whatsapp-btn" onclick="openWhatsApp('mumbai_bandra', 'mumbai')">
+                💬 WhatsApp Bandra
+            </button>
+            <span class="status working">WORKING</span>
+        </div>
+
+        <!-- Delhi Gurgaon -->
+        <div class="center-card">
+            <div class="center-name">🏥 Oliva Clinics Gurgaon</div>
+            <div class="center-location">📍 Delhi NCR, Haryana</div>
+            <button class="whatsapp-btn" onclick="openWhatsApp('delhi_gurgaon', 'delhi')">
+                💬 WhatsApp Gurgaon
+            </button>
+            <span class="status working">WORKING</span>
+        </div>
+
+        <div class="info-section">
+            <strong>🔧 How This Works:</strong>
+            <br>1. JavaScript creates a pre-filled message with UTM parameters
+            <br>2. Opens WhatsApp with the message: "Hi! I want to book an appointment at [Center Name], [Location]. utm_source=olivaclinics&utm_medium=website&utm_campaign=[campaign]&utm_content=[content]"
+            <br>3. Your CRM extracts UTM parameters and maps to center information
+            <br>4. Appointment confirmation shows: "✅ Thank you! Your preferred appointment is [date] at [time] at [Center Name], [Location]"
+            <br><br>
+            <strong>❌ Why wa.link doesn't work:</strong>
+            <br>• WhatsApp strips UTM parameters from wa.link URLs
+            <br>• Your CRM receives generic messages without center information
+            <br>• Appointment confirmations show "Multiple Locations"
+        </div>
+    </div>
+
+    <script>
+        // Center mapping for tracking
+        const centerMapping = {
+            'banjara_hills': {
+                name: 'Oliva Clinics Banjara Hills',
+                location: 'Hyderabad'
+            },
+            'jubilee_hills': {
+                name: 'Oliva Clinics Jubilee Hills', 
+                location: 'Hyderabad'
+            },
+            'gachibowli': {
+                name: 'Oliva Clinics Gachibowli',
+                location: 'Hyderabad'
+            },
+            'mumbai_bandra': {
+                name: 'Oliva Clinics Bandra',
+                location: 'Mumbai'
+            },
+            'delhi_gurgaon': {
+                name: 'Oliva Clinics Gurgaon',
+                location: 'Delhi'
+            }
+        };
+
+        function openWhatsApp(campaign, content) {
+            const center = centerMapping[campaign];
+            if (!center) return;
+
+            // Create a pre-filled message with center information and UTM parameters
+            const message = `Hi! I want to book an appointment at ${center.name}, ${center.location}. utm_source=olivaclinics&utm_medium=website&utm_campaign=${campaign}&utm_content=${content}`;
+            
+            // Encode the message for WhatsApp
+            const encodedMessage = encodeURIComponent(message);
+            
+            // Open WhatsApp with the pre-filled message
+            const whatsappUrl = `https://wa.me/918309866859?text=${encodedMessage}`;
+            
+            // Track the click
+            console.log(`WhatsApp clicked for: ${center.name}`);
+            console.log(`Campaign: ${campaign}, Content: ${content}`);
+            console.log(`Message: ${message}`);
+            
+            // Open WhatsApp
+            window.open(whatsappUrl, '_blank');
+        }
+
+        // Display current URL for debugging
+        console.log('Current page URL:', window.location.href);
+        console.log('Referrer:', document.referrer);
+    </script>
+</body>
+</html>

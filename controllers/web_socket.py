@@ -459,42 +459,95 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         # Fetch or create customer
         customer = customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=sender_name))
 
-        # Check for referrer tracking in first message
-        if len(prior_messages) == 0 and body_text:
+        # Track referrer information on EVERY message
+        if body_text and message_type == "text":
             try:
                 from services.referrer_service import referrer_service
-                from schemas.referrer_schema import ReferrerTrackingCreate
                 
                 # Get referrer URL from request headers if available
                 referrer_url = request.headers.get("referer", "")
                 
-                # Detect center information from message and referrer URL
-                center_info = referrer_service.detect_center_from_message(body_text, referrer_url)
+                # Track message interaction and extract UTM parameters
+                referrer_record = referrer_service.track_message_interaction(db, wa_id, body_text, referrer_url)
                 
-                # Try to extract UTM parameters from the message
-                utm_data = referrer_service.parse_utm_parameters(body_text)
-                
-                # Create referrer tracking record
-                referrer_data = ReferrerTrackingCreate(
-                    wa_id=wa_id,
-                    utm_source=utm_data.get('utm_source', ''),
-                    utm_medium=utm_data.get('utm_medium', ''),
-                    utm_campaign=utm_data.get('utm_campaign', ''),
-                    utm_content=utm_data.get('utm_content', ''),
-                    referrer_url=referrer_url,
-                    center_name=center_info['center_name'],
-                    location=center_info['location'],
-                    customer_id=customer.id
-                )
-                referrer_service.create_referrer_tracking(db, referrer_data)
-                
-                # Log the detected center for debugging
-                print(f"Detected center: {center_info['center_name']}, Location: {center_info['location']}")
-                if referrer_url:
-                    print(f"Referrer URL: {referrer_url}")
+                if referrer_record:
+                    print(f"Referrer tracking completed for {wa_id}")
+                    print(f"UTM Source: {referrer_record.utm_source}")
+                    print(f"UTM Campaign: {referrer_record.utm_campaign}")
+                    print(f"Center: {referrer_record.center_name}")
+                    print(f"Location: {referrer_record.location}")
                     
             except Exception as e:
                 print(f"Error tracking referrer: {e}")
+                import traceback
+                traceback.print_exc()
+
+        # Check for appointment booking in any message (not just first message)
+        if body_text and message_type == "text":
+            try:
+                from services.referrer_service import referrer_service
+                
+                # Extract appointment information from message
+                appointment_info = referrer_service.extract_appointment_info_from_message(body_text)
+                
+                # If appointment booking is detected, update the referrer record
+                if appointment_info['is_appointment_booked'] and appointment_info['appointment_date']:
+                    print(f"Appointment booking detected for {wa_id}: {appointment_info}")
+                    
+                    # Try to update existing referrer record
+                    updated_referrer = referrer_service.update_appointment_booking(
+                        db, 
+                        wa_id, 
+                        appointment_info['appointment_date'],
+                        appointment_info['appointment_time'] or '',
+                        appointment_info['treatment_type'] or ''
+                    )
+                    
+                    if updated_referrer:
+                        print(f"Successfully updated appointment booking for {wa_id}")
+                        print(f"Appointment: {updated_referrer.appointment_date} at {updated_referrer.appointment_time}")
+                        print(f"Treatment: {updated_referrer.treatment_type}")
+                    else:
+                        print(f"No existing referrer record found for {wa_id}, creating new one...")
+                        # Create a new referrer record if none exists
+                        from schemas.referrer_schema import ReferrerTrackingCreate
+                        from datetime import datetime as dt
+                        
+                        # Parse appointment date
+                        parsed_date = None
+                        date_formats = [
+                            "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%Y/%m/%d",
+                            "%d %B %Y", "%B %d, %Y"
+                        ]
+                        
+                        for fmt in date_formats:
+                            try:
+                                parsed_date = dt.strptime(appointment_info['appointment_date'], fmt)
+                                break
+                            except ValueError:
+                                continue
+                        
+                        if parsed_date:
+                            referrer_data = ReferrerTrackingCreate(
+                                wa_id=wa_id,
+                                utm_source='whatsapp',
+                                utm_medium='message',
+                                utm_campaign='appointment_booking',
+                                utm_content='direct_booking',
+                                referrer_url='',
+                                center_name='Oliva Clinics',
+                                location='Multiple Locations',
+                                customer_id=customer.id,
+                                appointment_date=parsed_date,
+                                appointment_time=appointment_info['appointment_time'],
+                                treatment_type=appointment_info['treatment_type'],
+                                is_appointment_booked=True
+                            )
+                            referrer_service.create_referrer_tracking(db, referrer_data)
+                            print(f"Created new referrer record with appointment booking for {wa_id}")
+                    
+            except Exception as e:
+                print(f"Error processing appointment booking: {e}")
                 import traceback
                 traceback.print_exc()
 

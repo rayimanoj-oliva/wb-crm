@@ -181,6 +181,12 @@ class ReferrerTracking(Base):
     location = Column(String)     # e.g., "Hyderabad"
     created_at = Column(DateTime, default=func.now())
     
+    # Appointment tracking fields
+    appointment_date = Column(DateTime, nullable=True)  # Date of appointment
+    appointment_time = Column(String, nullable=True)    # Time of appointment (e.g., "10:30 AM")
+    treatment_type = Column(String, nullable=True)      # Type of treatment (e.g., "Hair Transplant", "PRP")
+    is_appointment_booked = Column(Boolean, default=False)  # Flag to track if appointment was booked
+    
     # Relationship to customer
     customer_id = Column(UUID(as_uuid=True), ForeignKey("customers.id"))
     customer = relationship("Customer", backref="referrer_tracking")

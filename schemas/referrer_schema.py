@@ -17,6 +17,11 @@ class ReferrerTrackingBase(BaseModel):
     center_name: Optional[str] = None
     location: Optional[str] = None
     customer_id: Optional[UUID] = None
+    # Appointment tracking fields
+    appointment_date: Optional[datetime] = None
+    appointment_time: Optional[str] = None
+    treatment_type: Optional[str] = None
+    is_appointment_booked: Optional[bool] = False
 
 
 class ReferrerTrackingCreate(ReferrerTrackingBase):
@@ -39,3 +44,8 @@ class ReferrerTrackingUpdate(BaseModel):
     referrer_url: Optional[str] = None
     center_name: Optional[str] = None
     location: Optional[str] = None
+    # Appointment tracking fields
+    appointment_date: Optional[datetime] = None
+    appointment_time: Optional[str] = None
+    treatment_type: Optional[str] = None
+    is_appointment_booked: Optional[bool] = None
