@@ -1,0 +1,59 @@
+{
+  "object": "whatsapp_business_account",
+  "entry": [
+    {
+      "id": "WHATSAPP_BUSINESS_ACCOUNT_ID",
+      "changes": [
+        {
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": {
+              "display_phone_number": "441234567890",
+              "phone_number_id": "PHONE_NUMBER_ID"
+            },
+            "contacts": [
+              {
+                "profile": {
+                  "name": "Bhargavi"
+                },
+                "wa_id": "918309866859"
+              }
+            ],
+            "messages": [
+              {
+                "from": "918309866859",
+                "id": "wamid.12345",
+                "timestamp": "1694770000",
+                "type": "order",
+                "order": {
+                  "catalog_id": "CATALOG-001",
+                  "product_items": [
+                    {
+                      "product_retailer_id": "SKU-001",
+                      "product_name": "Blue T-Shirt",
+                      "quantity": 2,
+                      "item_price": "19.99",
+                      "currency": "INR"
+                    },
+                    {
+                      "product_retailer_id": "SKU-002",
+                      "product_name": "Coffee Mug",
+                      "quantity": 1,
+                      "item_price": "9.50",
+                      "currency": "INR"
+                    }
+                  ],
+                  "order_retailer_id": "ORDER-20250916-001",
+                  "status": "PLACED",
+                  "total_amount": "49.48",
+                  "currency": "INR"
+                }
+              }
+            ]
+          },
+          "field": "messages"
+        }
+      ]
+    }
+  ]
+}

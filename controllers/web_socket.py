@@ -28,6 +28,9 @@ from utils.razorpay_utils import create_razorpay_payment_link
 from utils.ws_manager import manager
 from utils.shopify_admin import update_variant_price
 from utils.address_validator import analyze_address, format_errors_for_user
+from controllers.components.welcome_flow import run_welcome_flow
+from controllers.components.treament_flow import run_treament_flow, run_treatment_buttons_flow
+from controllers.components.interactive_type import run_interactive_type
 
 router = APIRouter()
 
@@ -598,392 +601,26 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     address_nudge_sent[wa_id] = True
                 return {"status": "awaiting_address_form", "message_id": message_id}
 
-        # 3️⃣ AUTO WELCOME VALIDATION - Check for name and phone in text messages
+        # 3️⃣ AUTO WELCOME VALIDATION - extracted to component function
+        handled_text = False
         if message_type == "text":
-            # First: persist inbound text and broadcast to websocket
-            try:
-                inbound_msg = MessageCreate(
-                    message_id=message_id,
-                    from_wa_id=from_wa_id,
-                    to_wa_id=to_wa_id,
-                    type="text",
-                    body=body_text,
-                    timestamp=timestamp,
-                    customer_id=customer.id
-                )
-                message_service.create_message(db, inbound_msg)
-                await manager.broadcast({
-                    "from": from_wa_id,
-                    "to": to_wa_id,
-                    "type": "text",
-                    "message": body_text,
-                    "timestamp": timestamp.isoformat()
-                })
-            except Exception:
-                pass
-            # Normalize body text for consistent comparison
-            def _normalize(txt: str) -> str:
-                if not txt:
-                    return ""
-                try:
-                    # replace fancy apostrophes/quotes with plain, remove non-letters/numbers/spaces
-                    txt = txt.replace("'", "'").replace(""", '"').replace(""", '"')
-                    txt = txt.lower().strip()
-                    txt = re.sub(r"\s+", " ", txt)
-                    return txt
-                except Exception:
-                    return txt.lower().strip()
-
-            normalized_body = _normalize(body_text)
-            
-            # Prefill detection (new pattern): trigger mr_welcome_temp when user sends
-            # "Hi, Oliva I want to know more about services in <Center>, <City> clinic"
-            prefill_regexes = [
-                r"^hi,?\s*oliva\s+i\s+want\s+to\s+know\s+more\s+about\s+services\s+in\s+[a-z\s]+,\s*[a-z\s]+\s+clinic$",
-                r"^hi,?\s*oliva\s+i\s+want\s+to\s+know\s+more\s+about\s+your\s+services$",
-            ]
-            prefill_detected = any(re.match(rx, normalized_body, flags=re.IGNORECASE) for rx in prefill_regexes)
-            if prefill_detected:
-                print(f"[ws_webhook] DEBUG - Prefill detected, sending mr_welcome_temp")
-                try:
-                    token_entry_prefill = get_latest_token(db)
-                    # Prefer phone_number_id from incoming webhook metadata if available
-                    try:
-                        incoming_phone_id = (value.get("metadata") or {}).get("phone_number_id")
-                    except Exception:
-                        incoming_phone_id = None
-                    if token_entry_prefill and token_entry_prefill.token:
-                        access_token_prefill = token_entry_prefill.token
-                        phone_id_prefill = incoming_phone_id or os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
-                        lang_code_prefill = os.getenv("WELCOME_TEMPLATE_LANG", "en_US")
-                        body_components_prefill = [{
-                            "type": "body",
-                            "parameters": [
-                                {"type": "text", "text": (sender_name or wa_id or "there")}
-                            ]
-                        }]
-                        try:
-                            await manager.broadcast({
-                                "from": to_wa_id,
-                                "to": wa_id,
-                                "type": "template_attempt",
-                                "message": "Sending mr_welcome_temp...",
-                                "params": {"body_param_1": (sender_name or wa_id or "there"), "lang": lang_code_prefill, "phone_id": phone_id_prefill},
-                                "timestamp": datetime.now().isoformat()
-                            })
-                        except Exception:
-                            pass
-                        from controllers.auto_welcome_controller import _send_template
-                        resp_prefill = _send_template(
-                            wa_id=wa_id,
-                            template_name="mr_welcome_temp",
-                            access_token=access_token_prefill,
-                            phone_id=phone_id_prefill,
-                            components=body_components_prefill,
-                            lang_code=lang_code_prefill
-                        )
-                        print(f"[ws_webhook] DEBUG - mr_welcome_temp response status: {resp_prefill.status_code}")
-                        try:
-                            print(f"[ws_webhook] DEBUG - mr_welcome_temp response body: {str(resp_prefill.text)[:500]}")
-                        except Exception:
-                            pass
-                        if resp_prefill.status_code == 200:
-                            try:
-                                await manager.broadcast({
-                                    "from": to_wa_id,
-                                    "to": wa_id,
-                                    "type": "template",
-                                    "message": "mr_welcome_temp sent",
-                                    "timestamp": datetime.now().isoformat()
-                                })
-                            except Exception:
-                                pass
-                            handled_text = True
-                            return {"status": "welcome_sent", "message_id": message_id}
-                        else:
-                            try:
-                                await manager.broadcast({
-                                    "from": to_wa_id,
-                                    "to": wa_id,
-                                    "type": "template_error",
-                                    "message": "mr_welcome_temp failed",
-                                    "status_code": resp_prefill.status_code,
-                                    "error": (resp_prefill.text[:500] if isinstance(resp_prefill.text, str) else str(resp_prefill.text)),
-                                    "timestamp": datetime.now().isoformat()
-                                })
-                            except Exception:
-                                pass
-                            handled_text = True
-                            return {"status": "welcome_failed", "message_id": message_id}
-                    else:
-                        # No token available in this environment — broadcast for visibility
-                        try:
-                            await manager.broadcast({
-                                "from": to_wa_id,
-                                "to": wa_id,
-                                "type": "template_error",
-                                "message": "mr_welcome_temp not sent: no WhatsApp token",
-                                "timestamp": datetime.now().isoformat()
-                            })
-                        except Exception:
-                            pass
-                        print(f"[ws_webhook] DEBUG - mr_welcome_temp not sent: no token available. incoming_phone_id={incoming_phone_id} env_phone_id={os.getenv('WHATSAPP_PHONE_ID')} lang={os.getenv('WELCOME_TEMPLATE_LANG')}")
-                except Exception as e:
-                    print(f"[ws_webhook] DEBUG - mr_welcome_temp send error: {e}")
-                # Even if sending fails, continue to other logic below
-            
-            # Check for phone number patterns or name keywords
-            has_phone = re.search(r"\b\d{10}\b", normalized_body) or re.search(r"\+91", normalized_body)
-            has_name_keywords = any(keyword in normalized_body for keyword in ["name", "i am", "my name", "call me"])
-            # Broader detection: at least one name-like token + at least 7 digits triggers verification
-            digit_count = len(re.findall(r"\d", normalized_body))
-            name_token_count = len(re.findall(r"[A-Za-z][A-Za-z\-']+", body_text))
-            has_any_name_token = name_token_count >= 1
-            should_verify = bool(has_phone or has_name_keywords or (has_any_name_token and digit_count >= 7))
-            
-            print(f"[ws_webhook] DEBUG - message_type: {message_type}")
-            print(f"[ws_webhook] DEBUG - normalized_body: '{normalized_body}'")
-            print(f"[ws_webhook] DEBUG - has_phone: {has_phone}")
-            print(f"[ws_webhook] DEBUG - has_name_keywords: {has_name_keywords}")
-            print(f"[ws_webhook] DEBUG - digit_count: {digit_count}")
-            print(f"[ws_webhook] DEBUG - name_token_count: {name_token_count}")
-            print(f"[ws_webhook] DEBUG - has_any_name_token: {has_any_name_token}")
-            print(f"[ws_webhook] DEBUG - should_verify: {should_verify}")
-            
-            if should_verify:
-                print(f"[ws_webhook] DEBUG - Triggering contact verification")
-                # Import the verification function from auto_welcome_controller
-                from controllers.auto_welcome_controller import _verify_contact_with_openai
-                verification = _verify_contact_with_openai(body_text)
-                print(f"[ws_webhook] DEBUG - Verification result: {verification}")
-                
-                try:
-                    print(f"[ws_webhook] DEBUG - Broadcasting contact_verification to websocket")
-                    await manager.broadcast({
-                        "from": to_wa_id,
-                        "to": wa_id,
-                        "type": "contact_verification",
-                        "result": verification,
-                        "timestamp": datetime.now().isoformat()
-                    })
-                    print(f"[ws_webhook] DEBUG - contact_verification broadcast successful")
-                except Exception as e:
-                    print(f"[ws_webhook] DEBUG - contact_verification broadcast failed: {e}")
-                
-                # Inform user on WhatsApp
-                try:
-                    if verification.get("valid"):
-                        print(f"[ws_webhook] DEBUG - Verification valid, sending confirmation message")
-                        await send_message_to_waid(wa_id, f"✅ Received details. Name: {verification.get('name')} | Phone: {verification.get('phone')}", db)
-                        print(f"[ws_webhook] DEBUG - Confirmation message sent")
-                        
-                        # Send mr_treatment template (with name param) and fallback to interactive buttons on failure
-                        try:
-                            print(f"[ws_webhook] DEBUG - Attempting to send mr_treatment template")
-                            token_entry_btn = get_latest_token(db)
-                            if token_entry_btn and token_entry_btn.token:
-                                print(f"[ws_webhook] DEBUG - Token found, proceeding with template")
-                                access_token_btn = token_entry_btn.token
-                                phone_id_btn = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
-                                lang_code_btn = os.getenv("WELCOME_TEMPLATE_LANG", "en_US")
-                                # mr_treatment has 0 body placeholders; send without components
-                                components_btn = None
-                                
-                                # Import the template sending function
-                                from controllers.auto_welcome_controller import _send_template
-                                resp_btn = _send_template(wa_id=wa_id, template_name="mr_treatment", access_token=token_entry_btn.token, phone_id=phone_id_btn, components=components_btn, lang_code=lang_code_btn)
-                                print(f"[ws_webhook] DEBUG - Template response status: {resp_btn.status_code}")
-                                try:
-                                    print(f"[ws_webhook] DEBUG - Template response body: {str(resp_btn.text)[:500]}")
-                                except Exception:
-                                    pass
-                                
-                                if resp_btn.status_code == 200:
-                                    print(f"[ws_webhook] DEBUG - Template sent successfully")
-                                    try:
-                                        await manager.broadcast({
-                                            "from": to_wa_id,
-                                            "to": wa_id,
-                                            "type": "template",
-                                            "message": "mr_treatment sent",
-                                            "timestamp": datetime.now().isoformat()
-                                        })
-                                    except Exception:
-                                        pass
-                                else:
-                                    print(f"[ws_webhook] DEBUG - Template failed, sending fallback buttons")
-                                    # Fallback to interactive buttons
-                                    headers_btn = {"Authorization": f"Bearer {access_token_btn}", "Content-Type": "application/json"}
-                                    payload_btn = {
-                                        "messaging_product": "whatsapp",
-                                        "to": wa_id,
-                                        "type": "interactive",
-                                        "interactive": {
-                                            "type": "button",
-                                            "body": {"text": "Please choose your area of concern:"},
-                                            "action": {
-                                                "buttons": [
-                                                    {"type": "reply", "reply": {"id": "skin", "title": "Skin"}},
-                                                    {"type": "reply", "reply": {"id": "hair", "title": "Hair"}},
-                                                    {"type": "reply", "reply": {"id": "body", "title": "Body"}}
-                                                ]
-                                            }
-                                        }
-                                    }
-                                    # Broadcast the error before fallback, so UI sees the reason
-                                    try:
-                                        await manager.broadcast({
-                                            "from": to_wa_id,
-                                            "to": wa_id,
-                                            "type": "template_error",
-                                            "message": "mr_treatment failed",
-                                            "status_code": resp_btn.status_code,
-                                            "error": (resp_btn.text[:500] if isinstance(resp_btn.text, str) else str(resp_btn.text)),
-                                            "timestamp": datetime.now().isoformat()
-                                        })
-                                    except Exception:
-                                        pass
-                                    requests.post(get_messages_url(phone_id_btn), headers=headers_btn, json=payload_btn)
-                                    try:
-                                        await manager.broadcast({
-                                            "from": to_wa_id,
-                                            "to": wa_id,
-                                            "type": "interactive",
-                                            "message": "Please choose your area of concern:",
-                                            "timestamp": datetime.now().isoformat(),
-                                            "meta": {"kind": "buttons", "options": ["Skin", "Hair", "Body"]}
-                                        })
-                                    except Exception:
-                                        pass
-                        except Exception as e:
-                            print(f"[ws_webhook] DEBUG - Template sending failed: {e}")
-                    else:
-                        print(f"[ws_webhook] DEBUG - Verification not valid, composing corrective message")
-                        issues = []
-                        name_val = (verification.get('name') or '').strip() if isinstance(verification.get('name'), str) else None
-                        phone_val = (verification.get('phone') or '').strip() if isinstance(verification.get('phone'), str) else None
-
-                        # Name validation: at least 2 words, alphabetic
-                        if not name_val:
-                            issues.append("- Name missing")
-                        else:
-                            name_tokens = re.findall(r"[A-Za-z][A-Za-z\-']+", name_val)
-                            if len(name_tokens) < 2:
-                                issues.append("- Name should have at least 2 words")
-
-                        # Phone validation: +91XXXXXXXXXX or 10 digits
-                        if not phone_val:
-                            issues.append("- Phone number missing")
-                        else:
-                            digits = re.sub(r"\D", "", phone_val)
-                            if digits.startswith("91") and len(digits) == 12:
-                                digits = digits[2:]
-                            if len(digits) != 10:
-                                issues.append("- Phone must be 10 digits (Indian mobile)")
-
-                        corrective = (
-                            "❌ I couldn't verify your details.\n"
-                            + ("\n".join(issues) + "\n" if issues else "")
-                            + "\nPlease reply with your full name and a 10-digit mobile number in one message.\n"
-                              "Example: Rahul Sharma 9876543210"
-                        )
-                        # Broadcast failure with details for UI/agents
-                        try:
-                            await manager.broadcast({
-                                "from": to_wa_id,
-                                "to": wa_id,
-                                "type": "contact_verification_failed",
-                                "issues": issues,
-                                "verification": verification,
-                                "timestamp": datetime.now().isoformat()
-                            })
-                        except Exception:
-                            pass
-                        # Broadcast attempt so online UI can track
-                        try:
-                            await manager.broadcast({
-                                "from": to_wa_id,
-                                "to": wa_id,
-                                "type": "contact_verification_corrective_attempt",
-                                "message": corrective,
-                                "timestamp": datetime.now().isoformat()
-                            })
-                        except Exception:
-                            pass
-
-                        # Try sending via utility first
-                        try:
-                            await send_message_to_waid(wa_id, corrective, db)
-                            print(f"[ws_webhook] DEBUG - Corrective message sent (utility)")
-                            try:
-                                await manager.broadcast({
-                                    "from": to_wa_id,
-                                    "to": wa_id,
-                                    "type": "contact_verification_corrective_sent",
-                                    "via": "utility",
-                                    "timestamp": datetime.now().isoformat()
-                                })
-                            except Exception:
-                                pass
-                        except Exception as send_err:
-                            print(f"[ws_webhook] DEBUG - Corrective via utility failed: {send_err}")
-                            # Fallback: send directly via WhatsApp API
-                            try:
-                                token_entry_fb = get_latest_token(db)
-                                if token_entry_fb and token_entry_fb.token:
-                                    access_token_fb = token_entry_fb.token
-                                    try:
-                                        incoming_phone_id_fb = (value.get("metadata") or {}).get("phone_number_id")
-                                    except Exception:
-                                        incoming_phone_id_fb = None
-                                    phone_id_fb = incoming_phone_id_fb or os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
-                                    headers_fb = {"Authorization": f"Bearer {access_token_fb}", "Content-Type": "application/json"}
-                                    payload_fb = {
-                                        "messaging_product": "whatsapp",
-                                        "to": wa_id,
-                                        "type": "text",
-                                        "text": {"body": corrective}
-                                    }
-                                    resp_fb = requests.post(get_messages_url(phone_id_fb), headers=headers_fb, json=payload_fb)
-                                    print(f"[ws_webhook] DEBUG - Corrective fallback status={resp_fb.status_code}")
-                                    try:
-                                        await manager.broadcast({
-                                            "from": to_wa_id,
-                                            "to": wa_id,
-                                            "type": "contact_verification_corrective_sent",
-                                            "via": "fallback",
-                                            "status_code": resp_fb.status_code,
-                                            "timestamp": datetime.now().isoformat()
-                                        })
-                                    except Exception:
-                                        pass
-                                else:
-                                    print(f"[ws_webhook] DEBUG - Corrective fallback skipped: no token available")
-                                    try:
-                                        await manager.broadcast({
-                                            "from": to_wa_id,
-                                            "to": wa_id,
-                                            "type": "contact_verification_corrective_failed",
-                                            "reason": "no_token",
-                                            "timestamp": datetime.now().isoformat()
-                                        })
-                                    except Exception:
-                                        pass
-                            except Exception as fb_err:
-                                print(f"[ws_webhook] DEBUG - Corrective fallback failed: {fb_err}")
-                                try:
-                                    await manager.broadcast({
-                                        "from": to_wa_id,
-                                        "to": wa_id,
-                                        "type": "contact_verification_corrective_failed",
-                                        "reason": str(fb_err)[:200],
-                                        "timestamp": datetime.now().isoformat()
-                                    })
-                                except Exception:
-                                    pass
-                except Exception as e:
-                    print(f"[ws_webhook] DEBUG - Error in validation flow: {e}")
-                handled_text = True
+            result = await run_treament_flow(
+                db,
+                message_type=message_type,
+                message_id=message_id,
+                from_wa_id=from_wa_id,
+                to_wa_id=to_wa_id,
+                body_text=body_text,
+                timestamp=timestamp,
+                customer=customer,
+                wa_id=wa_id,
+                value=value,
+                sender_name=sender_name,
+            )
+            status_val = (result or {}).get("status")
+            if status_val in {"welcome_sent", "welcome_failed"}:
+                return result
+            handled_text = status_val in {"handled"}
 
         # Manual date-time fallback parsing before other generic text handling
         if message_type == "text" and not handled_text:
@@ -1033,102 +670,22 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             # Catalog link is sent only on explicit button clicks; no text keyword trigger
 
         # 4️⃣ Hi/Hello auto-template (trigger only on whole-word greetings)
-        raw = (body_text or "").strip()
-        raw_lower = raw.lower()
-        if message_type == "text" and re.search(r"\b(hi|hello|hlo)\b", raw_lower):
-                # call your existing welcome template sending logic here
-            token_entry = get_latest_token(db)
-            if token_entry and token_entry.token:
-                try:
-                    access_token = token_entry.token
-                    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-                    phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
-
-                    # Resolve media_id: prefer env; else use last inbound image from this user; fallback to provided ID
-                    media_id = os.getenv("WELCOME_TEMPLATE_MEDIA_ID") or "2185668755244609"
-                    if not media_id:
-                        try:
-                            # Get prior messages for this user to find last image
-                            user_prior_messages = message_service.get_messages_by_wa_id(db, wa_id)
-                            last_images = [m for m in reversed(user_prior_messages) if m.type == "image" and m.media_id]
-                            if last_images:
-                                media_id = last_images[0].media_id
-                        except Exception:
-                            media_id = None
-
-                    components = []
-                    if media_id:
-                        components.append({
-                            "type": "header",
-                            "parameters": [{"type": "image", "image": {"id": media_id}}]
-                        })
-                    components.append({
-                        "type": "body",
-                        "parameters": [{"type": "text", "text": sender_name}]
-                    })
-
-                    payload = {
-                        "messaging_product": "whatsapp",
-                        "to": wa_id,
-                        "type": "template",
-                        "template": {
-                            "name": "welcome_msg",
-                            "language": {"code": "en_US"},
-                            **({"components": components} if components else {})
-                        }
-                    }
-
-                    resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
-                    if resp.status_code != 200:
-                        print("Failed to send welcome template:", resp.text)
-                    else:
-                        try:
-                            tpl_msg_id = resp.json()["messages"][0]["id"]
-                            tpl_message = MessageCreate(
-                                message_id=tpl_msg_id,
-                                from_wa_id=to_wa_id,
-                                to_wa_id=wa_id,
-                                type="template",
-                                body=f"Welcome template sent to {sender_name}",
-                                timestamp=datetime.now(),
-                                customer_id=customer.id,
-                                media_id=media_id if media_id else None
-                            )
-                            message_service.create_message(db, tpl_message)
-                            await manager.broadcast({
-                                "from": to_wa_id,
-                                "to": wa_id,
-                                "type": "template",
-                                "message": f"Welcome template sent to {sender_name}",
-                                "timestamp": datetime.now().isoformat(),
-                                **({"media_id": media_id} if media_id else {})
-                            })
-                        except Exception:
-                            pass
-                except Exception as _:
-                    pass
+        welcome_result = await run_welcome_flow(
+            db,
+            message_type=message_type,
+            body_text=body_text,
+            wa_id=wa_id,
+            to_wa_id=to_wa_id,
+            sender_name=sender_name,
+            customer=customer,
+        )
+        # no early return needed; this is an optional greeting handler
 
         # Send onboarding prompt on very first message from this WA ID
         if len(prior_messages) == 0:
             await send_message_to_waid(wa_id, 'Type "Hi" or "Hello"', db)
-        # (prompt already sent above on very first message)
+      
 
-        # (single hi/hello trigger handled above; removed duplicate block)
-
-        # Auto-send welcome template if user said "hi"/"hello"/"hlo" and hasn't received one recently
-        # if body_text.lower() in ["hi", "hello", "hlo"]:
-        #     await send_welcome_template_to_waid(wa_id=from_wa_id, customer_name=sender_name, db=db)
-        #     await manager.broadcast({
-        #         "from": "system",
-        #         "to": from_wa_id,
-        #         "type": "template",
-        #         "message": "Welcome template sent",
-        #         "timestamp": datetime.now().isoformat()
-        #     })
-        #
-        #
-        # # result = await send_welcome_template_to_waid(wa_id=from_wa_id, customer_name=sender_name, db=db)
-        # # return result
 
         if message_type == "order":
             order = message["order"]
@@ -1379,168 +936,18 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             # Handle different button types
             choice_text = (reply_text or "").lower()
 
-            # NEW: Support Skin/Hair/Body coming as type="button" (payload/text), not interactive.button_reply
-            topic = (btn_id or btn_text or "").strip().lower()
-            if topic in {"skin", "hair", "body"}:
-                try:
-                    token_entry2 = get_latest_token(db)
-                    if token_entry2 and token_entry2.token:
-                        access_token2 = token_entry2.token
-                        phone_id2 = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
-                        from controllers.auto_welcome_controller import _send_template
-                        lang_code = os.getenv("WELCOME_TEMPLATE_LANG", "en_US")
-
-                        if topic == "skin":
-                            # Send skin_treat_flow then the Skin concerns list (to mirror interactive path)
-                            resp_skin = _send_template(wa_id=wa_id, template_name="skin_treat_flow", access_token=access_token2, phone_id=phone_id2, components=None, lang_code=lang_code)
-                            try:
-                                await manager.broadcast({
-                                    "from": to_wa_id,
-                                    "to": wa_id,
-                                    "type": "template" if resp_skin.status_code == 200 else "template_error",
-                                    "message": "skin_treat_flow sent" if resp_skin.status_code == 200 else "skin_treat_flow failed",
-                                    **({"status_code": resp_skin.status_code} if resp_skin.status_code != 200 else {}),
-                                })
-                            except Exception:
-                                pass
-
-                            headers2 = {"Authorization": f"Bearer {access_token2}", "Content-Type": "application/json"}
-                            payload_list = {
-                                "messaging_product": "whatsapp",
-                                "to": wa_id,
-                                "type": "interactive",
-                                "interactive": {
-                                    "type": "list",
-                                    "body": {"text": "Please select your Skin concern:"},
-                                    "action": {
-                                        "button": "Select Concern",
-                                        "sections": [
-                                            {
-                                                "title": "Skin Concerns",
-                                                "rows": [
-                                                    {"id": "acne", "title": "Acne / Acne Scars"},
-                                                    {"id": "pigmentation", "title": "Pigmentation & Uneven Skin Tone"},
-                                                    {"id": "antiaging", "title": "Anti-Aging & Skin Rejuvenation"},
-                                                    {"id": "laser", "title": "Laser Hair Removal"},
-                                                    {"id": "other_skin", "title": "Other Skin Concerns"}
-                                                ]
-                                            }
-                                        ]
-                                    }
-                                }
-                            }
-                            requests.post(get_messages_url(phone_id2), headers=headers2, json=payload_list)
-                            return {"status": "list_sent", "message_id": message_id}
-
-                        if topic == "hair":
-                            resp_hair = _send_template(wa_id=wa_id, template_name="hair_treat_flow", access_token=access_token2, phone_id=phone_id2, components=None, lang_code=lang_code)
-                            try:
-                                await manager.broadcast({
-                                    "from": to_wa_id,
-                                    "to": wa_id,
-                                    "type": "template" if resp_hair.status_code == 200 else "template_error",
-                                    "message": "hair_treat_flow sent" if resp_hair.status_code == 200 else "hair_treat_flow failed",
-                                    **({"status_code": resp_hair.status_code} if resp_hair.status_code != 200 else {}),
-                                })
-                            except Exception:
-                                pass
-                            return {"status": "hair_template_sent", "message_id": message_id}
-
-                        if topic == "body":
-                            resp_body = _send_template(wa_id=wa_id, template_name="body_treat_flow", access_token=access_token2, phone_id=phone_id2, components=None, lang_code=lang_code)
-                            try:
-                                await manager.broadcast({
-                                    "from": to_wa_id,
-                                    "to": wa_id,
-                                    "type": "template" if resp_body.status_code == 200 else "template_error",
-                                    "message": "body_treat_flow sent" if resp_body.status_code == 200 else "body_treat_flow failed",
-                                    **({"status_code": resp_body.status_code} if resp_body.status_code != 200 else {}),
-                                })
-                            except Exception:
-                                pass
-                            return {"status": "body_template_sent", "message_id": message_id}
-                except Exception:
-                    pass
-
-            # NEW: Support list selections arriving as type="button" (payload/text)
-            norm_btn = (btn_id or btn_text or "").strip().lower()
-            skin_concerns = {
-                "acne / acne scars",
-                "pigmentation",
-                "uneven skin tone",
-                "anti-aging ",
-                "skin rejuvenation",
-                "laser hair removal",
-                "other skin concerns",
-            }
-            hair_concerns = {
-                "hair loss / hair fall",
-                "hair transplant",
-                "dandruff & scalp care",
-                "other hair concerns",
-            }
-            body_concerns = {
-                "weight management",
-                "body contouring",
-                "weight loss",
-                "other body concerns",
-            }
-
-            if norm_btn in skin_concerns or norm_btn in hair_concerns or norm_btn in body_concerns:
-                # Mirror list_reply handling: send booking_appoint, then next-step buttons
-                try:
-                    token_entry_book = get_latest_token(db)
-                    if token_entry_book and token_entry_book.token:
-                        phone_id_book = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
-                        lang_code_book = os.getenv("WELCOME_TEMPLATE_LANG", "en_US")
-                        from controllers.auto_welcome_controller import _send_template
-                        resp_book = _send_template(
-                            wa_id=wa_id,
-                            template_name="booking_appoint",
-                            access_token=token_entry_book.token,
-                            phone_id=phone_id_book,
-                            components=None,
-                            lang_code=lang_code_book
-                        )
-                        try:
-                            await manager.broadcast({
-                                "from": to_wa_id,
-                                "to": wa_id,
-                                "type": "template" if resp_book.status_code == 200 else "template_error",
-                                "message": "booking_appoint sent" if resp_book.status_code == 200 else "booking_appoint failed",
-                                **({"status_code": resp_book.status_code} if resp_book.status_code != 200 else {}),
-                            })
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-
-                # Send action buttons
-                try:
-                    token_entry3 = get_latest_token(db)
-                    if token_entry3 and token_entry3.token:
-                        access_token3 = token_entry3.token
-                        headers3 = {"Authorization": f"Bearer {access_token3}", "Content-Type": "application/json"}
-                        phone_id3 = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
-                        payload_buttons = {
-                            "messaging_product": "whatsapp",
-                            "to": wa_id,
-                            "type": "interactive",
-                            "interactive": {
-                                "type": "button",
-                                "body": {"text": "Please choose one option:"},
-                                "action": {
-                                    "buttons": [
-                                        {"type": "reply", "reply": {"id": "book_appointment", "title": "\ud83d\udcc5 Book an Appointment"}},
-                                        {"type": "reply", "reply": {"id": "request_callback", "title": "\ud83d\udcde Request a Call Back"}}
-                                    ]
-                                }
-                            }
-                        }
-                        requests.post(get_messages_url(phone_id3), headers=headers3, json=payload_buttons)
-                        return {"status": "next_actions_sent", "message_id": message_id}
-                except Exception:
-                    pass
+            # NEW: Delegate Skin/Hair/Body and related list selections to component flow
+            flow_result = await run_treatment_buttons_flow(
+                db,
+                wa_id=wa_id,
+                to_wa_id=to_wa_id,
+                message_id=message_id,
+                btn_id=btn_id,
+                btn_text=btn_text,
+                btn_payload=(btn.get("payload") if isinstance(btn, dict) else None),
+            )
+            if (flow_result or {}).get("status") in {"list_sent", "hair_template_sent", "body_template_sent", "next_actions_sent"}:
+                return flow_result
 
             # 1) Buy Products: send catalog link ONLY for explicit Buy Products button
             if (btn_id and str(btn_id).lower() == "buy_products") or ((btn_text or "").strip().lower() == "buy products"):
@@ -1637,205 +1044,21 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         elif message_type == "interactive":
             interactive = message.get("interactive", {})
             i_type = interactive.get("type")
-            title = None
-            reply_id = None
-            
-            # Handle WhatsApp Flow submission
-            if i_type == "flow":
-                flow_response = interactive.get("flow_response", {})
-                flow_token = flow_response.get("flow_token", "")
-                flow_id = flow_response.get("flow_id", "")
-                flow_cta = flow_response.get("flow_cta", "")
-                flow_action_payload = flow_response.get("flow_action_payload", {})
-                
-                print(f"Flow response received: flow_id={flow_id}, flow_cta={flow_cta}")
-
-                # Broadcast raw flow response to frontend for visibility/debug
-                try:
-                    await manager.broadcast({
-                        "from": from_wa_id,
-                        "to": to_wa_id,
-                        "type": "flow_response",
-                        "flow_id": flow_id,
-                        "flow_cta": flow_cta,
-                        "payload": flow_action_payload,
-                        "timestamp": timestamp.isoformat(),
-                    })
-                except Exception:
-                    pass
-                
-                # Handle address collection flow
-                if flow_id == "address_collection_flow" or "address" in flow_id.lower():
-                    try:
-                        # Extract address data from flow response
-                        address_data = {}
-                        
-                        # Parse flow action payload for address fields
-                        if flow_action_payload:
-                            # Common field mappings for address flows
-                            field_mappings = {
-                                "full_name": ["full_name", "name", "customer_name"],
-                                "phone_number": ["phone_number", "phone", "mobile"],
-                                "house_street": ["house_street", "address_line_1", "street"],
-                                "locality": ["locality", "area", "neighborhood"],
-                                "city": ["city", "town"],
-                                "state": ["state", "province"],
-                                "pincode": ["pincode", "postal_code", "zip_code"],
-                                "landmark": ["landmark", "landmark_nearby"]
-                            }
-                            
-                            for field_name, possible_keys in field_mappings.items():
-                                for key in possible_keys:
-                                    if key in flow_action_payload:
-                                        address_data[field_name] = flow_action_payload[key]
-                                        break
-                        
-                        # Validate and save address
-                        if address_data.get("full_name") and address_data.get("phone_number") and address_data.get("pincode"):
-                            from schemas.address_schema import CustomerAddressCreate
-                            from services.address_service import create_customer_address
-                            
-                            address_create = CustomerAddressCreate(
-                                customer_id=customer.id,
-                                full_name=address_data.get("full_name", ""),
-                                house_street=address_data.get("house_street", ""),
-                                locality=address_data.get("locality", ""),
-                                city=address_data.get("city", ""),
-                                state=address_data.get("state", ""),
-                                pincode=address_data.get("pincode", ""),
-                                landmark=address_data.get("landmark", ""),
-                                phone=address_data.get("phone_number", customer.wa_id),
-                                address_type="home",
-                                is_default=True
-                            )
-                            
-                            saved_address = create_customer_address(db, address_create)
-                            
-                            # Send confirmation
-                            await send_message_to_waid(wa_id, "✅ Address saved successfully!", db)
-                            await send_message_to_waid(wa_id, f"📍 {saved_address.full_name}, {saved_address.house_street}, {saved_address.locality}, {saved_address.city} - {saved_address.pincode}", db)
-                            
-                            # Clear awaiting address flag
-                            awaiting_address_users[wa_id] = False
-                            
-                            # Continue with payment flow
-                            try:
-                                latest_order = (
-                                    db.query(order_service.Order)
-                                    .filter(order_service.Order.customer_id == customer.id)
-                                    .order_by(order_service.Order.timestamp.desc())
-                                    .first()
-                                )
-                                total_amount = 0
-                                if latest_order:
-                                    for item in latest_order.items:
-                                        qty = item.quantity or 1
-                                        price = item.item_price or item.price or 0
-                                        total_amount += float(price) * int(qty)
-                                
-                                if total_amount > 0:
-                                    # Send payment link (using existing payment logic)
-                                    from utils.razorpay_utils import create_razorpay_payment_link
-                                    try:
-                                        payment_resp = create_razorpay_payment_link(
-                                            amount=float(total_amount),
-                                            currency="INR",
-                                            description=f"WA Order {str(latest_order.id) if latest_order else ''}"
-                                        )
-                                        pay_link = payment_resp.get("short_url") if isinstance(payment_resp, dict) else None
-                                        if pay_link:
-                                            await send_message_to_waid(wa_id, f"💳 Please complete your payment using this link: {pay_link}", db)
-                                    except Exception as pay_err:
-                                        print("Payment flow error:", pay_err)
-                            except Exception as e:
-                                print("Error in payment flow after address collection:", e)
-                            
-                            return {"status": "address_saved", "message_id": message_id}
-                        else:
-                            await send_message_to_waid(wa_id, "❌ Please fill in all required fields (Name, Phone, Pincode, House & Street, Area, City, State).", db)
-                            return {"status": "flow_incomplete", "message_id": message_id}
-                            
-                    except Exception as e:
-                        print(f"Error processing flow response: {e}")
-                        await send_message_to_waid(wa_id, "❌ Error processing your address. Please try again.", db)
-                        return {"status": "flow_error", "message_id": message_id}
-                
-                return {"status": "flow_processed", "message_id": message_id}
-            
-            # Handle form submission
-            elif i_type == "form":
-                form_response = interactive.get("form_response", {})
-                form_name = form_response.get("name", "")
-                form_data = form_response.get("data", [])
-                
-                if form_name == "address_form":
-                    # Process address form submission
-                    try:
-                        address_data = {}
-                        for item in form_data:
-                            field_id = item.get("id", "")
-                            field_value = item.get("value", "")
-                            address_data[field_id] = field_value
-                        
-                        # Validate and save address
-                        if address_data.get("full_name") and address_data.get("phone_number") and address_data.get("pincode"):
-                            # Create address using the new address service
-                            from schemas.address_schema import CustomerAddressCreate
-                            from services.address_service import create_customer_address
-                            
-                            address_create = CustomerAddressCreate(
-                                customer_id=customer.id,
-                                full_name=address_data.get("full_name", ""),
-                                house_street=address_data.get("house_street", ""),
-                                locality=address_data.get("locality", ""),
-                                city=address_data.get("city", ""),
-                                state=address_data.get("state", ""),
-                                pincode=address_data.get("pincode", ""),
-                                landmark=address_data.get("landmark", ""),
-                                phone=address_data.get("phone_number", customer.wa_id),
-                                address_type="home",
-                                is_default=True
-                            )
-                            
-                            saved_address = create_customer_address(db, address_create)
-                            
-                            # Send confirmation
-                            await send_message_to_waid(wa_id, "✅ Address saved successfully!", db)
-                            await send_message_to_waid(wa_id, f"📍 {saved_address.full_name}, {saved_address.house_street}, {saved_address.locality}, {saved_address.city} - {saved_address.pincode}", db)
-                            
-                            # Clear awaiting address flag
-                            awaiting_address_users[wa_id] = False
-                            
-                            # Continue with payment flow
-                            try:
-                                latest_order = (
-                                    db.query(order_service.Order)
-                                    .filter(order_service.Order.customer_id == customer.id)
-                                    .order_by(order_service.Order.timestamp.desc())
-                                    .first()
-                                )
-                                total_amount = 0
-                                if latest_order:
-                                    for item in latest_order.items:
-                                        qty = item.quantity or 1
-                                        price = item.item_price or item.price or 0
-                                        total_amount += float(price) * int(qty)
-
-                                if total_amount > 0:
-                                    # Send payment link (using existing payment logic)
-                                    await send_message_to_waid(wa_id, f"💳 Please complete your payment of ₹{int(total_amount)} using the payment link that will be sent shortly.", db)
-                            except Exception as pay_err:
-                                print("Payment flow error:", pay_err)
-                            
-                            return {"status": "address_saved", "message_id": message_id}
-                        else:
-                            await send_message_to_waid(wa_id, "❌ Please fill in all required fields (Name, Phone, Pincode, House & Street, Area, City, State).", db)
-                            return {"status": "form_incomplete", "message_id": message_id}
-                            
-                    except Exception as e:
-                        print(f"Error processing address form: {e}")
-                        await send_message_to_waid(wa_id, "❌ Error processing your address. Please try again.", db)
-                        return {"status": "form_error", "message_id": message_id}
+            # Delegate interactive handling to component
+            result_interactive = await run_interactive_type(
+                db,
+                message=message,
+                interactive=interactive,
+                i_type=i_type,
+                timestamp=timestamp,
+                message_id=message_id,
+                from_wa_id=from_wa_id,
+                to_wa_id=to_wa_id,
+                wa_id=wa_id,
+                customer=customer,
+            )
+            if (result_interactive or {}).get("status") != "skipped":
+                return result_interactive
             
             # Handle other interactive types (buttons, lists)
             try:

@@ -1,0 +1,39 @@
+{
+  "object": "whatsapp_business_account",
+  "entry": [
+    {
+      "id": "WHATSAPP_BUSINESS_ACCOUNT_ID",
+      "changes": [
+        {
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": {
+              "display_phone_number": "441234567890",
+              "phone_number_id": "PHONE_NUMBER_ID"
+            },
+            "contacts": [
+              {
+                "profile": {
+                  "name": "Bhargavi"
+                },
+                "wa_id": "918309866859"
+              }
+            ],
+            "messages": [
+              {
+                "from": "918309866859",
+                "id": "wamid.HBgM",
+                "timestamp": "1694770000",
+                "type": "text",
+                "text": {
+                  "body": "Hello, I want to confirm my order."
+                }
+              }
+            ]
+          },
+          "field": "messages"
+        }
+      ]
+    }
+  ]
+}
