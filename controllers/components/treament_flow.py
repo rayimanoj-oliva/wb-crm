@@ -614,3 +614,91 @@ async def run_confirm_appointment_flow(
     except Exception as e:
         return {"status": "failed", "error": str(e)[:200]}
 
+
+async def run_appointment_buttons_flow(
+    db: Session,
+    *,
+    wa_id: str,
+    btn_id: str | None = None,
+    btn_text: str | None = None,
+    btn_payload: str | None = None,
+) -> Dict[str, Any]:
+    """Handle appointment related buttons: book_appointment, request_callback, and time_* selections.
+
+    Uses existing helpers in the websocket controller for date list and time confirmation.
+    """
+
+    try:
+        normalized_id = (btn_id or "").strip().lower()
+        normalized_text = (btn_text or "").strip().lower()
+        normalized_payload = (btn_payload or "").strip().lower()
+
+        # Book appointment
+        if (
+            normalized_id == "book_appointment"
+            or normalized_text == "book an appointment"
+            or normalized_payload == "book an appointment"
+        ):
+            try:
+                from controllers.web_socket import send_date_list  # type: ignore
+                await send_date_list(wa_id, db)
+                return {"status": "date_list_sent"}
+            except Exception as e:
+                return {"status": "failed", "error": str(e)[:200]}
+
+        # Request a call back
+        if (
+            normalized_id == "request_callback"
+            or normalized_text == "request a call back"
+            or normalized_payload == "request a call back"
+        ):
+            try:
+                await send_message_to_waid(
+                    wa_id,
+                    "📌 Thank you for your interest! One of our team members will contact you shortly to assist further.",
+                    db,
+                )
+            except Exception:
+                pass
+            return {"status": "callback_ack"}
+
+        # Time selection
+        time_map = {
+            "time_10_00": "10:00 AM",
+            "time_14_00": "2:00 PM",
+            "time_18_00": "6:00 PM",
+        }
+        possible_time = (
+            time_map.get(normalized_id)
+            or (btn_text or "").strip()
+            or (btn_payload or "").strip()
+        )
+        if (
+            normalized_id.startswith("time_")
+            or possible_time in ["10:00 AM", "2:00 PM", "6:00 PM"]
+        ):
+            try:
+                from controllers.web_socket import appointment_state, send_date_list  # type: ignore
+                time_label = time_map.get(normalized_id) or (btn_text or btn_payload or "").strip()
+                date_iso = (appointment_state.get(wa_id) or {}).get("date")
+                if date_iso and time_label:
+                    result = await run_confirm_appointment_flow(
+                        db,
+                        wa_id=wa_id,
+                        date_iso=date_iso,
+                        time_label=time_label,
+                    )
+                    if result.get("status") == "appointment_captured":
+                        return result
+                # Need date first
+                await send_message_to_waid(wa_id, "Please select a date first.", db)
+                await send_date_list(wa_id, db)
+                return {"status": "need_date_first"}
+            except Exception as e:
+                return {"status": "failed", "error": str(e)[:200]}
+
+    except Exception as e:
+        return {"status": "failed", "error": str(e)[:200]}
+
+    return {"status": "skipped"}
+

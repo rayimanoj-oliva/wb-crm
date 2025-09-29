@@ -269,6 +269,17 @@ async def run_interactive_type(
             )
             if (flow_result or {}).get("status") in {"list_sent", "hair_template_sent", "body_template_sent", "next_actions_sent"}:
                 return flow_result
+
+            # Delegate appointment buttons (book, callback, time)
+            from controllers.components.treament_flow import run_appointment_buttons_flow  # type: ignore
+            appt_result = await run_appointment_buttons_flow(
+                db,
+                wa_id=wa_id,
+                btn_id=reply_id,
+                btn_text=title,
+            )
+            if (appt_result or {}).get("status") in {"date_list_sent", "callback_ack", "appointment_captured", "need_date_first"}:
+                return appt_result
     except Exception:
         pass
 

@@ -949,57 +949,17 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             if (flow_result or {}).get("status") in {"list_sent", "hair_template_sent", "body_template_sent", "next_actions_sent"}:
                 return flow_result
 
-            # 1) Buy Products: send catalog link ONLY for explicit Buy Products button
-            if (btn_id and str(btn_id).lower() == "buy_products") or ((btn_text or "").strip().lower() == "buy products"):
-                try:
-                    await send_message_to_waid(wa_id, "🛍️ Browse our catalog: https://wa.me/c/917729992376", db)
-                except Exception:
-                    pass
-                return {"status": "success", "message_id": message_id}
-
-            # Appointment booking: trigger date list
-            if ((btn_id or "").lower() == "book_appointment" or 
-                (btn_text or "").strip().lower() == "book an appointment" or
-                (btn.get("payload") or "").strip().lower() == "book an appointment"):
-                try:
-                    await send_date_list(wa_id, db)
-                except Exception:
-                    pass
-                return {"status": "date_list_sent", "message_id": message_id}
-
-            # Request a Call Back acknowledgement
-            if ((btn_id or "").lower() == "request_callback" or 
-                (btn_text or "").strip().lower() == "request a call back" or
-                (btn.get("payload") or "").strip().lower() == "request a call back"):
-                try:
-                    await send_message_to_waid(wa_id, "📌 Thank you for your interest! One of our team members will contact you shortly to assist further.", db)
-                except Exception:
-                    pass
-                return {"status": "callback_ack", "message_id": message_id}
-
-            # Time selection via template button
-            if ((btn_id or "").lower().startswith("time_") or 
-                (btn_text or "").strip() in ["10:00 AM", "2:00 PM", "6:00 PM"] or
-                (btn.get("payload") or "").strip() in ["10:00 AM", "2:00 PM", "6:00 PM"]):
-                try:
-                    time_map = {
-                        "time_10_00": "10:00 AM",
-                        "time_14_00": "2:00 PM",
-                        "time_18_00": "6:00 PM",
-                    }
-                    time_label = (time_map.get((btn_id or "").lower()) or 
-                                (btn_text or "").strip() or 
-                                (btn.get("payload") or "").strip())
-                    date_iso = (appointment_state.get(wa_id) or {}).get("date")
-                    if date_iso and time_label:
-                        await _confirm_appointment(wa_id, db, date_iso, time_label)
-                        return {"status": "appointment_captured", "message_id": message_id}
-                    else:
-                        await send_message_to_waid(wa_id, "Please select a date first.", db)
-                        await send_date_list(wa_id, db)
-                        return {"status": "need_date_first", "message_id": message_id}
-                except Exception:
-                    pass
+            # Delegate appointment button flows (book, callback, time)
+            from controllers.components.treament_flow import run_appointment_buttons_flow  # local import to avoid cycles
+            appt_result_ctrl = await run_appointment_buttons_flow(
+                db,
+                wa_id=wa_id,
+                btn_id=btn_id,
+                btn_text=btn_text,
+                btn_payload=(btn.get("payload") if isinstance(btn, dict) else None),
+            )
+            if (appt_result_ctrl or {}).get("status") in {"date_list_sent", "callback_ack", "appointment_captured", "need_date_first"}:
+                return appt_result_ctrl
 
             # 2) Address collection buttons (including collect_address template buttons and flow buttons)
             if btn_id in ["ADD_DELIVERY_ADDRESS", "USE_CURRENT_LOCATION", "ENTER_NEW_ADDRESS", 
