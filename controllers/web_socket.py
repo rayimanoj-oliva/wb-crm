@@ -791,7 +791,16 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 })
 
             # Handle different button types
-            choice_text = (reply_text or "").lower()
+            choice_text = (reply_text or "").strip().lower()
+
+            # Buy Products from template button → trigger catalog flow immediately
+            btn_id_norm = (btn_id or "").strip().lower()
+            if btn_id_norm in {"buy_products", "buy product", "buy products"} or choice_text == "buy products":
+                try:
+                    await trigger_buy_products_from_welcome(db, wa_id=wa_id)
+                except Exception:
+                    pass
+                return {"status": "success", "message_id": message_id}
 
             # NEW: Delegate Skin/Hair/Body and related list selections to component flow
             flow_result = await run_treatment_buttons_flow(
