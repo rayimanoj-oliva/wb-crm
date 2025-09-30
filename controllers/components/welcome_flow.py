@@ -33,7 +33,11 @@ async def run_welcome_flow(
 
     raw = (body_text or "").strip()
     raw_lower = raw.lower()
-    if not (message_type == "text" and re.search(r"\b(hi|hello|hlo)\b", raw_lower)):
+    # Trigger only on standalone greetings, not sentences like "hi oliva I want..."
+    if not (
+        message_type == "text"
+        and re.fullmatch(r"\s*(hi|hello|hlo)[.!]?\s*", raw_lower)
+    ):
         return {"status": "skipped"}
 
     token_entry = get_latest_token(db)

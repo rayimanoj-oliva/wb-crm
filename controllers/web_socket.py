@@ -70,23 +70,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
 VERIFY_TOKEN = "Oliva@123"
 
-async def _send_address_text_guidance(wa_id: str, db: Session):
-    try:
-        await send_message_to_waid(wa_id, "📝 Please enter your address in this format:", db)
-        await send_message_to_waid(wa_id,
-            """*Contact Details:*
-Full Name: [Your Name]
-Phone: [10-digit number]
-
-*Address Details:*
-Pincode: [6-digit pincode]
-House No. & Street: [House number and street]
-Area/Locality: [Your area]
-City: [Your city]
-State: [Your state]
-Landmark: [Optional - nearby landmark]""", db)
-    except Exception:
-        pass
+# Legacy address text guidance removed per new Provide Address flow
 
 
 def _generate_next_dates(num_days: int = 7):
@@ -439,22 +423,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         # if len(prior_messages) == 0:
         #     await send_message_to_waid(wa_id, 'Type "Hi" or "Hello"', db)
 
-        # 2️⃣ ADDRESS COLLECTION - Only through structured form (nudge once, not repeatedly)
-        if awaiting_address_users.get(wa_id, False):
-            raw_txt = (body_text or "") if message_type == "text" else ""
-            norm_txt = re.sub(r"[^a-z]", "", raw_txt.lower())
-            # While awaiting address, allow "buy/products/catalog" to pass through so catalog link is sent
-            allow_catalog_shortcut = (
-                message_type == "text" and (
-                    ("buy" in norm_txt) or ("product" in norm_txt) or ("catalog" in norm_txt)
-                )
-            )
-            # Skip welcome flow while awaiting address and do not spam nudges
-            if message_type == "text" and norm_txt not in {"hi", "hello", "hlo"} and not allow_catalog_shortcut:
-                if not address_nudge_sent.get(wa_id, False):
-                    await send_message_to_waid(wa_id, "📍 Please use the address form above to enter your details. Click the '📝 Fill Address Form' button.", db)
-                    address_nudge_sent[wa_id] = True
-                return {"status": "awaiting_address_form", "message_id": message_id}
+        # Address flow gating removed to allow other flows to proceed after "Provide Address"
 
         # 3️⃣ AUTO WELCOME VALIDATION - extracted to component function
         handled_text = False
@@ -524,17 +493,18 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
 
             # Catalog link is sent only on explicit button clicks; no text keyword trigger
 
-        # 4️⃣ Hi/Hello auto-template (trigger only on whole-word greetings)
-        welcome_result = await run_welcome_flow(
-            db,
-            message_type=message_type,
-            body_text=body_text,
-            wa_id=wa_id,
-            to_wa_id=to_wa_id,
-            sender_name=sender_name,
-            customer=customer,
-        )
-        # no early return needed; this is an optional greeting handler
+        # 4️⃣ Hi/Hello auto-template (only if treatment flow didn't already handle)
+        if not handled_text:
+            welcome_result = await run_welcome_flow(
+                db,
+                message_type=message_type,
+                body_text=body_text,
+                wa_id=wa_id,
+                to_wa_id=to_wa_id,
+                sender_name=sender_name,
+                customer=customer,
+            )
+            # no early return needed; this is an optional greeting handler
 
         # Send onboarding prompt on very first message from this WA ID
         if len(prior_messages) == 0:
@@ -827,38 +797,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             if (appt_result_ctrl or {}).get("status") in {"date_list_sent", "callback_ack", "appointment_captured", "need_date_first"}:
                 return appt_result_ctrl
 
-            # 2) Address collection buttons (including collect_address template buttons and flow buttons)
-            if btn_id in ["ADD_DELIVERY_ADDRESS", "USE_CURRENT_LOCATION", "ENTER_NEW_ADDRESS", 
-                         "USE_SAVED_ADDRESS", "CONFIRM_ADDRESS", "CHANGE_ADDRESS", "RETRY_ADDRESS",
-                         "add_address", "use_location", "enter_manually", "saved_address",
-                         "fill_form_step1", "share_location", "provide_address", "address_flow"]:
-                try:
-                    # Handle WhatsApp Flow buttons
-                    if btn_id in ["provide_address", "address_flow"]:
-                        # Flow button clicked - fallback to simple text guidance
-                        await _send_address_text_guidance(wa_id, db)
-                    
-                    # Handle collect_address template buttons - any button from collect_address template opens the form
-                    elif btn_id in ["add_address", "use_location", "enter_manually", "saved_address", "fill_form_step1", "share_location"]:
-                        if btn_id == "add_address" or btn_id == "enter_manually" or btn_id == "fill_form_step1":
-                            # Fallback to simple text guidance
-                            await _send_address_text_guidance(wa_id, db)
-                        elif btn_id == "use_location" or btn_id == "share_location":
-                            await send_message_to_waid(wa_id, "📍 Please share your current location by tapping the location icon below.", db)
-                        elif btn_id == "saved_address":
-                            await send_message_to_waid(wa_id, "💾 You can use a previously saved address. Please enter your address manually for now.", db)
-                            await _send_address_text_guidance(wa_id, db)
-                    else:
-                        # Handle other address collection buttons using the service
-                        # AddressCollectionService removed; fallback to simple text guidance
-                        await _send_address_text_guidance(wa_id, db)
-                except Exception as e:
-                    await send_message_to_waid(wa_id, f"❌ Error processing address request: {str(e)}", db)
-            
-            # 3) Generic handler for any button click when user is awaiting address (not for buy)
-            elif awaiting_address_users.get(wa_id, False):
-                # If user is awaiting address and clicks any button, show guidance
-                await _send_address_text_guidance(wa_id, db)
+            # Address collection buttons (legacy guidance removed); allow flows to proceed without interception
 
             return {"status": "success", "message_id": message_id}
 
