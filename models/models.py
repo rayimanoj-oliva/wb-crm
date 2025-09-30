@@ -172,11 +172,6 @@ class ReferrerTracking(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     wa_id = Column(String, index=True)
-    utm_source = Column(String)  # e.g., "olivaclinics"
-    utm_medium = Column(String)   # e.g., "website"
-    utm_campaign = Column(String) # e.g., "banjara_hills"
-    utm_content = Column(String)  # e.g., "hyderabad"
-    referrer_url = Column(String) # Original website URL
     center_name = Column(String)  # e.g., "Oliva Clinics Banjara Hills"
     location = Column(String)     # e.g., "Hyderabad"
     created_at = Column(DateTime, default=func.now())

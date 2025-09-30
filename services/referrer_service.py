@@ -15,11 +15,6 @@ class ReferrerService:
         """Create a new referrer tracking record"""
         db_referrer = ReferrerTracking(
             wa_id=referrer_data.wa_id,
-            utm_source=referrer_data.utm_source,
-            utm_medium=referrer_data.utm_medium,
-            utm_campaign=referrer_data.utm_campaign,
-            utm_content=referrer_data.utm_content,
-            referrer_url=referrer_data.referrer_url,
             center_name=referrer_data.center_name,
             location=referrer_data.location,
             customer_id=referrer_data.customer_id,
@@ -38,77 +33,6 @@ class ReferrerService:
         """Get referrer tracking by WhatsApp ID"""
         return db.query(ReferrerTracking).filter(ReferrerTracking.wa_id == wa_id).first()
     
-    @staticmethod
-    def parse_utm_parameters(url_or_string: str) -> Dict[str, str]:
-        """Parse UTM parameters from URL or string"""
-        import urllib.parse as urlparse
-        import re
-        
-        utm_data = {}
-        
-        try:
-            # If it looks like a URL, parse it
-            if url_or_string.startswith(('http://', 'https://')):
-                parsed_url = urlparse.urlparse(url_or_string)
-                query_params = urlparse.parse_qs(parsed_url.query)
-                
-                for key, value in query_params.items():
-                    if key.startswith('utm_'):
-                        utm_data[key] = value[0] if value else ''
-            else:
-                # If it's just a query string, parse it directly
-                query_params = urlparse.parse_qs(url_or_string)
-                
-                for key, value in query_params.items():
-                    if key.startswith('utm_'):
-                        utm_data[key] = value[0] if value else ''
-            
-            # Also try to extract UTM parameters from message text using regex
-            # This handles cases where UTM params are embedded in the message text
-            utm_pattern = r'utm_([a-z_]+)=([a-zA-Z0-9_\-\.]+)'
-            matches = re.findall(utm_pattern, url_or_string, re.IGNORECASE)
-            
-            for key, value in matches:
-                utm_data[f'utm_{key}'] = value
-                        
-        except Exception as e:
-            print(f"Error parsing UTM parameters: {e}")
-        
-        return utm_data
-    
-    @staticmethod
-    def get_center_info_from_utm(utm_data: Dict[str, str]) -> Dict[str, str]:
-        """Map UTM parameters to center information"""
-        center_mapping = {
-            'banjara_hills': {
-                'center_name': 'Oliva Clinics Banjara Hills',
-                'location': 'Hyderabad'
-            },
-            'jubilee_hills': {
-                'center_name': 'Oliva Clinics Jubilee Hills',
-                'location': 'Hyderabad'
-            },
-            'gachibowli': {
-                'center_name': 'Oliva Clinics Gachibowli',
-                'location': 'Hyderabad'
-            },
-            'mumbai_bandra': {
-                'center_name': 'Oliva Clinics Bandra',
-                'location': 'Mumbai'
-            },
-            'delhi_gurgaon': {
-                'center_name': 'Oliva Clinics Gurgaon',
-                'location': 'Delhi NCR'
-            }
-        }
-        
-        campaign = utm_data.get('utm_campaign', '').lower()
-        center_info = center_mapping.get(campaign, {
-            'center_name': 'Oliva Clinics',
-            'location': 'Multiple Locations'
-        })
-        
-        return center_info
     
     @staticmethod
     def get_center_info_from_website(referrer_url: str) -> Dict[str, str]:
@@ -168,55 +92,79 @@ class ReferrerService:
     @staticmethod
     def detect_center_from_message(message_body: str, referrer_url: str = None) -> Dict[str, str]:
         """Detect center information from message body and referrer URL"""
-        # First try to get from UTM parameters in message
-        utm_data = ReferrerService.parse_utm_parameters(message_body)
-        if utm_data:
-            center_info = ReferrerService.get_center_info_from_utm(utm_data)
-            if center_info['center_name'] != 'Oliva Clinics' or center_info['location'] != 'Multiple Locations':
-                return center_info
-        
-        # If no UTM data or generic info, try to get from referrer URL
+        # Try to get from referrer URL if available
         if referrer_url:
             center_info = ReferrerService.get_center_info_from_website(referrer_url)
             if center_info['center_name'] != 'Oliva Clinics' or center_info['location'] != 'Multiple Locations':
                 return center_info
         
+        # Enhanced center detection from message body
+        message_lower = message_body.lower()
+        
+        # Pattern for "services in [Center], [City] clinic" format
+        import re
+        center_location_pattern = r'services\s+in\s+([^,]+),\s*([^,\s]+)\s+clinic'
+        match = re.search(center_location_pattern, message_lower)
+        if match:
+            center_part = match.group(1).strip()
+            city_part = match.group(2).strip()
+            
+            # Map center names and cities
+            center_mapping = {
+                'banjara hills': {'center_name': 'Oliva Clinics Banjara Hills', 'location': 'Hyderabad'},
+                'jubilee hills': {'center_name': 'Oliva Clinics Jubilee Hills', 'location': 'Hyderabad'},
+                'gachibowli': {'center_name': 'Oliva Clinics Gachibowli', 'location': 'Hyderabad'},
+                'bandra': {'center_name': 'Oliva Clinics Bandra', 'location': 'Mumbai'},
+                'mumbai': {'center_name': 'Oliva Clinics Mumbai', 'location': 'Mumbai'},
+                'gurgaon': {'center_name': 'Oliva Clinics Gurgaon', 'location': 'Delhi NCR'},
+                'delhi': {'center_name': 'Oliva Clinics Delhi', 'location': 'Delhi NCR'},
+                'bangalore': {'center_name': 'Oliva Clinics Bangalore', 'location': 'Bangalore'},
+                'pune': {'center_name': 'Oliva Clinics Pune', 'location': 'Pune'},
+                'chennai': {'center_name': 'Oliva Clinics Chennai', 'location': 'Chennai'},
+                'kolkata': {'center_name': 'Oliva Clinics Kolkata', 'location': 'Kolkata'},
+            }
+            
+            # Check if center part matches any known center
+            for center_key, center_info in center_mapping.items():
+                if center_key in center_part:
+                    return center_info
+            
+            # If center not found but city is known, use city-based mapping
+            city_mapping = {
+                'hyderabad': {'center_name': 'Oliva Clinics Hyderabad', 'location': 'Hyderabad'},
+                'mumbai': {'center_name': 'Oliva Clinics Mumbai', 'location': 'Mumbai'},
+                'delhi': {'center_name': 'Oliva Clinics Delhi', 'location': 'Delhi NCR'},
+                'bangalore': {'center_name': 'Oliva Clinics Bangalore', 'location': 'Bangalore'},
+                'pune': {'center_name': 'Oliva Clinics Pune', 'location': 'Pune'},
+                'chennai': {'center_name': 'Oliva Clinics Chennai', 'location': 'Chennai'},
+                'kolkata': {'center_name': 'Oliva Clinics Kolkata', 'location': 'Kolkata'},
+            }
+            
+            if city_part in city_mapping:
+                return city_mapping[city_part]
+        
+        # Fallback to keyword-based detection
+        center_keywords = {
+            'banjara': {'center_name': 'Oliva Clinics Banjara Hills', 'location': 'Hyderabad'},
+            'jubilee': {'center_name': 'Oliva Clinics Jubilee Hills', 'location': 'Hyderabad'},
+            'gachibowli': {'center_name': 'Oliva Clinics Gachibowli', 'location': 'Hyderabad'},
+            'bandra': {'center_name': 'Oliva Clinics Bandra', 'location': 'Mumbai'},
+            'mumbai': {'center_name': 'Oliva Clinics Mumbai', 'location': 'Mumbai'},
+            'gurgaon': {'center_name': 'Oliva Clinics Gurgaon', 'location': 'Delhi NCR'},
+            'delhi': {'center_name': 'Oliva Clinics Delhi', 'location': 'Delhi NCR'},
+            'bangalore': {'center_name': 'Oliva Clinics Bangalore', 'location': 'Bangalore'},
+            'pune': {'center_name': 'Oliva Clinics Pune', 'location': 'Pune'},
+            'chennai': {'center_name': 'Oliva Clinics Chennai', 'location': 'Chennai'},
+            'kolkata': {'center_name': 'Oliva Clinics Kolkata', 'location': 'Kolkata'},
+        }
+        
+        for keyword, center_info in center_keywords.items():
+            if keyword in message_lower:
+                return center_info
+        
         # Default fallback
         return {"center_name": "Oliva Clinics", "location": "Multiple Locations"}
     
-    @staticmethod
-    def track_referrer_from_message(db: Session, wa_id: str, message_body: str, customer_id: str) -> Optional[ReferrerTracking]:
-        """Extract and track referrer information from message body"""
-        # Look for UTM parameters in the message
-        utm_pattern = r'utm_[a-z_]+=[a-zA-Z0-9_]+'
-        utm_matches = re.findall(utm_pattern, message_body)
-        
-        if not utm_matches:
-            return None
-        
-        # Parse UTM parameters
-        utm_data = {}
-        for match in utm_matches:
-            key, value = match.split('=')
-            utm_data[key] = value
-        
-        # Get center information
-        center_info = ReferrerService.get_center_info_from_utm(utm_data)
-        
-        # Create referrer tracking record
-        referrer_data = ReferrerTrackingCreate(
-            wa_id=wa_id,
-            utm_source=utm_data.get('utm_source', ''),
-            utm_medium=utm_data.get('utm_medium', ''),
-            utm_campaign=utm_data.get('utm_campaign', ''),
-            utm_content=utm_data.get('utm_content', ''),
-            referrer_url='',  # Not available from message
-            center_name=center_info['center_name'],
-            location=center_info['location'],
-            customer_id=customer_id
-        )
-        
-        return ReferrerService.create_referrer_tracking(db, referrer_data)
     
     @staticmethod
     def update_appointment_booking(db: Session, wa_id: str, appointment_date: str, appointment_time: str, treatment_type: str) -> Optional[ReferrerTracking]:
@@ -278,49 +226,129 @@ class ReferrerService:
             'is_appointment_booked': False
         }
         
-        # Common treatment types
-        treatment_keywords = [
-            'hair transplant', 'prp', 'fue', 'fut', 'dhi', 'beard transplant',
-            'eyebrow transplant', 'body hair transplant', 'hair restoration',
-            'scalp micropigmentation', 'smp', 'hairline design', 'crown restoration',
-            'consultation', 'follow up', 'check up'
-        ]
-        
-        # Extract treatment type
         message_lower = message_body.lower()
-        for treatment in treatment_keywords:
-            if treatment in message_lower:
-                appointment_info['treatment_type'] = treatment.title()
-                break
         
-        # Extract date patterns
+        # Enhanced treatment type detection - categorize by skin, hair, body
+        treatment_categories = {
+            'hair': [
+                'hair transplant', 'prp', 'fue', 'fut', 'dhi', 'beard transplant',
+                'eyebrow transplant', 'body hair transplant', 'hair restoration',
+                'scalp micropigmentation', 'smp', 'hairline design', 'crown restoration',
+                'hair loss', 'baldness', 'hair growth', 'hair treatment', 'hair'
+            ],
+            'skin': [
+                'skin treatment', 'acne', 'pigmentation', 'melasma', 'vitiligo',
+                'skin whitening', 'anti aging', 'wrinkles', 'dark spots',
+                'skin rejuvenation', 'chemical peel', 'microdermabrasion',
+                'laser treatment', 'skin care', 'facial', 'skin consultation', 'skin'
+            ],
+            'body': [
+                'body contouring', 'liposuction', 'tummy tuck', 'breast augmentation',
+                'body sculpting', 'weight loss', 'body treatment', 'body consultation',
+                'cosmetic surgery', 'plastic surgery', 'body enhancement', 'body'
+            ],
+            'general': [
+                'consultation', 'follow up', 'check up', 'services', 'treatment',
+                'procedure', 'therapy', 'medical', 'clinic visit'
+            ]
+        }
+        
+        # Extract treatment type by category
+        detected_treatments = []
+        # First pass: exact matches
+        for category, treatments in treatment_categories.items():
+            for treatment in treatments:
+                if treatment in message_lower:
+                    if treatment in {'skin', 'hair', 'body'}:
+                        # Category-only selection; store category for potential combination later
+                        detected_treatments.append(f"{category.title()}")
+                    else:
+                        detected_treatments.append(f"{category.title()}: {treatment.title()}")
+        
+        if detected_treatments:
+            # If the user first chose category (e.g., Skin) then chose a specific (e.g., Pigmentation),
+            # combine as "Skin: Pigmentation"
+            if len(detected_treatments) == 1 and detected_treatments[0] in {"Skin", "Hair", "Body"}:
+                appointment_info['treatment_type'] = detected_treatments[0]
+            else:
+                # Normalize cases where category and specific occur separately
+                try:
+                    if 'Skin' in detected_treatments and any(dt.startswith('Skin:') for dt in detected_treatments):
+                        specific = [dt for dt in detected_treatments if dt.startswith('Skin:')][0]
+                        appointment_info['treatment_type'] = specific
+                    elif 'Hair' in detected_treatments and any(dt.startswith('Hair:') for dt in detected_treatments):
+                        specific = [dt for dt in detected_treatments if dt.startswith('Hair:')][0]
+                        appointment_info['treatment_type'] = specific
+                    elif 'Body' in detected_treatments and any(dt.startswith('Body:') for dt in detected_treatments):
+                        specific = [dt for dt in detected_treatments if dt.startswith('Body:')][0]
+                        appointment_info['treatment_type'] = specific
+                    else:
+                        appointment_info['treatment_type'] = ', '.join(detected_treatments[:3])
+                except Exception:
+                    appointment_info['treatment_type'] = ', '.join(detected_treatments[:3])
+        
+        # Extract date patterns (explicit formats and interactive IDs)
         date_patterns = [
             r'(\d{1,2}[-/]\d{1,2}[-/]\d{4})',  # DD-MM-YYYY or DD/MM/YYYY
             r'(\d{4}[-/]\d{1,2}[-/]\d{1,2})',  # YYYY-MM-DD or YYYY/MM/DD
             r'(\d{1,2}\s+\w+\s+\d{4})',        # DD Month YYYY
             r'(\w+\s+\d{1,2},?\s+\d{4})',      # Month DD, YYYY
+            r'(\d{1,2}(?:st|nd|rd|th)?\s+\w+\s+\d{4})',  # 15th January 2025
+            r'(tomorrow|today|yesterday)',      # Relative dates
+            r'(\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{4})',  # 15 Jan 2025
+            r'(?:^|\s)date_(\d{4}-\d{2}-\d{2})(?:\s|$)',  # interactive id: date_2025-10-01
         ]
         
         for pattern in date_patterns:
             match = re.search(pattern, message_body, re.IGNORECASE)
             if match:
-                appointment_info['appointment_date'] = match.group(1)
+                date_text = match.group(1).lower()
+                
+                # Handle relative dates
+                if date_text in ['tomorrow', 'today', 'yesterday']:
+                    from datetime import datetime, timedelta
+                    today = datetime.now().date()
+                    if date_text == 'tomorrow':
+                        appointment_info['appointment_date'] = (today + timedelta(days=1)).strftime('%Y-%m-%d')
+                    elif date_text == 'today':
+                        appointment_info['appointment_date'] = today.strftime('%Y-%m-%d')
+                    elif date_text == 'yesterday':
+                        appointment_info['appointment_date'] = (today - timedelta(days=1)).strftime('%Y-%m-%d')
+                else:
+                    # Prefer normalized subgroup if present (e.g., date_YYYY-MM-DD)
+                    if match.lastindex and match.groups():
+                        # Choose the last non-None capturing group
+                        for g in match.groups()[::-1]:
+                            if g:
+                                appointment_info['appointment_date'] = g
+                                break
+                    if not appointment_info['appointment_date']:
+                        appointment_info['appointment_date'] = match.group(1)
                 break
         
-        # Extract time patterns
+        # Extract time patterns (explicit formats and interactive IDs)
         time_patterns = [
             r'(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm))',  # 10:30 AM
             r'(\d{1,2}\s*(?:AM|PM|am|pm))',        # 10 AM
             r'(\d{1,2}:\d{2})',                     # 10:30
+            r'(?:^|\s)time_(\d{1,2})_(\d{2})(?:\s|$)',  # interactive id: time_10_00
         ]
         
         for pattern in time_patterns:
             match = re.search(pattern, message_body, re.IGNORECASE)
             if match:
-                appointment_info['appointment_time'] = match.group(1)
+                if match.lastindex and match.lastindex >= 2 and match.groups():
+                    hh, mm = match.group(1), match.group(2)
+                    try:
+                        # Default to 12-hour if later suffixed, else keep HH:MM
+                        appointment_info['appointment_time'] = f"{int(hh):02d}:{int(mm):02d}"
+                    except Exception:
+                        appointment_info['appointment_time'] = f"{hh}:{mm}"
+                else:
+                    appointment_info['appointment_time'] = match.group(1)
                 break
         
-        # Check if appointment is being booked
+        # Check if appointment is being booked or inquiry about services
         booking_keywords = [
             'book', 'booking', 'appointment', 'schedule', 'confirm', 'confirmed',
             'booked', 'reserve', 'reservation', 'fix', 'arrange'
@@ -361,52 +389,164 @@ class ReferrerService:
     
     @staticmethod
     def track_message_interaction(db: Session, wa_id: str, message_body: str, referrer_url: str = None) -> Optional[ReferrerTracking]:
-        """Track every message interaction and extract UTM parameters.
-        Creates a NEW referrer_tracking row for each message that carries
-        UTM params in the text or a referrer URL, so multiple messages from
-        the same wa_id are tracked independently."""
+        """Track message interaction for service inquiries and appointment booking.
+        One-row-per-wa_id policy:
+        - On first message: create a single referrer row (center/location if found)
+        - On later messages: update the same row with appointment date/time/treatment and flag
+        - Avoid creating duplicate rows for the same wa_id
+        """
         try:
-            # Extract UTM parameters from message
-            utm_data = ReferrerService.parse_utm_parameters(message_body)
+            # Check if this message contains service-related information
+            appointment_info = ReferrerService.extract_appointment_info_from_message(message_body)
+            message_lower = message_body.lower()
             
-            # Also check referrer URL for UTM parameters
-            if referrer_url:
-                referrer_utm = ReferrerService.parse_utm_parameters(referrer_url)
-                # Merge referrer UTM data (prioritize message UTM data)
-                for key, value in referrer_utm.items():
-                    if key not in utm_data or not utm_data[key]:
-                        utm_data[key] = value
+            # Service inquiry keywords that should trigger tracking
+            service_keywords = [
+                'services', 'treatment', 'consultation', 'clinic', 'oliva',
+                'want to know', 'more about', 'appointment', 'book', 'visit',
+                'hair', 'skin', 'body', 'transplant', 'prp', 'fue', 'fut'
+            ]
             
-            # Get center information
-            center_info = ReferrerService.detect_center_from_message(message_body, referrer_url)
+            # Check if message contains service-related content
+            has_service_content = any(keyword in message_lower for keyword in service_keywords)
+            
+            # If we have an existing record and the user selected just a date/time via interactive UI,
+            # proceed to update without requiring service keywords
+            # Compute simple flags
+            has_any_apt_field = bool(
+                appointment_info.get('appointment_date') or appointment_info.get('appointment_time')
+            )
 
-            # If there is any UTM data or a referrer header, create a NEW row
-            if utm_data or referrer_url:
+            if has_service_content or appointment_info['is_appointment_booked'] or appointment_info['treatment_type'] or has_any_apt_field or message_lower:
                 from schemas.referrer_schema import ReferrerTrackingCreate
-                from services.customer_service import CustomerService
+                from services.customer_service import get_or_create_customer
                 from schemas.customer_schema import CustomerCreate
 
-                customer_service = CustomerService()
-                customer = customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name="Unknown"))
+                customer = get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name="Unknown"))
 
-                referrer_data = ReferrerTrackingCreate(
-                    wa_id=wa_id,
-                    utm_source=utm_data.get('utm_source', ''),
-                    utm_medium=utm_data.get('utm_medium', ''),
-                    utm_campaign=utm_data.get('utm_campaign', ''),
-                    utm_content=utm_data.get('utm_content', ''),
-                    referrer_url=referrer_url or '',
-                    center_name=center_info['center_name'],
-                    location=center_info['location'],
-                    customer_id=customer.id
+                # Get (or infer) center/location for this message
+                center_info = ReferrerService.detect_center_from_message(message_body, referrer_url)
+
+                # Strict single-record policy per wa_id: always use the oldest record if present,
+                # never create additional rows once one exists. Only create when none exists.
+                oldest: Optional[ReferrerTracking] = (
+                    db.query(ReferrerTracking)
+                    .filter(ReferrerTracking.wa_id == wa_id)
+                    .order_by(ReferrerTracking.created_at.asc())
+                    .first()
                 )
+                should_create_new = oldest is None
 
-                new_referrer = ReferrerService.create_referrer_tracking(db, referrer_data)
-                print(f"Created new referrer record for {wa_id} (per-message)")
-                return new_referrer
+                if should_create_new:
+                    # Create a seed record for this flow (take center/location from this first message)
+                    referrer_data = ReferrerTrackingCreate(
+                        wa_id=wa_id,
+                        center_name=center_info['center_name'],
+                        location=center_info['location'],
+                        customer_id=customer.id,
+                        appointment_date=appointment_info['appointment_date'],
+                        appointment_time=appointment_info['appointment_time'],
+                        treatment_type=appointment_info['treatment_type'],
+                        is_appointment_booked=appointment_info['is_appointment_booked']
+                    )
+                    new_referrer = ReferrerService.create_referrer_tracking(db, referrer_data)
+                    print(
+                        f"Created referrer record for {wa_id} - Center: {new_referrer.center_name}, "
+                        f"Location: {new_referrer.location}, Treatment: {new_referrer.treatment_type}"
+                    )
+                    return new_referrer
+                else:
+                    # Subsequent messages: update missing or new info only
+                    updated = False
+                    # Only improve center/location; never downgrade to generic
+                    def _is_generic(ci: dict) -> bool:
+                        return (ci.get('center_name') == 'Oliva Clinics' and ci.get('location') == 'Multiple Locations')
+
+                    # If record has generic center, and we detect specific center in this message, upgrade it
+                    if (oldest.center_name in (None, "", 'Oliva Clinics')) and center_info.get('center_name') and not _is_generic(center_info):
+                        oldest.center_name = center_info['center_name']
+                        updated = True
+                    if (oldest.location in (None, "", 'Multiple Locations')) and center_info.get('location') and not _is_generic(center_info):
+                        oldest.location = center_info['location']
+                        updated = True
+                    # Update treatment immediately when detected (not only on finalization)
+                    def _is_generic_treatment(txt: Optional[str]) -> bool:
+                        if not txt:
+                            return True
+                        try:
+                            t = txt.strip().lower()
+                            return t.startswith('general') or t in {'services', 'service'}
+                        except Exception:
+                            return False
+
+                    if appointment_info.get('treatment_type'):
+                        if (not oldest.treatment_type) or _is_generic_treatment(oldest.treatment_type) or (oldest.treatment_type != appointment_info['treatment_type']):
+                            oldest.treatment_type = appointment_info['treatment_type']
+                            updated = True
+                    # First, allow interim updates (date-only or time-only) without marking booked
+                    # Date-only update
+                    if appointment_info.get('appointment_date') and not oldest.appointment_date:
+                        try:
+                            from datetime import datetime as _dt
+                            for _fmt in [
+                                "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%Y/%m/%d",
+                                "%d %B %Y", "%B %d, %Y", "%d %b %Y"
+                            ]:
+                                try:
+                                    oldest.appointment_date = _dt.strptime(appointment_info['appointment_date'], _fmt)
+                                    updated = True
+                                    break
+                                except ValueError:
+                                    continue
+                            if not oldest.appointment_date:
+                                # As a last resort, keep it unset rather than writing a bad value
+                                pass
+                        except Exception:
+                            pass
+                    # Time-only update
+                    if appointment_info.get('appointment_time') and not oldest.appointment_time:
+                        oldest.appointment_time = appointment_info['appointment_time']
+                        updated = True
+
+                    # Only persist finalization when booking is confirmed (both date and time present)
+                    booking_ready = bool(appointment_info.get('appointment_date') and appointment_info.get('appointment_time'))
+                    if appointment_info.get('is_appointment_booked') or booking_ready:
+                        # treatment can be optional; we may have set it above; ensure it remains if already set
+                        if appointment_info.get('treatment_type'):
+                            if (not oldest.treatment_type) or _is_generic_treatment(oldest.treatment_type) or (oldest.treatment_type != appointment_info['treatment_type']):
+                                oldest.treatment_type = appointment_info['treatment_type']
+                                updated = True
+                        # Normalize and set date/time via helper (also sets is_appointment_booked True)
+                        if booking_ready and (not oldest.appointment_date or not oldest.appointment_time):
+                            try:
+                                _ = ReferrerService.update_appointment_booking(
+                                    db,
+                                    wa_id,
+                                    appointment_info['appointment_date'],
+                                    appointment_info.get('appointment_time') or '',
+                                    appointment_info.get('treatment_type') or oldest.treatment_type or ''
+                                )
+                                updated = True
+                            except Exception:
+                                pass
+                        if not oldest.is_appointment_booked:
+                            oldest.is_appointment_booked = True
+                            updated = True
+
+                    if updated:
+                        try:
+                            db.commit()
+                            db.refresh(oldest)
+                        except Exception:
+                            db.rollback()
+                        print(
+                            f"Updated referrer record for {wa_id} - Center: {oldest.center_name}, "
+                            f"Location: {oldest.location}, Treatment: {oldest.treatment_type}"
+                        )
+                    return oldest
 
             # Otherwise, skip creating a row for this message
-            print(f"No UTM/referrer found for wa_id={wa_id}; skipping create for this message")
+            print(f"No service-related content found for wa_id={wa_id}; skipping create for this message")
             return None
                 
         except Exception as e:

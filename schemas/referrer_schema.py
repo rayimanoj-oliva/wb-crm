@@ -9,11 +9,6 @@ from uuid import UUID
 
 class ReferrerTrackingBase(BaseModel):
     wa_id: str
-    utm_source: Optional[str] = None
-    utm_medium: Optional[str] = None
-    utm_campaign: Optional[str] = None
-    utm_content: Optional[str] = None
-    referrer_url: Optional[str] = None
     center_name: Optional[str] = None
     location: Optional[str] = None
     customer_id: Optional[UUID] = None
@@ -37,11 +32,6 @@ class ReferrerTrackingResponse(ReferrerTrackingBase):
 
 
 class ReferrerTrackingUpdate(BaseModel):
-    utm_source: Optional[str] = None
-    utm_medium: Optional[str] = None
-    utm_campaign: Optional[str] = None
-    utm_content: Optional[str] = None
-    referrer_url: Optional[str] = None
     center_name: Optional[str] = None
     location: Optional[str] = None
     # Appointment tracking fields

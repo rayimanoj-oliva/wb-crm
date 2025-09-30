@@ -366,7 +366,7 @@ async def _confirm_appointment(wa_id: str, db: Session, date_iso: str, time_labe
             pass
         
         # Confirmation to user with center information
-        await send_message_to_waid(wa_id, f"✅ Thank you! Your preferred appointment is {date_iso} at {time_label}{center_info}. Our team will call and confirm shortly.", db)
+        await send_message_to_waid(wa_id, f"✅ Thank you! Your preferred appointment is {date_iso} at {time_label}. Our team will call and confirm shortly.", db)
         # Clear state
         try:
             if wa_id in appointment_state:
@@ -458,7 +458,27 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         timestamp = datetime.fromtimestamp(int(message["timestamp"]))
         message_type = message["type"]
         message_id = message["id"]
-        body_text = message[message_type].get("body", "")
+
+        # Derive a text body for non-text messages (interactive/list/button) so parsers work
+        body_text = ""
+        try:
+            if message_type == "text":
+                body_text = message[message_type].get("body", "")
+            elif message_type == "interactive":
+                it = message.get("interactive", {})
+                if it.get("type") == "button_reply":
+                    br = it.get("button_reply", {})
+                    # Include both title and id to help downstream parsers (e.g., time_10_00)
+                    body_text = " ".join(filter(None, [br.get("title"), br.get("id")]))
+                elif it.get("type") == "list_reply":
+                    lr = it.get("list_reply", {})
+                    # Include both title and id to help downstream parsers (e.g., date_2025-10-01)
+                    body_text = " ".join(filter(None, [lr.get("title"), lr.get("id")]))
+            elif message_type == "button":
+                btn = message.get("button", {})
+                body_text = btn.get("text") or btn.get("payload") or ""
+        except Exception:
+            body_text = ""
         handled_text = False
 
         # Check prior messages first (before any early returns)
@@ -468,7 +488,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         customer = customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=sender_name))
 
         # Track referrer information on EVERY message
-        if body_text and message_type == "text":
+        if body_text:
             try:
                 from services.referrer_service import referrer_service
                 
@@ -492,10 +512,14 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 
                 if referrer_record:
                     print(f"Referrer tracking completed for {wa_id}")
-                    print(f"UTM Source: {referrer_record.utm_source}")
-                    print(f"UTM Campaign: {referrer_record.utm_campaign}")
-                    print(f"Center: {referrer_record.center_name}")
-                    print(f"Location: {referrer_record.location}")
+                    try:
+                        print(f"Center: {referrer_record.center_name}")
+                        print(f"Location: {referrer_record.location}")
+                        print(f"Appointment Date: {getattr(referrer_record, 'appointment_date', None)}")
+                        print(f"Appointment Time: {getattr(referrer_record, 'appointment_time', None)}")
+                        print(f"Treatment: {getattr(referrer_record, 'treatment_type', None)}")
+                    except Exception:
+                        pass
                 else:
                     # Add explicit diagnostics to understand prod behavior
                     print("Referrer tracking yielded no record. Diagnostics:")
@@ -512,24 +536,31 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 traceback.print_exc()
 
         # Check for appointment booking in any message (not just first message)
-        if body_text and message_type == "text":
+        if body_text:
             try:
                 from services.referrer_service import referrer_service
                 
                 # Extract appointment information from message
                 appointment_info = referrer_service.extract_appointment_info_from_message(body_text)
                 
-                # If appointment booking is detected, update the referrer record
-                if appointment_info['is_appointment_booked'] and appointment_info['appointment_date']:
+                # Allow interim updates (date-only or time-only), and finalize when both are present
+                if appointment_info['appointment_date'] or appointment_info['appointment_time']:
                     print(f"Appointment booking detected for {wa_id}: {appointment_info}")
                     
                     # Try to update existing referrer record
+                    # Preserve existing treatment if the current message doesn't include one
+                    try:
+                        existing_ref = referrer_service.get_referrer_by_wa_id(db, wa_id)
+                        existing_treat = getattr(existing_ref, 'treatment_type', None) if existing_ref else None
+                    except Exception:
+                        existing_treat = None
+
                     updated_referrer = referrer_service.update_appointment_booking(
                         db, 
                         wa_id, 
                         appointment_info['appointment_date'],
                         appointment_info['appointment_time'] or '',
-                        appointment_info['treatment_type'] or ''
+                        appointment_info['treatment_type'] or existing_treat or ''
                     )
                     
                     if updated_referrer:
@@ -537,43 +568,8 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         print(f"Appointment: {updated_referrer.appointment_date} at {updated_referrer.appointment_time}")
                         print(f"Treatment: {updated_referrer.treatment_type}")
                     else:
-                        print(f"No existing referrer record found for {wa_id}, creating new one...")
-                        # Create a new referrer record if none exists
-                        from schemas.referrer_schema import ReferrerTrackingCreate
-                        from datetime import datetime as dt
-                        
-                        # Parse appointment date
-                        parsed_date = None
-                        date_formats = [
-                            "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%Y/%m/%d",
-                            "%d %B %Y", "%B %d, %Y"
-                        ]
-                        
-                        for fmt in date_formats:
-                            try:
-                                parsed_date = dt.strptime(appointment_info['appointment_date'], fmt)
-                                break
-                            except ValueError:
-                                continue
-                        
-                        if parsed_date:
-                            referrer_data = ReferrerTrackingCreate(
-                                wa_id=wa_id,
-                                utm_source='whatsapp',
-                                utm_medium='message',
-                                utm_campaign='appointment_booking',
-                                utm_content='direct_booking',
-                                referrer_url='',
-                                center_name='Oliva Clinics',
-                                location='Multiple Locations',
-                                customer_id=customer.id,
-                                appointment_date=parsed_date,
-                                appointment_time=appointment_info['appointment_time'],
-                                treatment_type=appointment_info['treatment_type'],
-                                is_appointment_booked=True
-                            )
-                            referrer_service.create_referrer_tracking(db, referrer_data)
-                            print(f"Created new referrer record with appointment booking for {wa_id}")
+                        # Do not create a new record here; initial message should have created it
+                        print(f"No existing referrer record for {wa_id}; skipping creation to avoid duplicates")
                     
             except Exception as e:
                 print(f"Error processing appointment booking: {e}")
