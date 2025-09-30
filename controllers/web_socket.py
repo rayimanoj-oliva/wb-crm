@@ -28,9 +28,10 @@ from utils.razorpay_utils import create_razorpay_payment_link
 from utils.ws_manager import manager
 from utils.shopify_admin import update_variant_price
 from utils.address_validator import analyze_address, format_errors_for_user
-from controllers.components.welcome_flow import run_welcome_flow
+from controllers.components.welcome_flow import run_welcome_flow, trigger_buy_products_from_welcome
 from controllers.components.treament_flow import run_treament_flow, run_treatment_buttons_flow
 from controllers.components.interactive_type import run_interactive_type
+from controllers.components.products_flow import run_buy_products_flow
 
 router = APIRouter()
 
@@ -54,112 +55,25 @@ async def websocket_endpoint(websocket: WebSocket):
             # Keeping connection alive; log pings occasionally
             try:
                 _ = await websocket.receive_text()
+            except WebSocketDisconnect:
+                break
+            except RuntimeError:
+                # Happens if we try to receive after disconnect
+                break
             except Exception:
-                # Ignore non-text frames
+                # Ignore non-text frames or transient errors
                 await asyncio.sleep(0.5)
     except WebSocketDisconnect:
+        pass
+    finally:
         manager.disconnect(websocket)
 
 VERIFY_TOKEN = "Oliva@123"
 
-async def send_address_form(wa_id: str, db: Session):
-    """Send structured address collection form similar to JioMart"""
+async def _send_address_text_guidance(wa_id: str, db: Session):
     try:
-        # Get WhatsApp token
-        token_entry = get_latest_token(db)
-        if not token_entry or not token_entry.token:
-            await send_message_to_waid(wa_id, "❌ Unable to send address form. Please try again.", db)
-            return
-        
-        access_token = token_entry.token
-        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-        phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
-        
-        # Create interactive form for address collection (using buttons as fallback)
-        payload = {
-            "messaging_product": "whatsapp",
-            "to": wa_id,
-            "type": "interactive",
-            "interactive": {
-                "type": "button",
-                "header": {
-                    "type": "text",
-                    "text": "📍 New Address"
-                },
-                "body": {
-                    "text": "Please choose how you'd like to add your address:"
-                },
-                "footer": {
-                    "text": "All fields are required for delivery"
-                },
-                "action": {
-                    "buttons": [
-                        {
-                            "type": "reply",
-                            "reply": {
-                                "id": "fill_form_step1",
-                                "title": "📝 Fill Address Form"
-                            }
-                        },
-                        {
-                            "type": "reply",
-                            "reply": {
-                                "id": "share_location",
-                                "title": "📍 Share Location"
-                            }
-                        }
-                    ]
-                }
-            }
-        }
-        
-        resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
-        if resp.status_code == 200:
-            try:
-                form_msg_id = resp.json()["messages"][0]["id"]
-                form_message = MessageCreate(
-                    message_id=form_msg_id,
-                    from_wa_id="917729992376",  # Your WhatsApp number
-                    to_wa_id=wa_id,
-                    type="interactive",
-                    body="Address collection form sent",
-                    timestamp=datetime.now(),
-                    customer_id=customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name="")).id
-                )
-                message_service.create_message(db, form_message)
-                
-                await manager.broadcast({
-                    "from": "917729992376",
-                    "to": wa_id,
-                    "type": "interactive",
-                    "message": "Address collection form sent",
-                    "timestamp": datetime.now().isoformat()
-                })
-                
-            except Exception as e:
-                print(f"Error saving address form message: {e}")
-        else:
-            print(f"Failed to send address form: {resp.text}")
-            # Fallback to simple text form
-            await send_message_to_waid(wa_id, "📝 Please enter your address in this format:", db)
-            await send_message_to_waid(wa_id, 
-                """*Contact Details:*
-Full Name: [Your Name]
-Phone: [10-digit number]
-
-*Address Details:*
-Pincode: [6-digit pincode]
-House No. & Street: [House number and street]
-Area/Locality: [Your area]
-City: [Your city]
-State: [Your state]
-Landmark: [Optional - nearby landmark]""", db)
-            
-    except Exception as e:
-        print(f"Error sending address form: {e}")
-        # Fallback to simple text form
         await send_message_to_waid(wa_id, "📝 Please enter your address in this format:", db)
-        await send_message_to_waid(wa_id, 
+        await send_message_to_waid(wa_id,
             """*Contact Details:*
 Full Name: [Your Name]
 Phone: [10-digit number]
@@ -171,63 +85,8 @@ Area/Locality: [Your area]
 City: [Your city]
 State: [Your state]
 Landmark: [Optional - nearby landmark]""", db)
-
-
-async def send_address_flow_button(wa_id: str, db: Session, customer_name: str = "Customer"):
-    """Send WhatsApp Flow button for address collection"""
-    try:
-        # Get WhatsApp token
-        token_entry = get_latest_token(db)
-        if not token_entry or not token_entry.token:
-            await send_message_to_waid(wa_id, "❌ Unable to send address flow. Please try again.", db)
-            return
-        
-        access_token = token_entry.token
-        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-        phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
-        
-        # Import the flow template
-        from utils.address_templates import get_address_collection_flow_template
-        
-        # Get the flow payload
-        payload = get_address_collection_flow_template(wa_id, customer_name)
-        
-        resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
-        if resp.status_code == 200:
-            try:
-                flow_msg_id = resp.json()["messages"][0]["id"]
-                flow_message = MessageCreate(
-                    message_id=flow_msg_id,
-                    from_wa_id="917729992376",  # Your WhatsApp number
-                    to_wa_id=wa_id,
-                    type="interactive",
-                    body="Address collection flow sent",
-                    timestamp=datetime.now(),
-                    customer_id=customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name="")).id
-                )
-                message_service.create_message(db, flow_message)
-                
-                await manager.broadcast({
-                    "from": "917729992376",
-                    "to": wa_id,
-                    "type": "interactive",
-                    "message": "Address collection flow sent",
-                    "timestamp": datetime.now().isoformat()
-                })
-                
-                print(f"Address flow button sent successfully: {flow_msg_id}")
-                
-            except Exception as e:
-                print(f"Error saving address flow message: {e}")
-        else:
-            print(f"Failed to send address flow: {resp.text}")
-            # Fallback to regular form
-            await send_address_form(wa_id, db)
-            
-    except Exception as e:
-        print(f"Error sending address flow: {e}")
-        # Fallback to regular form
-        await send_address_form(wa_id, db)
+    except Exception:
+        pass
 
 
 def _generate_next_dates(num_days: int = 7):
@@ -764,17 +623,17 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                             print(f"Error saving collect_address template message: {e}")
                     else:
                         print(f"Failed to send collect_address template: {resp.text}")
-                        # Fallback to structured form
-                        await send_address_form(wa_id, db)
+                        # Fallback to simple text guidance
+                        await _send_address_text_guidance(wa_id, db)
                 else:
                     print("No WhatsApp token available for collect_address template")
-                    # Fallback to structured form
-                    await send_address_form(wa_id, db)
+                    # Fallback to simple text guidance
+                    await _send_address_text_guidance(wa_id, db)
                     
             except Exception as e:
                 print(f"Error sending collect_address template: {e}")
-                # Fallback to structured form
-                await send_address_form(wa_id, db)
+                # Fallback to simple text guidance
+                await _send_address_text_guidance(wa_id, db)
         elif message_type == "location":
             location = message["location"]
             location_name = location.get("name", "")
@@ -920,14 +779,16 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             )
             message_service.create_message(db, msg_button)
             
-            # Broadcast button click as a text message for frontend display
-            await manager.broadcast({
-                "from": from_wa_id,
-                "to": to_wa_id,
-                "type": "text",
-                "message": f"🔘 {reply_text}",
-                "timestamp": timestamp.isoformat(),
-            })
+            # Optionally broadcast button click for frontend display, but avoid noise for main flows
+            noisy_btn_id = (btn_id or "").lower()
+            if noisy_btn_id not in {"buy_products", "book_appointment", "request_callback"}:
+                await manager.broadcast({
+                    "from": from_wa_id,
+                    "to": to_wa_id,
+                    "type": "text",
+                    "message": f"🔘 {reply_text}",
+                    "timestamp": timestamp.isoformat(),
+                })
 
             # Handle different button types
             choice_text = (reply_text or "").lower()
@@ -965,35 +826,30 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 try:
                     # Handle WhatsApp Flow buttons
                     if btn_id in ["provide_address", "address_flow"]:
-                        # Flow button clicked - send the WhatsApp Flow
-                        customer = customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
-                        await send_address_flow_button(wa_id, db, customer.name or "Customer")
+                        # Flow button clicked - fallback to simple text guidance
+                        await _send_address_text_guidance(wa_id, db)
                     
                     # Handle collect_address template buttons - any button from collect_address template opens the form
                     elif btn_id in ["add_address", "use_location", "enter_manually", "saved_address", "fill_form_step1", "share_location"]:
                         if btn_id == "add_address" or btn_id == "enter_manually" or btn_id == "fill_form_step1":
-                            # Show structured address form using WhatsApp interactive message
-                            await send_address_form(wa_id, db)
+                            # Fallback to simple text guidance
+                            await _send_address_text_guidance(wa_id, db)
                         elif btn_id == "use_location" or btn_id == "share_location":
                             await send_message_to_waid(wa_id, "📍 Please share your current location by tapping the location icon below.", db)
                         elif btn_id == "saved_address":
                             await send_message_to_waid(wa_id, "💾 You can use a previously saved address. Please enter your address manually for now.", db)
-                            await send_address_form(wa_id, db)
+                            await _send_address_text_guidance(wa_id, db)
                     else:
                         # Handle other address collection buttons using the service
-                        from services.address_collection_service import AddressCollectionService
-                        address_service = AddressCollectionService(db)
-                        result = await address_service.handle_address_button_click(wa_id, btn_id)
-                        
-                        if not result["success"]:
-                            await send_message_to_waid(wa_id, f"❌ {result.get('error', 'Something went wrong')}", db)
+                        # AddressCollectionService removed; fallback to simple text guidance
+                        await _send_address_text_guidance(wa_id, db)
                 except Exception as e:
                     await send_message_to_waid(wa_id, f"❌ Error processing address request: {str(e)}", db)
             
             # 3) Generic handler for any button click when user is awaiting address (not for buy)
             elif awaiting_address_users.get(wa_id, False):
-                # If user is awaiting address and clicks any button, show the structured form
-                await send_address_form(wa_id, db)
+                # If user is awaiting address and clicks any button, show guidance
+                await _send_address_text_guidance(wa_id, db)
 
             return {"status": "success", "message_id": message_id}
 
@@ -1356,7 +1212,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             except Exception:
                 pass
 
-            # Save user's interactive reply (fallback if not already broadcasted above)
+            # Save and broadcast interactive reply only if we didn't already do it above
             if not interactive_broadcasted:
                 reply_text = title or reply_id or "[Interactive Reply]"
                 msg_interactive = MessageCreate(
@@ -1368,14 +1224,8 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     timestamp=timestamp,
                     customer_id=customer.id,
                 )
-            message_service.create_message(db, msg_interactive)
-            await manager.broadcast({
-                "from": from_wa_id,
-                "to": to_wa_id,
-                "type": "interactive",
-                "message": reply_text,
-                "timestamp": timestamp.isoformat(),
-            })
+                # Save only; avoid second broadcast to prevent duplicates
+                message_service.create_message(db, msg_interactive)
 
             # If user chose Buy Products → send only the WhatsApp catalog link (strict match)
             try:
@@ -1385,7 +1235,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             choice_text = (reply_text or "").strip().lower()
             if (reply_id and reply_id.lower() == "buy_products") or (choice_text == "buy products"):
                 try:
-                    await send_message_to_waid(wa_id, "🛍️ Browse our catalog: https://wa.me/c/917729992376", db)
+                    await trigger_buy_products_from_welcome(db, wa_id=wa_id)
                 except Exception:
                     pass
             return {"status": "success", "message_id": message_id}

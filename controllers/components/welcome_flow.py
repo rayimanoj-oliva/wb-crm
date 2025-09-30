@@ -13,6 +13,7 @@ from services import message_service
 from schemas.message_schema import MessageCreate
 from config.constants import get_messages_url
 from utils.ws_manager import manager
+from controllers.components.products_flow import run_buy_products_flow
 
 
 async def run_welcome_flow(
@@ -112,3 +113,7 @@ async def run_welcome_flow(
         return {"status": "failed", "reason": str(e)[:200]}
 
 
+
+async def trigger_buy_products_from_welcome(db: Session, *, wa_id: str) -> Dict[str, Any]:
+    """Helper to trigger the Buy Products catalogue flow from the welcome flow context."""
+    return await run_buy_products_flow(db, wa_id=wa_id)
