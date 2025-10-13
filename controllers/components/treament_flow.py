@@ -353,12 +353,8 @@ async def run_treament_flow(
                         if len(digits) != 10:
                             issues.append("- Phone must be 10 digits (Indian mobile)")
 
-                    corrective = (
-                        "❌ I couldn't verify your details.\n"
-                        + (("\n".join(issues) + "\n") if issues else "")
-                        + "\nPlease reply with your full name and a 10-digit mobile number in one message.\n"
-                          "Example: Rahul Sharma 9876543210"
-                    )
+                    # Skip corrective messaging here to avoid asking for full name + phone together.
+                    # Let the main websocket flow handle name/phone correction interactively.
                     try:
                         await manager.broadcast({
                             "from": to_wa_id,
@@ -370,82 +366,7 @@ async def run_treament_flow(
                         })
                     except Exception:
                         pass
-                    try:
-                        await manager.broadcast({
-                            "from": to_wa_id,
-                            "to": wa_id,
-                            "type": "contact_verification_corrective_attempt",
-                            "message": corrective,
-                            "timestamp": datetime.now().isoformat(),
-                        })
-                    except Exception:
-                        pass
-
-                    # Try sending via utility first
-                    try:
-                        await send_message_to_waid(wa_id, corrective, db)
-                        try:
-                            await manager.broadcast({
-                                "from": to_wa_id,
-                                "to": wa_id,
-                                "type": "contact_verification_corrective_sent",
-                                "via": "utility",
-                                "timestamp": datetime.now().isoformat(),
-                            })
-                        except Exception:
-                            pass
-                    except Exception:
-                        # Fallback: send directly via WhatsApp API
-                        try:
-                            token_entry_fb = get_latest_token(db)
-                            if token_entry_fb and token_entry_fb.token:
-                                access_token_fb = token_entry_fb.token
-                                try:
-                                    incoming_phone_id_fb = (value or {}).get("metadata", {}).get("phone_number_id")
-                                except Exception:
-                                    incoming_phone_id_fb = None
-                                phone_id_fb = incoming_phone_id_fb or os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
-                                headers_fb = {"Authorization": f"Bearer {access_token_fb}", "Content-Type": "application/json"}
-                                payload_fb = {
-                                    "messaging_product": "whatsapp",
-                                    "to": wa_id,
-                                    "type": "text",
-                                    "text": {"body": corrective},
-                                }
-                                resp_fb = requests.post(get_messages_url(phone_id_fb), headers=headers_fb, json=payload_fb)
-                                try:
-                                    await manager.broadcast({
-                                        "from": to_wa_id,
-                                        "to": wa_id,
-                                        "type": "contact_verification_corrective_sent",
-                                        "via": "fallback",
-                                        "status_code": resp_fb.status_code,
-                                        "timestamp": datetime.now().isoformat(),
-                                    })
-                                except Exception:
-                                    pass
-                            else:
-                                try:
-                                    await manager.broadcast({
-                                        "from": to_wa_id,
-                                        "to": wa_id,
-                                        "type": "contact_verification_corrective_failed",
-                                        "reason": "no_token",
-                                        "timestamp": datetime.now().isoformat(),
-                                    })
-                                except Exception:
-                                    pass
-                        except Exception as fb_err:
-                            try:
-                                await manager.broadcast({
-                                    "from": to_wa_id,
-                                    "to": wa_id,
-                                    "type": "contact_verification_corrective_failed",
-                                    "reason": str(fb_err)[:200],
-                                    "timestamp": datetime.now().isoformat(),
-                                })
-                            except Exception:
-                                pass
+                    return {"status": "contact_verification_invalid", "message_id": message_id, "issues": issues}
             except Exception as e:
                 # Non-fatal; continue webhook
                 print(f"[treament_flow] Error in validation flow: {e}")
