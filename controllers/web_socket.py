@@ -208,8 +208,27 @@ async def _confirm_appointment(wa_id: str, db: Session, date_iso: str, time_labe
         except Exception:
             pass
         
-        # Confirmation to user with center information
-        await send_message_to_waid(wa_id, f"✅ Thank you! Your preferred appointment is {date_iso} at {time_label}. Our team will call and confirm shortly.", db)
+        # Confirmation to user with center information and pre-filled name/phone
+        try:
+            from services.customer_service import get_customer_record_by_wa_id
+            customer = get_customer_record_by_wa_id(db, wa_id)
+            display_name = (customer.name.strip() if customer and isinstance(customer.name, str) else None) or "there"
+        except Exception:
+            display_name = "there"
+        # Derive phone from wa_id as +91XXXXXXXXXX if applicable
+        try:
+            import re as _re
+            digits = _re.sub(r"\D", "", wa_id)
+            last10 = digits[-10:] if len(digits) >= 10 else None
+            display_phone = f"+91{last10}" if last10 and len(last10) == 10 else wa_id
+        except Exception:
+            display_phone = wa_id
+
+        confirm_msg = (
+            f"✅ Thank you! Your preferred appointment is on {date_iso} at {time_label}. Our team will call to confirm shortly.\n\n"
+            f"Could you please confirm your name and contact number {display_name} and {display_phone} so we can finalize your booking?"
+        )
+        await send_message_to_waid(wa_id, confirm_msg, db)
         # Clear state
         try:
             if wa_id in appointment_state:

@@ -62,6 +62,10 @@ def get_customer_by_wa_id(db: Session, wa_id:str):
     customer = db.query(Customer).filter(Customer.wa_id == wa_id).first()
     return customer.id
 
+# Get full customer record by wa_id
+def get_customer_record_by_wa_id(db: Session, wa_id: str) -> Customer | None:
+    return db.query(Customer).filter(Customer.wa_id == wa_id).first()
+
 def assign_user_to_customer(db: Session, customer_id: UUID, user_id: UUID | None) -> Customer:
     # 1. Get the customer
     customer = db.query(Customer).filter(Customer.id == customer_id).one_or_none()

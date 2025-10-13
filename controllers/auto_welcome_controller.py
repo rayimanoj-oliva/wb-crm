@@ -80,12 +80,83 @@ def _verify_contact_with_openai(text: str) -> dict:
     words = [w for w in re.findall(r"[A-Za-z][A-Za-z\-']+", text) if len(w) > 1]
     extracted_name = " ".join(words[:3]) if words else None
 
+    # Enforce minimum 3 alphabetic characters in the name (letters only)
+    def _name_meets_min_chars(name: str | None) -> bool:
+        if not isinstance(name, str):
+            return False
+        letters_only = re.sub(r"[^A-Za-z]", "", name)
+        return len(letters_only) >= 3
+
+    # Heuristic to check if a string resembles a plausible human name
+    def _looks_like_human_name(name: str | None) -> bool:
+        if not isinstance(name, str):
+            return False
+        candidate = name.strip()
+        if not candidate:
+            return False
+        # Reject if contains digits or emoji-like non-word chars (besides space, hyphen, apostrophe)
+        if re.search(r"\d", candidate):
+            return False
+        if re.search(r"[\u2600-\u27BF\u1F300-\u1F6FF\u1F900-\u1F9FF]", candidate):  # basic emoji blocks
+            return False
+        # Allow letters, spaces, hyphens, apostrophes only
+        if re.search(r"[^A-Za-z\- '\s]", candidate):
+            return False
+        letters_only = re.sub(r"[^A-Za-z]", "", candidate)
+        # Minimum length guard
+        if len(letters_only) < 3:
+            return False
+        # Must contain at least one vowel and one consonant
+        if not re.search(r"[AEIOUaeiou]", letters_only):
+            return False
+        if not re.search(r"[B-DF-HJ-NP-TV-Zb-df-hj-np-tv-z]", letters_only):
+            return False
+        # Disallow all same character or long repeats
+        if len(set(letters_only.lower())) == 1:
+            return False
+        if re.search(r"(.)\1{3,}", letters_only, flags=re.IGNORECASE):
+            return False
+        # Reject very long consonant clusters (likely gibberish)
+        if re.search(r"[B-DF-HJ-NP-TV-Zb-df-hj-np-tv-z]{5,}", letters_only):
+            return False
+        # Token structure: prefer 2 tokens of >=2 chars, or single token >=4 chars
+        tokens = [t for t in re.findall(r"[A-Za-z][A-Za-z\-']+", candidate)]
+        if len(tokens) >= 2:
+            if any(len(re.sub(r"[^A-Za-z]", "", t)) < 2 for t in tokens[:2]):
+                return False
+        else:
+            if len(letters_only) < 4:
+                return False
+        # Common non-name placeholders/brand terms
+        blacklist = {
+            "test", "testing", "asdf", "qwerty", "user", "customer", "name", "unknown", "oliva", "oliva clinic", "clinic",
+            "asd", "sdf", "dfg", "qwe", "zxc", "sdfhj", "qwert", "qwertyui", "abc", "abcd"
+        }
+        if candidate.strip().lower() in blacklist:
+            return False
+        # Looks acceptable
+        return True
+
+    # Normalize any phone-like string to +91XXXXXXXXXX (exactly 10 digits after +91)
+    def _normalize_phone_str(phone_str: str | None) -> str | None:
+        if not isinstance(phone_str, str):
+            return None
+        digits = re.sub(r"\D", "", phone_str)
+        if len(digits) < 10:
+            return None
+        last10 = digits[-10:]
+        if len(last10) != 10:
+            return None
+        return f"+91{last10}"
+
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
+        normalized_phone = _normalize_phone_str(extracted_phone or "") if extracted_phone else None
+        is_valid = bool(normalized_phone and _name_meets_min_chars(extracted_name) and _looks_like_human_name(extracted_name))
         return {
-            "valid": bool(extracted_phone and extracted_name),
+            "valid": is_valid,
             "name": extracted_name,
-            "phone": f"+91{extracted_phone}" if extracted_phone else None,
+            "phone": normalized_phone,
             "reason": "OPENAI_API_KEY not set; regex validation used"
         }
 
@@ -95,7 +166,7 @@ def _verify_contact_with_openai(text: str) -> dict:
         prompt = (
             "You are a strict validator for Indian contact information. Extract a human name and Indian 10-digit phone number from the text. "
             "Phone number requirements: Must be exactly 10 digits, can have +91 prefix or not, but should be a valid Indian mobile number. "
-            "Name requirements: Must be a plausible human name (at least 2 words, no numbers). "
+            "Name requirements: Must be a plausible human name with at least 3 alphabetic characters total (letters only count), contain vowels, avoid gibberish (e.g., 'asd', 'sdfhj'), preferably 2 words, and no numbers. "
             "Return ONLY strict JSON with keys: valid (boolean), name (string|null), phone (string|null), reason (string). "
             "valid must be true only if both a plausible name is present AND phone is exactly 10 digits (Indian format). "
             "Phone should be returned as +91XXXXXXXXXX format (10 digits after +91)."
@@ -111,16 +182,10 @@ def _verify_contact_with_openai(text: str) -> dict:
         }
         resp = requests.post(url, headers=headers, json=data, timeout=20)
         if resp.status_code != 200:
-            # Format phone number to ensure +91 prefix
-            phone = extracted_phone
-            if phone and not phone.startswith("+91"):
-                if phone.isdigit() and len(phone) == 10:
-                    phone = f"+91{phone}"
-                elif phone.startswith("91") and len(phone) == 12:
-                    phone = f"+{phone}"
-            
+            phone = _normalize_phone_str(extracted_phone or "") if extracted_phone else None
+            is_valid = bool(phone and _name_meets_min_chars(extracted_name) and _looks_like_human_name(extracted_name))
             return {
-                "valid": bool(extracted_phone and extracted_name),
+                "valid": is_valid,
                 "name": extracted_name,
                 "phone": phone,
                 "reason": f"OpenAI error {resp.status_code}: {resp.text[:200]}"
@@ -132,31 +197,23 @@ def _verify_contact_with_openai(text: str) -> dict:
             parsed = _json.loads(content)
         except Exception:
             parsed = {}
-        # Format phone number to ensure +91 prefix
-        phone = parsed.get("phone") or extracted_phone
-        if phone and not phone.startswith("+91"):
-            if phone.isdigit() and len(phone) == 10:
-                phone = f"+91{phone}"
-            elif phone.startswith("91") and len(phone) == 12:
-                phone = f"+{phone}"
+        # Normalize phone consistently to +91XXXXXXXXXX
+        phone = _normalize_phone_str(parsed.get("phone")) or _normalize_phone_str(extracted_phone or "")
         
+        # Enforce the 3-character minimum even if model marks valid
+        parsed_name = parsed.get("name") or extracted_name
+        valid_flag = bool(parsed.get("valid")) and _name_meets_min_chars(parsed_name) and _looks_like_human_name(parsed_name)
         return {
-            "valid": bool(parsed.get("valid")),
-            "name": parsed.get("name") or extracted_name,
+            "valid": valid_flag,
+            "name": parsed_name,
             "phone": phone,
-            "reason": parsed.get("reason") or "validated"
+            "reason": parsed.get("reason") or ("validated" if valid_flag else "name not plausible or too short (<3 letters)")
         }
     except Exception as e:
-        # Format phone number to ensure +91 prefix
-        phone = extracted_phone
-        if phone and not phone.startswith("+91"):
-            if phone.isdigit() and len(phone) == 10:
-                phone = f"+91{phone}"
-            elif phone.startswith("91") and len(phone) == 12:
-                phone = f"+{phone}"
-        
+        phone = _normalize_phone_str(extracted_phone or "") if extracted_phone else None
+        is_valid = bool(phone and _name_meets_min_chars(extracted_name) and _looks_like_human_name(extracted_name))
         return {
-            "valid": bool(extracted_phone and extracted_name),
+            "valid": is_valid,
             "name": extracted_name,
             "phone": phone,
             "reason": f"OpenAI exception: {str(e)[:120]}"
@@ -480,7 +537,44 @@ async def whatsapp_auto_welcome_webhook(request: Request, db: Session = Depends(
                     pass
             except Exception:
                 pass
-                return {"status": "welcome_sent", "message_id": message_id}
+            # Immediately proceed to treatment flow without asking name/phone
+            try:
+                token_entry_btn = get_latest_token(db)
+                if token_entry_btn and token_entry_btn.token:
+                    access_token_btn = token_entry_btn.token
+                    phone_id_btn = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+                    lang_code_btn = os.getenv("WELCOME_TEMPLATE_LANG", "en_US")
+                    # No name param; send template bare and fallback to buttons
+                    resp_btn = _send_template(
+                        wa_id=wa_id,
+                        template_name="mr_treatment",
+                        access_token=access_token_btn,
+                        phone_id=phone_id_btn,
+                        components=None,
+                        lang_code=lang_code_btn,
+                    )
+                    if resp_btn.status_code != 200:
+                        headers_btn = {"Authorization": f"Bearer {access_token_btn}", "Content-Type": "application/json"}
+                        payload_btn = {
+                            "messaging_product": "whatsapp",
+                            "to": wa_id,
+                            "type": "interactive",
+                            "interactive": {
+                                "type": "button",
+                                "body": {"text": "Please choose your area of concern:"},
+                                "action": {
+                                    "buttons": [
+                                        {"type": "reply", "reply": {"id": "skin", "title": "Skin"}},
+                                        {"type": "reply", "reply": {"id": "hair", "title": "Hair"}},
+                                        {"type": "reply", "reply": {"id": "body", "title": "Body"}},
+                                    ]
+                                },
+                            },
+                        }
+                        requests.post(get_messages_url(phone_id_btn), headers=headers_btn, json=payload_btn)
+            except Exception:
+                pass
+            return {"status": "welcome_and_treatment_sent", "message_id": message_id}
         else:
             try:
                     print("[auto_webhook] mr_welcome_temp send failed:", resp.status_code, resp.text[:500])

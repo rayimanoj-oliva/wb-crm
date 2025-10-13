@@ -129,8 +129,57 @@ async def run_treament_flow(
                             })
                         except Exception:
                             pass
+
+                        # Immediately proceed to treatment flow without asking name/phone
+                        try:
+                            components_treat = None
+                            resp_treat = _send_template(
+                                wa_id=wa_id,
+                                template_name="mr_treatment",
+                                access_token=access_token_prefill,
+                                phone_id=phone_id_prefill,
+                                components=components_treat,
+                                lang_code=lang_code_prefill,
+                            )
+                            try:
+                                await manager.broadcast({
+                                    "from": to_wa_id,
+                                    "to": wa_id,
+                                    "type": "template" if resp_treat.status_code == 200 else "template_error",
+                                    "message": "mr_treatment sent" if resp_treat.status_code == 200 else "mr_treatment failed",
+                                    **({"status_code": resp_treat.status_code} if resp_treat.status_code != 200 else {}),
+                                    "timestamp": datetime.now().isoformat(),
+                                })
+                            except Exception:
+                                pass
+                            if resp_treat.status_code != 200:
+                                # Fallback to interactive buttons (Skin/Hair/Body)
+                                headers_btn2 = {
+                                    "Authorization": f"Bearer {access_token_prefill}",
+                                    "Content-Type": "application/json",
+                                }
+                                payload_btn2 = {
+                                    "messaging_product": "whatsapp",
+                                    "to": wa_id,
+                                    "type": "interactive",
+                                    "interactive": {
+                                        "type": "button",
+                                        "body": {"text": "Please choose your area of concern:"},
+                                        "action": {
+                                            "buttons": [
+                                                {"type": "reply", "reply": {"id": "skin", "title": "Skin"}},
+                                                {"type": "reply", "reply": {"id": "hair", "title": "Hair"}},
+                                                {"type": "reply", "reply": {"id": "body", "title": "Body"}},
+                                            ]
+                                        },
+                                    },
+                                }
+                                requests.post(get_messages_url(phone_id_prefill), headers=headers_btn2, json=payload_btn2)
+                        except Exception:
+                            pass
+
                         handled_text = True
-                        return {"status": "welcome_sent", "message_id": message_id}
+                        return {"status": "welcome_and_treatment_sent", "message_id": message_id}
                     else:
                         try:
                             await manager.broadcast({
@@ -184,6 +233,59 @@ async def run_treament_flow(
                 })
             except Exception:
                 pass
+
+            # Fallback: if model/regex marked invalid, try strict local extraction but only accept plausible names
+            if not bool(verification.get("valid")):
+                try:
+                    # Normalize phone to +91XXXXXXXXXX
+                    def _norm_phone(p: str | None) -> str | None:
+                        if not isinstance(p, str):
+                            return None
+                        digits = re.sub(r"\D", "", p)
+                        if len(digits) < 10:
+                            return None
+                        last10 = digits[-10:]
+                        if len(last10) != 10:
+                            return None
+                        return "+91" + last10
+
+                    # Extract phone from message text
+                    phone_match = re.search(r"\+91[-\s]?(\d{10})", body_text) or re.search(r"\b(\d{10})\b", body_text)
+                    fallback_phone = _norm_phone(phone_match.group(1) if phone_match else None)
+
+                    # Extract a plausible name: enforce vowels, consonants, token structure
+                    name_tokens = re.findall(r"[A-Za-z][A-Za-z\-']+", body_text)
+                    fallback_name = " ".join(name_tokens[:3]) if name_tokens else None
+                    letters_only = re.sub(r"[^A-Za-z]", "", fallback_name or "")
+                    has_min = len(letters_only) >= 3
+                    has_vowel = re.search(r"[AEIOUaeiou]", letters_only) is not None
+                    has_consonant = re.search(r"[B-DF-HJ-NP-TV-Zb-df-hj-np-tv-z]", letters_only) is not None
+                    long_consonant_cluster = re.search(r"[B-DF-HJ-NP-TV-Zb-df-hj-np-tv-z]{5,}", letters_only) is not None
+                    tokens = re.findall(r"[A-Za-z][A-Za-z\-']+", fallback_name or "")
+                    token_ok = (len(tokens) >= 2 and all(len(re.sub(r"[^A-Za-z]", "", t)) >= 2 for t in tokens[:2])) or (len(tokens) == 1 and len(letters_only) >= 4)
+                    blacklist = {"asd", "sdf", "dfg", "qwe", "zxc", "sdfhj", "qwert", "qwerty", "abc"}
+                    is_blacklisted = (fallback_name or "").strip().lower() in blacklist
+                    is_name_ok = has_min and has_vowel and has_consonant and token_ok and not long_consonant_cluster and not is_blacklisted
+
+                    if fallback_phone and is_name_ok:
+                        verification = {
+                            "valid": True,
+                            "name": fallback_name,
+                            "phone": fallback_phone,
+                            "reason": "local fallback accepted"
+                        }
+                        try:
+                            await manager.broadcast({
+                                "from": to_wa_id,
+                                "to": wa_id,
+                                "type": "contact_verification_fallback",
+                                "result": verification,
+                                "timestamp": datetime.now().isoformat(),
+                            })
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
 
             try:
                 if verification.get("valid"):
@@ -285,13 +387,21 @@ async def run_treament_flow(
                     name_val = (verification.get("name") or "").strip() if isinstance(verification.get("name"), str) else None
                     phone_val = (verification.get("phone") or "").strip() if isinstance(verification.get("phone"), str) else None
 
-                    # Name validation: at least 2 words
+                    # Name validation: at least 3 letters AND plausible human pattern (vowel+consonant, not gibberish)
                     if not name_val:
                         issues.append("- Name missing")
                     else:
-                        name_tokens = re.findall(r"[A-Za-z][A-Za-z\-']+", name_val)
-                        if len(name_tokens) < 2:
-                            issues.append("- Name should have at least 2 words")
+                        letters_only = re.sub(r"[^A-Za-z]", "", name_val)
+                        has_min = len(letters_only) >= 3
+                        has_vowel = re.search(r"[AEIOUaeiou]", letters_only) is not None
+                        has_consonant = re.search(r"[B-DF-HJ-NP-TV-Zb-df-hj-np-tv-z]", letters_only) is not None
+                        long_consonant_cluster = re.search(r"[B-DF-HJ-NP-TV-Zb-df-hj-np-tv-z]{5,}", letters_only) is not None
+                        tokens = re.findall(r"[A-Za-z][A-Za-z\-']+", name_val)
+                        token_ok = (len(tokens) >= 2 and all(len(re.sub(r"[^A-Za-z]", "", t)) >= 2 for t in tokens[:2])) or (len(tokens) == 1 and len(letters_only) >= 4)
+                        blacklist = {"asd", "sdf", "dfg", "qwe", "zxc", "sdfhj", "qwert", "qwerty", "abc"}
+                        is_blacklisted = name_val.strip().lower() in blacklist
+                        if not (has_min and has_vowel and has_consonant and token_ok) or long_consonant_cluster or is_blacklisted:
+                            issues.append("- Name must have at least 3 letters")
 
                     # Phone validation: +91XXXXXXXXXX or 10 digits
                     if not phone_val:
