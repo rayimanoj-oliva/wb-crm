@@ -1425,7 +1425,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                 pass
                             return {"status": "appointment_corrected_and_confirmed", "message_id": message_id}
                         else:
-                            await send_message_to_waid(wa_id, "❌ I couldn't verify your details. Please share your full name and a 10-digit mobile number in one message.", db)
+                            # await send_message_to_waid(wa_id, "❌ I couldn't verify your details. Please share your full name and a 10-digit mobile number in one message.", db)
                             return {"status": "appointment_correction_invalid", "message_id": message_id}
                     except Exception:
                         pass
