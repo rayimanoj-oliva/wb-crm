@@ -211,13 +211,6 @@ async def run_treament_flow(
                 pass
 
         # 4) Contact verification heuristics
-        # If appointment correction is being handled by websocket flow, skip verification here to avoid duplicates
-        try:
-            from controllers.web_socket import appointment_state  # type: ignore
-            if bool((appointment_state.get(wa_id) or {}).get("awaiting_correction")):
-                return {"status": "skipped_awaiting_correction", "message_id": message_id}
-        except Exception:
-            pass
         has_phone = re.search(r"\b\d{10}\b", normalized_body) or re.search(r"\+91", normalized_body)
         has_name_keywords = any(keyword in normalized_body for keyword in ["name", "i am", "my name", "call me"])
         digit_count = len(re.findall(r"\d", normalized_body))
@@ -762,4 +755,3 @@ async def run_appointment_buttons_flow(
         return {"status": "failed", "error": str(e)[:200]}
 
     return {"status": "skipped"}
-
