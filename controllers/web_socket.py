@@ -975,8 +975,20 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                     }
                                 }
                             }
-                            # Send to WA API (no websocket broadcast of list to avoid duplicates)
+                            # Send to WA API
                             requests.post(get_messages_url(phone_id2), headers=headers2, json=payload_list)
+                            # Broadcast to ChatWindow so the UI shows the outgoing list
+                            try:
+                                await manager.broadcast({
+                                    "from": to_wa_id,
+                                    "to": wa_id,
+                                    "type": "interactive",
+                                    "message": "Please select your Skin concern:",
+                                    "timestamp": datetime.now().isoformat(),
+                                    "meta": {"kind": "list", "section": "Skin Concerns"}
+                                })
+                            except Exception:
+                                pass
                             return {"status": "list_sent", "message_id": message_id}
                         elif topic == "hair":
                             rows = list_rows(["Hair Loss / Hair Fall", "Hair Transplant", "Dandruff & Scalp Care", "Other Hair Concerns"])
@@ -1023,8 +1035,20 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                             section_title = "Body"
 
                       
-                        # Send to WhatsApp API (no extra websocket broadcast here to avoid duplicates)
+                        # Send to WhatsApp API
                         requests.post(get_messages_url(phone_id2), headers=headers2, json=payload_list)
+                        # Broadcast to ChatWindow so the UI shows the outgoing list
+                        try:
+                            await manager.broadcast({
+                                "from": to_wa_id,
+                                "to": wa_id,
+                                "type": "interactive",
+                                "message": f"Please select your {section_title} concern:",
+                                "timestamp": datetime.now().isoformat(),
+                                "meta": {"kind": "list", "section": section_title}
+                            })
+                        except Exception:
+                            pass
                         return {"status": "list_sent", "message_id": message_id}
             except Exception:
                 pass

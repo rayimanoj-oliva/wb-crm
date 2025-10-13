@@ -126,6 +126,18 @@ async def run_treament_flow(
                         components=body_components_prefill,
                         lang_code=lang_code_prefill,
                     )
+                    # Broadcast result to ChatWindow
+                    try:
+                        await manager.broadcast({
+                            "from": to_wa_id,
+                            "to": wa_id,
+                            "type": "template" if resp_prefill.status_code == 200 else "template_error",
+                            "message": "mr_welcome_temp sent" if resp_prefill.status_code == 200 else "mr_welcome_temp failed",
+                            **({"status_code": resp_prefill.status_code} if resp_prefill.status_code != 200 else {}),
+                            "timestamp": datetime.now().isoformat(),
+                        })
+                    except Exception:
+                        pass
                     if resp_prefill.status_code == 200:
                         try:
                             await manager.broadcast({
@@ -217,6 +229,18 @@ async def run_treament_flow(
                                 components=None,
                                 lang_code=lang_code_btn,
                             )
+                            # Broadcast result to ChatWindow
+                            try:
+                                await manager.broadcast({
+                                    "from": to_wa_id,
+                                    "to": wa_id,
+                                    "type": "template" if resp_btn.status_code == 200 else "template_error",
+                                    "message": "mr_treatment sent" if resp_btn.status_code == 200 else "mr_treatment failed",
+                                    **({"status_code": resp_btn.status_code} if resp_btn.status_code != 200 else {}),
+                                    "timestamp": datetime.now().isoformat(),
+                                })
+                            except Exception:
+                                pass
                             if resp_btn.status_code == 200:
                                 try:
                                     await manager.broadcast({
