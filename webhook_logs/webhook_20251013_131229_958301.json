@@ -1,0 +1,34 @@
+{
+  "object": "whatsapp_business_account",
+  "entry": [
+    {
+      "id": "367633743092037",
+      "changes": [
+        {
+          "value": {
+            "contacts": [
+              {
+                "wa_id": "911234567890",
+                "profile": {
+                  "name": "Test User"
+                }
+              }
+            ],
+            "messages": [
+              {
+                "id": "MSG1",
+                "timestamp": "1730000000",
+                "from": "911234567890",
+                "type": "text",
+                "text": {
+                  "body": "asdfg"
+                }
+              }
+            ]
+          },
+          "field": "messages"
+        }
+      ]
+    }
+  ]
+}

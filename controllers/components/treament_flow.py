@@ -39,31 +39,11 @@ async def run_treament_flow(
 
     handled_text = False
 
-    # 1) Persist inbound text and broadcast to websocket
+    # 1) Do NOT persist/broadcast inbound text here to avoid duplicates.
+    #    The main webhook controller handles saving + broadcasting once.
+    #    Continue with flow analysis only.
     if message_type == "text":
-        try:
-            inbound_msg = MessageCreate(
-                message_id=message_id,
-                from_wa_id=from_wa_id,
-                to_wa_id=to_wa_id,
-                type="text",
-                body=body_text,
-                timestamp=timestamp,
-                customer_id=customer.id,
-            )
-            message_service.create_message(db, inbound_msg)
-            try:
-                await manager.broadcast({
-                    "from": from_wa_id,
-                    "to": to_wa_id,
-                    "type": "text",
-                    "message": body_text,
-                    "timestamp": timestamp.isoformat(),
-                })
-            except Exception:
-                pass
-        except Exception:
-            pass
+        pass
 
         # 2) Normalize body text for consistent comparison
         def _normalize(txt: str) -> str:
