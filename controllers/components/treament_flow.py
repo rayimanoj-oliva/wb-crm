@@ -660,8 +660,8 @@ async def run_appointment_buttons_flow(
         # Book appointment
         if (
             normalized_id == "book_appointment"
-            or normalized_text == "book an appointment"
-            or normalized_payload == "book an appointment"
+            or normalized_text in {"book an appointment", "book appointment"}
+            or normalized_payload in {"book an appointment", "book appointment"}
         ):
             try:
                 from controllers.web_socket import send_date_list  # type: ignore

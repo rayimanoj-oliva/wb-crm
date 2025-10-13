@@ -1061,7 +1061,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     button_title = button_reply.get("title", "")
                     
                     if ((button_id or "").lower() == "book_appointment" or 
-                        (button_title or "").strip().lower() == "book an appointment"):
+                        (button_title or "").strip().lower() in {"book an appointment", "book appointment"}):
                         await send_date_list(wa_id, db)
                         return {"status": "date_list_sent", "message_id": message_id}
                     
