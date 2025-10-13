@@ -208,7 +208,7 @@ async def _confirm_appointment(wa_id: str, db: Session, date_iso: str, time_labe
         except Exception:
             pass
         
-        # Confirmation to user with center information and pre-filled name/phone
+        # Prepare confirmation prompt with pre-filled name/phone (no thank-you yet)
         try:
             from services.customer_service import get_customer_record_by_wa_id
             customer = get_customer_record_by_wa_id(db, wa_id)
@@ -225,16 +225,55 @@ async def _confirm_appointment(wa_id: str, db: Session, date_iso: str, time_labe
             display_phone = wa_id
 
         confirm_msg = (
-            f"✅ Thank you! Your preferred appointment is on {date_iso} at {time_label}. Our team will call to confirm shortly.\n\n"
             f"Could you please confirm your name and contact number {display_name} and {display_phone} so we can finalize your booking?"
         )
         await send_message_to_waid(wa_id, confirm_msg, db)
-        # Clear state
+
+        # Store selection in state until user confirms Yes/No
         try:
-            if wa_id in appointment_state:
-                appointment_state.pop(wa_id, None)
+            appointment_state[wa_id] = {"date": date_iso, "time": time_label}
         except Exception:
             pass
+
+        # Follow-up interactive Yes/No confirmation buttons
+        try:
+            from services.whatsapp_service import get_latest_token
+            from config.constants import get_messages_url
+            token_entry_btn = get_latest_token(db)
+            if token_entry_btn and token_entry_btn.token:
+                access_token_btn = token_entry_btn.token
+                phone_id_btn = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+                headers_btn = {"Authorization": f"Bearer {access_token_btn}", "Content-Type": "application/json"}
+                payload_btn = {
+                    "messaging_product": "whatsapp",
+                    "to": wa_id,
+                    "type": "interactive",
+                    "interactive": {
+                        "type": "button",
+                        "body": {"text": "Is this name and number correct?"},
+                        "action": {
+                            "buttons": [
+                                {"type": "reply", "reply": {"id": "confirm_yes", "title": "Yes"}},
+                                {"type": "reply", "reply": {"id": "confirm_no", "title": "No"}},
+                            ]
+                        },
+                    },
+                }
+                requests.post(get_messages_url(phone_id_btn), headers=headers_btn, json=payload_btn)
+                try:
+                    await manager.broadcast({
+                        "from": "system",
+                        "to": wa_id,
+                        "type": "interactive",
+                        "message": "Is this name and number correct?",
+                        "timestamp": datetime.now().isoformat(),
+                        "meta": {"kind": "buttons", "options": ["Yes", "No"]},
+                    })
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # Do NOT clear state here; we need it when user presses Yes/No
         # Broadcast
         try:
             await manager.broadcast({
@@ -1123,10 +1162,91 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         if date_iso and time_label:
                             await _confirm_appointment(wa_id, db, date_iso, time_label)
                             return {"status": "appointment_captured", "message_id": message_id}
+                    # Handle Yes/No confirmation for name/phone
+                    if (button_id or "").lower() in {"confirm_yes", "confirm_no"}:
+                        # Retrieve stored date/time
+                        date_iso = (appointment_state.get(wa_id) or {}).get("date")
+                        time_label = (appointment_state.get(wa_id) or {}).get("time")
+                        try:
+                            from services.customer_service import get_customer_record_by_wa_id
+                            customer = get_customer_record_by_wa_id(db, wa_id)
+                            display_name = (customer.name.strip() if customer and isinstance(customer.name, str) else None) or "there"
+                        except Exception:
+                            display_name = "there"
+                        # Derive phone from wa_id
+                        try:
+                            import re as _re
+                            digits = _re.sub(r"\D", "", wa_id)
+                            last10 = digits[-10:] if len(digits) >= 10 else None
+                            display_phone = f"+91{last10}" if last10 and len(last10) == 10 else wa_id
+                        except Exception:
+                            display_phone = wa_id
+
+                        if (button_id or "").lower() == "confirm_yes" and date_iso and time_label:
+                            thank_you = (
+                                f"✅ Thank you! Your preferred appointment is on {date_iso} at {time_label} with {display_name} ({display_phone}). "
+                                f"Your appointment is booked, and our team will call to confirm shortly."
+                            )
+                            await send_message_to_waid(wa_id, thank_you, db)
+                            # Now clear state
+                            try:
+                                if wa_id in appointment_state:
+                                    appointment_state.pop(wa_id, None)
+                            except Exception:
+                                pass
+                            return {"status": "appointment_confirmed", "message_id": message_id}
+                        elif (button_id or "").lower() == "confirm_no":
+                            try:
+                                # Mark that we are awaiting corrected name/phone in the next text
+                                st = appointment_state.get(wa_id) or {}
+                                st["awaiting_correction"] = True
+                                appointment_state[wa_id] = st
+                            except Exception:
+                                pass
+                            await send_message_to_waid(wa_id, "No problem. Please share your correct full name and 10-digit mobile number in one message.", db)
+                            return {"status": "appointment_needs_correction", "message_id": message_id}
                         else:
                             await send_message_to_waid(wa_id, "Please select a date first.", db)
                             await send_date_list(wa_id, db)
                             return {"status": "need_date_first", "message_id": message_id}
+            except Exception:
+                pass
+
+            # Handle plain text YES/NO confirmations when user did not press buttons
+            try:
+                if message_type == "text":
+                    norm = (body_text or "").strip().lower()
+                    if norm in {"yes", "y", "confirm", "ok"} or norm.startswith("yes"):
+                        date_iso = (appointment_state.get(wa_id) or {}).get("date")
+                        time_label = (appointment_state.get(wa_id) or {}).get("time")
+                        if date_iso and time_label:
+                            try:
+                                from services.customer_service import get_customer_record_by_wa_id
+                                customer = get_customer_record_by_wa_id(db, wa_id)
+                                display_name = (customer.name.strip() if customer and isinstance(customer.name, str) else None) or "there"
+                            except Exception:
+                                display_name = "there"
+                            try:
+                                import re as _re
+                                digits = _re.sub(r"\\D", "", wa_id)
+                                last10 = digits[-10:] if len(digits) >= 10 else None
+                                display_phone = f"+91{last10}" if last10 and len(last10) == 10 else wa_id
+                            except Exception:
+                                display_phone = wa_id
+                            thank_you = (
+                                f"✅ Thank you! Your preferred appointment is on {date_iso} at {time_label} with {display_name} ({display_phone}). "
+                                f"Your appointment is booked, and our team will call to confirm shortly."
+                            )
+                            await send_message_to_waid(wa_id, thank_you, db)
+                            try:
+                                if wa_id in appointment_state:
+                                    appointment_state.pop(wa_id, None)
+                            except Exception:
+                                pass
+                            return {"status": "appointment_confirmed_text", "message_id": message_id}
+                    if norm in {"no", "n", "incorrect"}:
+                        await send_message_to_waid(wa_id, "No problem. Please share your correct full name and 10-digit mobile number in one message.", db)
+                        return {"status": "appointment_needs_correction_text", "message_id": message_id}
             except Exception:
                 pass
 
@@ -1268,7 +1388,82 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
 
             return {"status": "success", "message_id": message_id}
         
-        elif message_type != "text":
+        # Handle plain text YES/NO confirmations at top-level (not only inside interactive branch)
+        try:
+            if message_type == "text":
+                norm = (body_text or "").strip().lower()
+                # If awaiting correction, parse and finalize
+                try:
+                    awaiting = bool((appointment_state.get(wa_id) or {}).get("awaiting_correction"))
+                except Exception:
+                    awaiting = False
+                if awaiting and norm:
+                    try:
+                        from controllers.auto_welcome_controller import _verify_contact_with_openai
+                        verification = _verify_contact_with_openai(body_text)
+                        if verification.get("valid"):
+                            # Echo received details
+                            await send_message_to_waid(
+                                wa_id,
+                                f"✅ Received details. Name: {verification.get('name')} | Phone: {verification.get('phone')}",
+                                db,
+                            )
+                            # Finalize thank-you with updated details
+                            date_iso = (appointment_state.get(wa_id) or {}).get("date")
+                            time_label = (appointment_state.get(wa_id) or {}).get("time")
+                            if date_iso and time_label:
+                                thank_you = (
+                                    f"✅ Thank you! Your preferred appointment is on {date_iso} at {time_label} with {verification.get('name')} ({verification.get('phone')}). "
+                                    f"Your appointment is booked, and our team will call to confirm shortly."
+                                )
+                                await send_message_to_waid(wa_id, thank_you, db)
+                            # Clear state
+                            try:
+                                if wa_id in appointment_state:
+                                    appointment_state.pop(wa_id, None)
+                            except Exception:
+                                pass
+                            return {"status": "appointment_corrected_and_confirmed", "message_id": message_id}
+                        else:
+                            await send_message_to_waid(wa_id, "❌ I couldn't verify your details. Please share your full name and a 10-digit mobile number in one message.", db)
+                            return {"status": "appointment_correction_invalid", "message_id": message_id}
+                    except Exception:
+                        pass
+                if norm in {"yes", "y", "confirm", "ok"} or norm.startswith("yes"):
+                    date_iso = (appointment_state.get(wa_id) or {}).get("date")
+                    time_label = (appointment_state.get(wa_id) or {}).get("time")
+                    if date_iso and time_label:
+                        try:
+                            from services.customer_service import get_customer_record_by_wa_id
+                            customer = get_customer_record_by_wa_id(db, wa_id)
+                            display_name = (customer.name.strip() if customer and isinstance(customer.name, str) else None) or "there"
+                        except Exception:
+                            display_name = "there"
+                        try:
+                            import re as _re
+                            digits = _re.sub(r"\\D", "", wa_id)
+                            last10 = digits[-10:] if len(digits) >= 10 else None
+                            display_phone = f"+91{last10}" if last10 and len(last10) == 10 else wa_id
+                        except Exception:
+                            display_phone = wa_id
+                        thank_you = (
+                            f"✅ Thank you! Your preferred appointment is on {date_iso} at {time_label} with {display_name} ({display_phone}). "
+                            f"Your appointment is booked, and our team will call to confirm shortly."
+                        )
+                        await send_message_to_waid(wa_id, thank_you, db)
+                        try:
+                            if wa_id in appointment_state:
+                                appointment_state.pop(wa_id, None)
+                        except Exception:
+                            pass
+                        return {"status": "appointment_confirmed_text", "message_id": message_id}
+                if norm in {"no", "n", "incorrect"}:
+                    await send_message_to_waid(wa_id, "No problem. Please share your correct full name and 10-digit mobile number in one message.", db)
+                    return {"status": "appointment_needs_correction_text", "message_id": message_id}
+        except Exception:
+            pass
+
+        if message_type != "text":
             message_data = MessageCreate(
                 message_id=message_id,
                 from_wa_id=from_wa_id,

@@ -294,94 +294,34 @@ async def run_treament_flow(
                         f"✅ Received details. Name: {verification.get('name')} | Phone: {verification.get('phone')}",
                         db,
                     )
-
-                    # Try sending mr_treatment template; fallback to interactive buttons if it fails
                     try:
-                        token_entry_btn = get_latest_token(db)
-                        if token_entry_btn and token_entry_btn.token:
-                            access_token_btn = token_entry_btn.token
-                            phone_id_btn = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
-                            lang_code_btn = os.getenv("WELCOME_TEMPLATE_LANG", "en_US")
+                        # If user has selected a date/time already, include it in the thank-you
+                        date_label = None
+                        time_label = None
+                        try:
+                            from controllers.web_socket import appointment_state  # type: ignore
+                            appt = appointment_state.get(wa_id) or {}
+                            date_label = appt.get("date")
+                            time_label = appt.get("time")
+                        except Exception:
+                            pass
 
-                            resp_btn = _send_template(
-                                wa_id=wa_id,
-                                template_name="mr_treatment",
-                                access_token=access_token_btn,
-                                phone_id=phone_id_btn,
-                                components=None,
-                                lang_code=lang_code_btn,
+                        if date_label and time_label:
+                            msg = (
+                                f"✅ Thank you! We've recorded your details: {verification.get('name')} ({verification.get('phone')}). "
+                                f"Your preferred appointment is on {date_label} at {time_label}. Your appointment is booked, and our team will call to confirm shortly."
                             )
-                            # Broadcast result to ChatWindow
-                            try:
-                                await manager.broadcast({
-                                    "from": to_wa_id,
-                                    "to": wa_id,
-                                    "type": "template" if resp_btn.status_code == 200 else "template_error",
-                                    "message": "mr_treatment sent" if resp_btn.status_code == 200 else "mr_treatment failed",
-                                    **({"status_code": resp_btn.status_code} if resp_btn.status_code != 200 else {}),
-                                    "timestamp": datetime.now().isoformat(),
-                                })
-                            except Exception:
-                                pass
-                            if resp_btn.status_code == 200:
-                                try:
-                                    await manager.broadcast({
-                                        "from": to_wa_id,
-                                        "to": wa_id,
-                                        "type": "template",
-                                        "message": "mr_treatment sent",
-                                        "timestamp": datetime.now().isoformat(),
-                                    })
-                                except Exception:
-                                    pass
-                            else:
-                                # Fallback to interactive buttons
-                                headers_btn = {
-                                    "Authorization": f"Bearer {access_token_btn}",
-                                    "Content-Type": "application/json",
-                                }
-                                payload_btn = {
-                                    "messaging_product": "whatsapp",
-                                    "to": wa_id,
-                                    "type": "interactive",
-                                    "interactive": {
-                                        "type": "button",
-                                        "body": {"text": "Please choose your area of concern:"},
-                                        "action": {
-                                            "buttons": [
-                                                {"type": "reply", "reply": {"id": "skin", "title": "Skin"}},
-                                                {"type": "reply", "reply": {"id": "hair", "title": "Hair"}},
-                                                {"type": "reply", "reply": {"id": "body", "title": "Body"}},
-                                            ]
-                                        },
-                                    },
-                                }
-                                try:
-                                    await manager.broadcast({
-                                        "from": to_wa_id,
-                                        "to": wa_id,
-                                        "type": "template_error",
-                                        "message": "mr_treatment failed",
-                                        "status_code": resp_btn.status_code,
-                                        "error": (resp_btn.text[:500] if isinstance(resp_btn.text, str) else str(resp_btn.text)),
-                                        "timestamp": datetime.now().isoformat(),
-                                    })
-                                except Exception:
-                                    pass
-                                requests.post(get_messages_url(phone_id_btn), headers=headers_btn, json=payload_btn)
-                                try:
-                                    await manager.broadcast({
-                                        "from": to_wa_id,
-                                        "to": wa_id,
-                                        "type": "interactive",
-                                        "message": "Please choose your area of concern:",
-                                        "timestamp": datetime.now().isoformat(),
-                                        "meta": {"kind": "buttons", "options": ["Skin", "Hair", "Body"]},
-                                    })
-                                except Exception:
-                                    pass
+                        else:
+                            msg = (
+                                f"✅ Thank you! We've recorded your details: {verification.get('name')} ({verification.get('phone')}). Our team will contact you shortly to assist further."
+                            )
+                        await send_message_to_waid(wa_id, msg, db)
                     except Exception:
                         pass
+
+                    # Do not trigger treatment template here anymore
+                    handled_text = True
+                    return {"status": "contact_captured", "message_id": message_id}
                 else:
                     issues: list[str] = []
                     name_val = (verification.get("name") or "").strip() if isinstance(verification.get("name"), str) else None
