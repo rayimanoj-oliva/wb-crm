@@ -498,6 +498,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 wa_id=wa_id,
                 value=value,
                 sender_name=sender_name,
+                appointment_state=appointment_state,
             )
             status_val = (result or {}).get("status")
             if status_val in {"welcome_sent", "welcome_failed"}:
@@ -515,14 +516,18 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     yyyy = yyyy if len(yyyy) == 4 else ("20" + yyyy)
                     date_iso = f"{int(yyyy):04d}-{int(mm):02d}-{int(dd):02d}"
                     time_label = f"{int(hh):02d}:{int(mins):02d} {ampm.upper()}"
-                    appointment_state[wa_id] = {"date": date_iso}
+                    # Always persist both date and time together
+                    appointment_state[wa_id] = {"date": date_iso, "time": time_label}
                     await _confirm_appointment(wa_id, db, date_iso, time_label)
                     return {"status": "appointment_captured", "message_id": message_id}
                 elif m_d:
                     dd, mm, _, yyyy = m_d.groups()
                     yyyy = yyyy if len(yyyy) == 4 else ("20" + yyyy)
                     date_iso = f"{int(yyyy):04d}-{int(mm):02d}-{int(dd):02d}"
-                    appointment_state[wa_id] = {"date": date_iso}
+                    # Persist only date for now; time will be captured next
+                    st = appointment_state.get(wa_id) or {}
+                    st["date"] = date_iso
+                    appointment_state[wa_id] = st
                     await send_message_to_waid(wa_id, f"✅ Date noted: {date_iso}", db)
                     await send_time_buttons(wa_id, db)
                     return {"status": "date_selected", "message_id": message_id}
@@ -1388,7 +1393,16 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                             return False
                         if _re.search(r"(.)\1{3,}", letters_only, flags=_re.IGNORECASE):
                             return False
-                        blacklist = {"test", "testing", "asdf", "qwerty", "user", "customer", "name", "unknown", "oliva", "clinic", "abc"}
+                        # Harden blacklist and reject common keyboard/gibberish patterns
+                        blacklist = {
+                            "test", "testing", "asdf", "qwerty", "user", "customer", "name", "unknown", "oliva", "clinic", "abc",
+                            "ertyui", "tyuiop", "uiop", "iop", "zxcv", "xcv", "cv", "v", "hjkl", "jkl", "kl", "bnm",
+                            "dfgh", "fghj", "ghjk", "qwer", "wer", "er", "r", "asdfg", "sdfg", "dfg"
+                        }
+                        lower_letters = letters_only.lower()
+                        keyboard_patterns = ["qwerty", "asdf", "zxcv", "hjkl", "bnm", "ertyui", "tyuiop", "uiop", "dfgh", "fghj", "ghjk"]
+                        if any(p in lower_letters for p in keyboard_patterns):
+                            return False
                         if name.strip().lower() in blacklist:
                             return False
                         # Prefer first token only (first name)
@@ -1518,40 +1532,19 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         time_label = (appointment_state.get(wa_id) or {}).get("time")
                         corrected_name = (appointment_state.get(wa_id) or {}).get("corrected_name")
                         corrected_phone = (appointment_state.get(wa_id) or {}).get("corrected_phone")
-                        if date_iso and time_label and corrected_name and corrected_phone:
-                            await send_message_to_waid(
-                                wa_id,
-                                f"✅ Thank you! Your preferred appointment is on {date_iso} at {time_label} with {corrected_name} ({corrected_phone}). Your appointment is booked, and our team will call to confirm shortly.",
-                                db,
-                            )
-                            try:
-                                if wa_id in appointment_state:
-                                    appointment_state.pop(wa_id, None)
-                            except Exception:
-                                pass
-                            return {"status": "appointment_corrected_and_confirmed", "message_id": message_id}
-                        else:
-                            # Send thank you with updated details and appointment info
-                            corrected_name = (appointment_state.get(wa_id) or {}).get("corrected_name")
-                            corrected_phone = (appointment_state.get(wa_id) or {}).get("corrected_phone")
-                            date_iso = (appointment_state.get(wa_id) or {}).get("date")
-                            time_label = (appointment_state.get(wa_id) or {}).get("time")
-                            
-                            if date_iso and time_label:
-                                await send_message_to_waid(wa_id, 
-                                    f"✅ Thank you! We've recorded your details: {corrected_name} ({corrected_phone}). "
-                                    f"Your preferred appointment is on {date_iso} at {time_label}. Your appointment is booked, and our team will call to confirm shortly.", db)
-                            else:
-                                await send_message_to_waid(wa_id, 
-                                    f"✅ Thank you! Your details have been updated. Name: {corrected_name} | Phone: {corrected_phone}", db)
-                            
-                            try:
-                                # Clear the appointment state
-                                if wa_id in appointment_state:
-                                    appointment_state.pop(wa_id, None)
-                            except Exception:
-                                pass
-                            return {"status": "details_updated", "message_id": message_id}
+                        
+                        # Send appointment confirmation with corrected details
+                        await send_message_to_waid(
+                            wa_id,
+                            f"✅ Thank you! Your preferred appointment is on {date_iso} at {time_label} with {corrected_name} ({corrected_phone}). Your appointment is booked, and our team will call to confirm shortly.",
+                            db,
+                        )
+                        try:
+                            if wa_id in appointment_state:
+                                appointment_state.pop(wa_id, None)
+                        except Exception:
+                            pass
+                        return {"status": "appointment_corrected_and_confirmed", "message_id": message_id}
                     else:
                         # Invalid phone - provide clear error with examples
                         await send_message_to_waid(wa_id, 

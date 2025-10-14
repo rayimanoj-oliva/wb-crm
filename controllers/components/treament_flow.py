@@ -30,6 +30,7 @@ async def run_treament_flow(
     wa_id: str,
     value: Dict[str, Any] | None,
     sender_name: Optional[str] = None,
+    appointment_state: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Encapsulates the text message auto-welcome validation and treatment template flow.
 
@@ -263,9 +264,24 @@ async def run_treament_flow(
                     long_consonant_cluster = re.search(r"[B-DF-HJ-NP-TV-Zb-df-hj-np-tv-z]{5,}", letters_only) is not None
                     tokens = re.findall(r"[A-Za-z][A-Za-z\-']+", fallback_name or "")
                     token_ok = (len(tokens) >= 2 and all(len(re.sub(r"[^A-Za-z]", "", t)) >= 2 for t in tokens[:2])) or (len(tokens) == 1 and len(letters_only) >= 4)
-                    blacklist = {"asd", "sdf", "dfg", "qwe", "zxc", "sdfhj", "qwert", "qwerty", "abc"}
+                    
+                    # Enhanced blacklist with more keyboard patterns and gibberish
+                    blacklist = {
+                        "asd", "sdf", "dfg", "qwe", "zxc", "sdfhj", "qwert", "qwerty", "abc",
+                        "ertyui", "tyuiop", "uiop", "iop", "op", "zxcv", "xcv", "cv", "v",
+                        "hjkl", "jkl", "kl", "l", "bnm", "nm", "m", "fghj", "ghj", "hj",
+                        "dfgh", "fgh", "gh", "qwer", "wer", "er", "r", "asdf", "sdf", "df",
+                        "zxcvb", "xcvb", "cvb", "vb", "b", "mnbvc", "nbvc", "bvc", "vc", "c"
+                    }
                     is_blacklisted = (fallback_name or "").strip().lower() in blacklist
-                    is_name_ok = has_min and has_vowel and has_consonant and token_ok and not long_consonant_cluster and not is_blacklisted
+                    
+                    # Additional validation: reject names that are just keyboard patterns
+                    is_keyboard_pattern = any(pattern in letters_only.lower() for pattern in [
+                        "qwerty", "asdf", "zxcv", "hjkl", "bnm", "ertyui", "tyuiop", "uiop",
+                        "qwer", "asdf", "zxcv", "hjkl", "bnm", "dfgh", "fghj", "ghjk"
+                    ])
+                    
+                    is_name_ok = has_min and has_vowel and has_consonant and token_ok and not long_consonant_cluster and not is_blacklisted and not is_keyboard_pattern
 
                     if fallback_phone and is_name_ok:
                         verification = {
@@ -299,11 +315,21 @@ async def run_treament_flow(
                         date_label = None
                         time_label = None
                         try:
-                            from controllers.web_socket import appointment_state  # type: ignore
-                            appt = appointment_state.get(wa_id) or {}
-                            date_label = appt.get("date")
-                            time_label = appt.get("time")
-                        except Exception:
+                            if appointment_state:
+                                appt = appointment_state.get(wa_id) or {}
+                                date_label = appt.get("date")
+                                time_label = appt.get("time")
+                                
+                                # Debug logging to see what's in appointment state
+                                print(f"[treatment_flow] DEBUG - wa_id: {wa_id}")
+                                print(f"[treatment_flow] DEBUG - appointment_state: {appt}")
+                                print(f"[treatment_flow] DEBUG - date_label: {date_label}")
+                                print(f"[treatment_flow] DEBUG - time_label: {time_label}")
+                            else:
+                                print(f"[treatment_flow] DEBUG - No appointment_state provided")
+                            
+                        except Exception as e:
+                            print(f"[treatment_flow] DEBUG - Error accessing appointment_state: {e}")
                             pass
 
                         if date_label and time_label:
