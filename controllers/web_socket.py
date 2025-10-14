@@ -22,6 +22,8 @@ from services import payment_service
 from schemas.customer_schema import CustomerCreate
 from schemas.message_schema import MessageCreate
 from utils.whatsapp import send_message_to_waid
+from utils.name_validator import validate_human_name
+from utils.phone_validator import validate_indian_phone
 from services.whatsapp_service import get_latest_token
 from config.constants import get_messages_url, get_media_url
 from utils.razorpay_utils import create_razorpay_payment_link
@@ -498,7 +500,6 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 wa_id=wa_id,
                 value=value,
                 sender_name=sender_name,
-                appointment_state=appointment_state,
             )
             status_val = (result or {}).get("status")
             if status_val in {"welcome_sent", "welcome_failed"}:
@@ -516,18 +517,14 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     yyyy = yyyy if len(yyyy) == 4 else ("20" + yyyy)
                     date_iso = f"{int(yyyy):04d}-{int(mm):02d}-{int(dd):02d}"
                     time_label = f"{int(hh):02d}:{int(mins):02d} {ampm.upper()}"
-                    # Always persist both date and time together
-                    appointment_state[wa_id] = {"date": date_iso, "time": time_label}
+                    appointment_state[wa_id] = {"date": date_iso}
                     await _confirm_appointment(wa_id, db, date_iso, time_label)
                     return {"status": "appointment_captured", "message_id": message_id}
                 elif m_d:
                     dd, mm, _, yyyy = m_d.groups()
                     yyyy = yyyy if len(yyyy) == 4 else ("20" + yyyy)
                     date_iso = f"{int(yyyy):04d}-{int(mm):02d}-{int(dd):02d}"
-                    # Persist only date for now; time will be captured next
-                    st = appointment_state.get(wa_id) or {}
-                    st["date"] = date_iso
-                    appointment_state[wa_id] = st
+                    appointment_state[wa_id] = {"date": date_iso}
                     await send_message_to_waid(wa_id, f"✅ Date noted: {date_iso}", db)
                     await send_time_buttons(wa_id, db)
                     return {"status": "date_selected", "message_id": message_id}
@@ -1205,10 +1202,9 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                 pass
                             return {"status": "appointment_confirmed", "message_id": message_id}
                         elif (norm_btn_id in no_ids or norm_btn_title in no_ids):
+                            # Ask for full name or first name and set awaiting_name flag
                             try:
-                                # Start two-step correction: first ask for first name, then phone number
                                 st = appointment_state.get(wa_id) or {}
-                                st.pop("awaiting_correction", None)
                                 st["awaiting_name"] = True
                                 st.pop("awaiting_phone", None)
                                 st.pop("corrected_name", None)
@@ -1216,8 +1212,8 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                 appointment_state[wa_id] = st
                             except Exception:
                                 pass
-                            await send_message_to_waid(wa_id, "No problem. Please share your first name (at least 3 letters).", db)
-                            return {"status": "appointment_needs_first_name", "message_id": message_id}
+                            await send_message_to_waid(wa_id, "No problem. Please share your name (full name or first name).", db)
+                            return {"status": "awaiting_name", "message_id": message_id}
                         else:
                             await send_message_to_waid(wa_id, "Please select a date first.", db)
                             await send_date_list(wa_id, db)
@@ -1365,193 +1361,65 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
 
             return {"status": "success", "message_id": message_id}
         
-        # Handle top-level text events: only two-step correction flow; no plain-text YES/NO
+        # Handle text while awaiting_name using OpenAI-backed validator
         try:
             if message_type == "text":
-                norm = (body_text or "").strip().lower()
-                # Two-step correction flow: first name, then phone
-                def _looks_like_first_name(candidate: str) -> bool:
-                    try:
-                        import re as _re
-                        if not isinstance(candidate, str):
-                            return False
-                        name = candidate.strip()
-                        if not name:
-                            return False
-                        if _re.search(r"\d", name):
-                            return False
-                        if _re.search(r"[^A-Za-z\- '\s]", name):
-                            return False
-                        letters_only = _re.sub(r"[^A-Za-z]", "", name)
-                        if len(letters_only) < 3:
-                            return False
-                        if not _re.search(r"[AEIOUaeiou]", letters_only):
-                            return False
-                        if not _re.search(r"[B-DF-HJ-NP-TV-Zb-df-hj-np-tv-z]", letters_only):
-                            return False
-                        if len(set(letters_only.lower())) == 1:
-                            return False
-                        if _re.search(r"(.)\1{3,}", letters_only, flags=_re.IGNORECASE):
-                            return False
-                        # Harden blacklist and reject common keyboard/gibberish patterns
-                        blacklist = {
-                            "test", "testing", "asdf", "qwerty", "user", "customer", "name", "unknown", "oliva", "clinic", "abc",
-                            "ertyui", "tyuiop", "uiop", "iop", "zxcv", "xcv", "cv", "v", "hjkl", "jkl", "kl", "bnm",
-                            "dfgh", "fghj", "ghjk", "qwer", "wer", "er", "r", "asdfg", "sdfg", "dfg"
-                        }
-                        lower_letters = letters_only.lower()
-                        keyboard_patterns = ["qwerty", "asdf", "zxcv", "hjkl", "bnm", "ertyui", "tyuiop", "uiop", "dfgh", "fghj", "ghjk"]
-                        if any(p in lower_letters for p in keyboard_patterns):
-                            return False
-                        if name.strip().lower() in blacklist:
-                            return False
-                        # Prefer first token only (first name)
-                        first_token = (_re.findall(r"[A-Za-z][A-Za-z\-']+", name) or [""])[0]
-                        return len(first_token) >= 3
-                    except Exception:
-                            return False
-
-                def _normalize_indian_phone(phone_text: str) -> str | None:
-                    try:
-                        import re as _re
-                        digits = _re.sub(r"\D", "", phone_text or "")
-                        if len(digits) < 10:
-                            return None
-                        last10 = digits[-10:]
-                        if len(last10) != 10:
-                            return None
-                        return "+91" + last10
-                    except Exception:
-                        return None
-
-                try:
-                    st = appointment_state.get(wa_id) or {}
-                    awaiting_name = bool(st.get("awaiting_name"))
-                    awaiting_phone = bool(st.get("awaiting_phone"))
-                except Exception:
-                    awaiting_name = False
-                    awaiting_phone = False
-
-                if awaiting_name and norm:
-                    # Validate first name using OpenAI (name-only validation)
-                    try:
-                        import os
-                        import requests
-                        import re as _re
-                        
-                        # Create a simple name validation prompt for OpenAI
-                        api_key = os.getenv("OPENAI_API_KEY")
-                        if api_key:
-                            url = "https://api.openai.com/v1/chat/completions"
-                            headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-                            prompt = (
-                                "You are a name validator. Check if the given text is a valid human first name.\n"
-                                "A valid first name should:\n"
-                                "- Be at least 3 letters long\n"
-                                "- Contain only letters, hyphens, or apostrophes\n"
-                                "- Look like a real human name (not gibberish like 'asdf')\n"
-                                "- Have a mix of vowels and consonants\n\n"
-                                "Return ONLY JSON with: {\"valid\": true/false, \"name\": \"extracted_name\"}\n"
-                                "If valid, return the cleaned first name. If invalid, return null for name."
-                            )
-                            data = {
-                                "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-                                "temperature": 0,
-                                "response_format": {"type": "json_object"},
-                                "messages": [
-                                    {"role": "system", "content": prompt},
-                                    {"role": "user", "content": f"Validate this first name: {body_text}"}
-                                ]
-                            }
-                            resp = requests.post(url, headers=headers, json=data, timeout=10)
-                            
-                            if resp.status_code == 200:
-                                content = resp.json()["choices"][0]["message"]["content"]
-                                import json as _json
-                                result = _json.loads(content)
-                                
-                                if result.get("valid") and result.get("name"):
-                                    first_name = result.get("name").strip()
-                                    if len(first_name) >= 3:
-                                        st = appointment_state.get(wa_id) or {}
-                                        st["corrected_name"] = first_name
-                                        st["awaiting_name"] = False
-                                        st["awaiting_phone"] = True
-                                        appointment_state[wa_id] = st
-                                        await send_message_to_waid(wa_id, "Great! Now please share your 10-digit Indian mobile number (e.g., +91XXXXXXXXXX or just 10 digits).", db)
-                                        return {"status": "awaiting_phone_after_name", "message_id": message_id}
-                        
-                        # If OpenAI fails or returns invalid, fall back to basic validation
-                        if _looks_like_first_name(body_text):
-                            first_token = (_re.findall(r"[A-Za-z][A-Za-z\-']+", body_text) or [""])[0]
-                            st = appointment_state.get(wa_id) or {}
-                            st["corrected_name"] = first_token.strip()
-                            st["awaiting_name"] = False
-                            st["awaiting_phone"] = True
-                            appointment_state[wa_id] = st
-                            await send_message_to_waid(wa_id, "Great! Now please share your 10-digit Indian mobile number (e.g., +91XXXXXXXXXX or just 10 digits).", db)
-                            return {"status": "awaiting_phone_after_name", "message_id": message_id}
-                        
-                        # Invalid name - provide clear error with examples
-                        await send_message_to_waid(wa_id, 
-                            "❌ That doesn't look like a valid first name.\n\n"
-                            "Please send only your first name with at least 3 letters.\n\n"
-                            "Examples: Rahul, Priya\n\n"
-                            "Try again with just your first name.", db)
-                        return {"status": "invalid_first_name", "message_id": message_id}
-                        
-                    except Exception as e:
-                        # Fallback to basic validation if OpenAI fails
-                        if _looks_like_first_name(body_text):
-                            first_token = (__import__("re").findall(r"[A-Za-z][A-Za-z\-']+", body_text) or [""])[0]
-                            st = appointment_state.get(wa_id) or {}
-                            st["corrected_name"] = first_token.strip()
-                            st["awaiting_name"] = False
-                            st["awaiting_phone"] = True
-                            appointment_state[wa_id] = st
-                            await send_message_to_waid(wa_id, "Great! Now please share your 10-digit Indian mobile number (e.g., +91XXXXXXXXXX or just 10 digits).", db)
-                            return {"status": "awaiting_phone_after_name", "message_id": message_id}
-                        else:
-                            await send_message_to_waid(wa_id, 
-                                "❌ That doesn't look like a valid first name.\n\n"
-                                "Please send only your first name with at least 3 letters.\n\n"
-                                "Examples: Rahul, Priya\n\n"
-                                "Try again with just your first name.", db)
-                            return {"status": "invalid_first_name", "message_id": message_id}
-
-                if awaiting_phone and norm:
-                    # Validate phone number using basic validation (more reliable for phone numbers)
-                    normalized_phone = _normalize_indian_phone(body_text)
-                    if normalized_phone:
-                        st = appointment_state.get(wa_id) or {}
-                        st["corrected_phone"] = normalized_phone
+                st = appointment_state.get(wa_id) or {}
+                if bool(st.get("awaiting_name")):
+                    result = validate_human_name(body_text)
+                    if result.get("valid") and result.get("name"):
+                        # Save corrected name and clear awaiting_name; ask for phone next
+                        st["corrected_name"] = result.get("name").strip()
+                        st["awaiting_name"] = False
+                        st["awaiting_phone"] = True
                         appointment_state[wa_id] = st
+                        await send_message_to_waid(wa_id, f"Thanks {st['corrected_name']}! Now please share your number.", db)
+                        return {"status": "name_captured_awaiting_phone", "message_id": message_id}
+                    else:
+                        await send_message_to_waid(wa_id, "❌ That doesn't look like a valid name. Please send your full name or first name (letters only).", db)
+                        return {"status": "invalid_name", "message_id": message_id}
+        except Exception:
+            pass
 
-                        # We have both details; send final thank-you with updated info
+        # Handle text while awaiting_phone using validator
+        try:
+            if message_type == "text":
+                st = appointment_state.get(wa_id) or {}
+                if bool(st.get("awaiting_phone")):
+                    phone_res = validate_indian_phone(body_text)
+                    if phone_res.get("valid") and phone_res.get("phone"):
+                        st["corrected_phone"] = phone_res.get("phone")
+                        st["awaiting_phone"] = False
+                        appointment_state[wa_id] = st
+                        # Build final confirmation message with date/time and updated name/number
                         date_iso = (appointment_state.get(wa_id) or {}).get("date")
                         time_label = (appointment_state.get(wa_id) or {}).get("time")
-                        corrected_name = (appointment_state.get(wa_id) or {}).get("corrected_name")
-                        corrected_phone = (appointment_state.get(wa_id) or {}).get("corrected_phone")
-                        
-                        # Send appointment confirmation with corrected details
-                        await send_message_to_waid(
-                            wa_id,
-                            f"✅ Thank you! Your preferred appointment is on {date_iso} at {time_label} with {corrected_name} ({corrected_phone}). Your appointment is booked, and our team will call to confirm shortly.",
-                            db,
-                        )
-                        try:
-                            if wa_id in appointment_state:
-                                appointment_state.pop(wa_id, None)
-                        except Exception:
-                            pass
-                        return {"status": "appointment_corrected_and_confirmed", "message_id": message_id}
+                        name_final = (st.get("corrected_name") or "there").strip()
+                        phone_final = st.get("corrected_phone")
+                        if date_iso and time_label and name_final and phone_final:
+                            msg = (
+                                f"✅ Thank you! Your preferred appointment is on {date_iso} at {time_label} "
+                                f"with {name_final} ({phone_final}). Your appointment is booked, and our team will call to confirm shortly."
+                            )
+                            await send_message_to_waid(wa_id, msg, db)
+                            # Clear state after confirmation
+                            try:
+                                if wa_id in appointment_state:
+                                    appointment_state.pop(wa_id, None)
+                            except Exception:
+                                pass
+                            return {"status": "appointment_confirmed_after_details", "message_id": message_id}
+                        else:
+                            # Date/time should exist at this point (user tapped No on confirm).
+                            # If somehow missing, prompt user to pick date again.
+                            await send_message_to_waid(wa_id, "Please select a date first.", db)
+                            try:
+                                await send_date_list(wa_id, db)
+                            except Exception:
+                                pass
+                            return {"status": "need_date_first", "message_id": message_id}
                     else:
-                        # Invalid phone - provide clear error with examples
-                        await send_message_to_waid(wa_id, 
-                            "❌ That doesn't look like a valid Indian mobile number.\n\n"
-                            "Please send exactly 10 digits (Indian mobile number).\n\n"
-                            "Examples: 9876543210, +919876543210\n\n"
-                            "Try again with your 10-digit mobile number.", db)
+                        await send_message_to_waid(wa_id, "❌ That doesn't look like a valid Indian mobile number. Please send exactly 10 digits (or +91XXXXXXXXXX).", db)
                         return {"status": "invalid_phone", "message_id": message_id}
         except Exception:
             pass

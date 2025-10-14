@@ -457,7 +457,7 @@ async def whatsapp_auto_welcome_webhook(request: Request, db: Session = Depends(
                     except Exception:
                         pass
 
-        # Check if this is the prefill message to send mr_welcome_temp
+        # Check if this is the prefill message to send mr_welcome
         # Known wa.link prefill phrase variants
         allowed_variants = [
             _normalize("Hi, I'm interested in knowing more about your services. Please share details."),
@@ -470,9 +470,9 @@ async def whatsapp_auto_welcome_webhook(request: Request, db: Session = Depends(
         except Exception:
             pass
 
-        # If this is the prefill message, send mr_welcome_temp and return
+        # If this is the prefill message, send mr_welcome and return
         if normalized_body in allowed_variants:
-            print("[auto_webhook] Prefill message detected, sending mr_welcome_temp")
+            print("[auto_webhook] Prefill message detected, sending mr_welcome")
         token_entry = get_latest_token(db)
         if not token_entry or not token_entry.token:
             print("[auto_webhook] no WhatsApp token available")
@@ -495,7 +495,7 @@ async def whatsapp_auto_welcome_webhook(request: Request, db: Session = Depends(
                 "from": to_wa_id,
                 "to": wa_id,
                 "type": "template_attempt",
-                "message": "Sending mr_welcome_temp...",
+                "message": "Sending mr_welcome...",
                 "params": {"body_param_1": (sender_name or wa_id or "there")},
                 "timestamp": datetime.now().isoformat()
             })
@@ -504,7 +504,7 @@ async def whatsapp_auto_welcome_webhook(request: Request, db: Session = Depends(
 
         resp = _send_template(
             wa_id=wa_id,
-            template_name="mr_welcome_temp",
+            template_name="mr_welcome",
             access_token=access_token,
             phone_id=phone_id,
             components=body_components,
@@ -519,7 +519,7 @@ async def whatsapp_auto_welcome_webhook(request: Request, db: Session = Depends(
                     from_wa_id=to_wa_id,
                     to_wa_id=wa_id,
                     type="template",
-                    body=f"mr_welcome_temp sent to {sender_name or wa_id}",
+                    body=f"mr_welcome sent to {sender_name or wa_id}",
                     timestamp=datetime.now(),
                     customer_id=customer.id,
                 )
@@ -530,7 +530,7 @@ async def whatsapp_auto_welcome_webhook(request: Request, db: Session = Depends(
                         "from": to_wa_id,
                         "to": wa_id,
                         "type": "template",
-                        "message": f"mr_welcome_temp sent to {sender_name or wa_id}",
+                        "message": f"mr_welcome sent to {sender_name or wa_id}",
                         "timestamp": datetime.now().isoformat()
                     })
                 except Exception:
@@ -577,7 +577,7 @@ async def whatsapp_auto_welcome_webhook(request: Request, db: Session = Depends(
             return {"status": "welcome_and_treatment_sent", "message_id": message_id}
         else:
             try:
-                    print("[auto_webhook] mr_welcome_temp send failed:", resp.status_code, resp.text[:500])
+                    print("[auto_webhook] mr_welcome send failed:", resp.status_code, resp.text[:500])
             except Exception:
                 pass
                 return {"status": "welcome_failed", "error": resp.text}

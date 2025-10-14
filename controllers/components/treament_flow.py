@@ -9,8 +9,6 @@ import requests
 
 from sqlalchemy.orm import Session
 
-from schemas.message_schema import MessageCreate
-from services import message_service
 from services.whatsapp_service import get_latest_token
 from config.constants import get_messages_url
 from utils.ws_manager import manager
@@ -30,7 +28,6 @@ async def run_treament_flow(
     wa_id: str,
     value: Dict[str, Any] | None,
     sender_name: Optional[str] = None,
-    appointment_state: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Encapsulates the text message auto-welcome validation and treatment template flow.
 
@@ -61,7 +58,7 @@ async def run_treament_flow(
 
         normalized_body = _normalize(body_text)
 
-        # 3) Prefill detection for mr_welcome_temp
+        # 3) Prefill detection for mr_welcome
         prefill_regexes = [
             r"^hi,?\s*oliva\s+i\s+want\s+to\s+know\s+more\s+about\s+services\s+in\s+[a-z\s]+,\s*[a-z\s]+\s+clinic$",
             r"^hi,?\s*oliva\s+i\s+want\s+to\s+know\s+more\s+about\s+your\s+services$",
@@ -89,7 +86,7 @@ async def run_treament_flow(
                             "from": to_wa_id,
                             "to": wa_id,
                             "type": "template_attempt",
-                            "message": "Sending mr_welcome_temp...",
+                            "message": "Sending mr_welcome...",
                             "params": {"body_param_1": (sender_name or wa_id or "there"), "lang": lang_code_prefill, "phone_id": phone_id_prefill},
                             "timestamp": datetime.now().isoformat(),
                         })
@@ -101,7 +98,7 @@ async def run_treament_flow(
 
                     resp_prefill = _send_template(
                         wa_id=wa_id,
-                        template_name="mr_welcome_temp",
+                        template_name="mr_welcome",
                         access_token=access_token_prefill,
                         phone_id=phone_id_prefill,
                         components=body_components_prefill,
@@ -113,7 +110,7 @@ async def run_treament_flow(
                             "from": to_wa_id,
                             "to": wa_id,
                             "type": "template" if resp_prefill.status_code == 200 else "template_error",
-                            "message": "mr_welcome_temp sent" if resp_prefill.status_code == 200 else "mr_welcome_temp failed",
+                            "message": "mr_welcome sent" if resp_prefill.status_code == 200 else "mr_welcome failed",
                             **({"status_code": resp_prefill.status_code} if resp_prefill.status_code != 200 else {}),
                             "timestamp": datetime.now().isoformat(),
                         })
@@ -125,7 +122,7 @@ async def run_treament_flow(
                                 "from": to_wa_id,
                                 "to": wa_id,
                                 "type": "template",
-                                "message": "mr_welcome_temp sent",
+                                "message": "mr_welcome sent",
                                 "timestamp": datetime.now().isoformat(),
                             })
                         except Exception:
@@ -187,7 +184,7 @@ async def run_treament_flow(
                                 "from": to_wa_id,
                                 "to": wa_id,
                                 "type": "template_error",
-                                "message": "mr_welcome_temp failed",
+                                "message": "mr_welcome failed",
                                 "status_code": resp_prefill.status_code,
                                 "error": (resp_prefill.text[:500] if isinstance(resp_prefill.text, str) else str(resp_prefill.text)),
                                 "timestamp": datetime.now().isoformat(),
@@ -202,7 +199,7 @@ async def run_treament_flow(
                             "from": to_wa_id,
                             "to": wa_id,
                             "type": "template_error",
-                            "message": "mr_welcome_temp not sent: no WhatsApp token",
+                            "message": "mr_welcome not sent: no WhatsApp token",
                             "timestamp": datetime.now().isoformat(),
                         })
                     except Exception:
@@ -211,192 +208,7 @@ async def run_treament_flow(
                 # Continue to other logic below even if welcome attempt fails
                 pass
 
-        # 4) Contact verification heuristics
-        has_phone = re.search(r"\b\d{10}\b", normalized_body) or re.search(r"\+91", normalized_body)
-        has_name_keywords = any(keyword in normalized_body for keyword in ["name", "i am", "my name", "call me"])
-        digit_count = len(re.findall(r"\d", normalized_body))
-        name_token_count = len(re.findall(r"[A-Za-z][A-Za-z\-']+", body_text))
-        has_any_name_token = name_token_count >= 1
-        should_verify = bool(has_phone or has_name_keywords or (has_any_name_token and digit_count >= 7))
-
-        if should_verify:
-            # Local import to avoid circulars
-            from controllers.auto_welcome_controller import _verify_contact_with_openai, _send_template
-
-            verification = _verify_contact_with_openai(body_text)
-            try:
-                await manager.broadcast({
-                    "from": to_wa_id,
-                    "to": wa_id,
-                    "type": "contact_verification",
-                    "result": verification,
-                    "timestamp": datetime.now().isoformat(),
-                })
-            except Exception:
-                pass
-
-            # Fallback: if model/regex marked invalid, try strict local extraction but only accept plausible names
-            if not bool(verification.get("valid")):
-                try:
-                    # Normalize phone to +91XXXXXXXXXX
-                    def _norm_phone(p: str | None) -> str | None:
-                        if not isinstance(p, str):
-                            return None
-                        digits = re.sub(r"\D", "", p)
-                        if len(digits) < 10:
-                            return None
-                        last10 = digits[-10:]
-                        if len(last10) != 10:
-                            return None
-                        return "+91" + last10
-
-                    # Extract phone from message text
-                    phone_match = re.search(r"\+91[-\s]?(\d{10})", body_text) or re.search(r"\b(\d{10})\b", body_text)
-                    fallback_phone = _norm_phone(phone_match.group(1) if phone_match else None)
-
-                    # Extract a plausible name: enforce vowels, consonants, token structure
-                    name_tokens = re.findall(r"[A-Za-z][A-Za-z\-']+", body_text)
-                    fallback_name = " ".join(name_tokens[:3]) if name_tokens else None
-                    letters_only = re.sub(r"[^A-Za-z]", "", fallback_name or "")
-                    has_min = len(letters_only) >= 3
-                    has_vowel = re.search(r"[AEIOUaeiou]", letters_only) is not None
-                    has_consonant = re.search(r"[B-DF-HJ-NP-TV-Zb-df-hj-np-tv-z]", letters_only) is not None
-                    long_consonant_cluster = re.search(r"[B-DF-HJ-NP-TV-Zb-df-hj-np-tv-z]{5,}", letters_only) is not None
-                    tokens = re.findall(r"[A-Za-z][A-Za-z\-']+", fallback_name or "")
-                    token_ok = (len(tokens) >= 2 and all(len(re.sub(r"[^A-Za-z]", "", t)) >= 2 for t in tokens[:2])) or (len(tokens) == 1 and len(letters_only) >= 4)
-                    
-                    # Enhanced blacklist with more keyboard patterns and gibberish
-                    blacklist = {
-                        "asd", "sdf", "dfg", "qwe", "zxc", "sdfhj", "qwert", "qwerty", "abc",
-                        "ertyui", "tyuiop", "uiop", "iop", "op", "zxcv", "xcv", "cv", "v",
-                        "hjkl", "jkl", "kl", "l", "bnm", "nm", "m", "fghj", "ghj", "hj",
-                        "dfgh", "fgh", "gh", "qwer", "wer", "er", "r", "asdf", "sdf", "df",
-                        "zxcvb", "xcvb", "cvb", "vb", "b", "mnbvc", "nbvc", "bvc", "vc", "c"
-                    }
-                    is_blacklisted = (fallback_name or "").strip().lower() in blacklist
-                    
-                    # Additional validation: reject names that are just keyboard patterns
-                    is_keyboard_pattern = any(pattern in letters_only.lower() for pattern in [
-                        "qwerty", "asdf", "zxcv", "hjkl", "bnm", "ertyui", "tyuiop", "uiop",
-                        "qwer", "asdf", "zxcv", "hjkl", "bnm", "dfgh", "fghj", "ghjk"
-                    ])
-                    
-                    is_name_ok = has_min and has_vowel and has_consonant and token_ok and not long_consonant_cluster and not is_blacklisted and not is_keyboard_pattern
-
-                    if fallback_phone and is_name_ok:
-                        verification = {
-                            "valid": True,
-                            "name": fallback_name,
-                            "phone": fallback_phone,
-                            "reason": "local fallback accepted"
-                        }
-                        try:
-                            await manager.broadcast({
-                                "from": to_wa_id,
-                                "to": wa_id,
-                                "type": "contact_verification_fallback",
-                                "result": verification,
-                                "timestamp": datetime.now().isoformat(),
-                            })
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-
-            try:
-                if verification.get("valid"):
-                    await send_message_to_waid(
-                        wa_id,
-                        f"✅ Received details. Name: {verification.get('name')} | Phone: {verification.get('phone')}",
-                        db,
-                    )
-                    try:
-                        # If user has selected a date/time already, include it in the thank-you
-                        date_label = None
-                        time_label = None
-                        try:
-                            if appointment_state:
-                                appt = appointment_state.get(wa_id) or {}
-                                date_label = appt.get("date")
-                                time_label = appt.get("time")
-                                
-                                # Debug logging to see what's in appointment state
-                                print(f"[treatment_flow] DEBUG - wa_id: {wa_id}")
-                                print(f"[treatment_flow] DEBUG - appointment_state: {appt}")
-                                print(f"[treatment_flow] DEBUG - date_label: {date_label}")
-                                print(f"[treatment_flow] DEBUG - time_label: {time_label}")
-                            else:
-                                print(f"[treatment_flow] DEBUG - No appointment_state provided")
-                            
-                        except Exception as e:
-                            print(f"[treatment_flow] DEBUG - Error accessing appointment_state: {e}")
-                            pass
-
-                        if date_label and time_label:
-                            msg = (
-                                f"✅ Thank you! We've recorded your details: {verification.get('name')} ({verification.get('phone')}). "
-                                f"Your preferred appointment is on {date_label} at {time_label}. Your appointment is booked, and our team will call to confirm shortly."
-                            )
-                        else:
-                            msg = (
-                                f"✅ Thank you! We've recorded your details: {verification.get('name')} ({verification.get('phone')}). Our team will contact you shortly to assist further."
-                            )
-                        await send_message_to_waid(wa_id, msg, db)
-                    except Exception:
-                        pass
-
-                    # Do not trigger treatment template here anymore
-                    handled_text = True
-                    return {"status": "contact_captured", "message_id": message_id}
-                else:
-                    issues: list[str] = []
-                    name_val = (verification.get("name") or "").strip() if isinstance(verification.get("name"), str) else None
-                    phone_val = (verification.get("phone") or "").strip() if isinstance(verification.get("phone"), str) else None
-
-                    # Name validation: at least 3 letters AND plausible human pattern (vowel+consonant, not gibberish)
-                    if not name_val:
-                        issues.append("- Name missing")
-                    else:
-                        letters_only = re.sub(r"[^A-Za-z]", "", name_val)
-                        has_min = len(letters_only) >= 3
-                        has_vowel = re.search(r"[AEIOUaeiou]", letters_only) is not None
-                        has_consonant = re.search(r"[B-DF-HJ-NP-TV-Zb-df-hj-np-tv-z]", letters_only) is not None
-                        long_consonant_cluster = re.search(r"[B-DF-HJ-NP-TV-Zb-df-hj-np-tv-z]{5,}", letters_only) is not None
-                        tokens = re.findall(r"[A-Za-z][A-Za-z\-']+", name_val)
-                        token_ok = (len(tokens) >= 2 and all(len(re.sub(r"[^A-Za-z]", "", t)) >= 2 for t in tokens[:2])) or (len(tokens) == 1 and len(letters_only) >= 4)
-                        blacklist = {"asd", "sdf", "dfg", "qwe", "zxc", "sdfhj", "qwert", "qwerty", "abc"}
-                        is_blacklisted = name_val.strip().lower() in blacklist
-                        if not (has_min and has_vowel and has_consonant and token_ok) or long_consonant_cluster or is_blacklisted:
-                            issues.append("- Name must have at least 3 letters")
-
-                    # Phone validation: +91XXXXXXXXXX or 10 digits
-                    if not phone_val:
-                        issues.append("- Phone number missing")
-                    else:
-                        digits = re.sub(r"\D", "", phone_val)
-                        if digits.startswith("91") and len(digits) == 12:
-                            digits = digits[2:]
-                        if len(digits) != 10:
-                            issues.append("- Phone must be 10 digits (Indian mobile)")
-
-                    # Skip corrective messaging here to avoid asking for full name + phone together.
-                    # Let the main websocket flow handle name/phone correction interactively.
-                    try:
-                        await manager.broadcast({
-                            "from": to_wa_id,
-                            "to": wa_id,
-                            "type": "contact_verification_failed",
-                            "issues": issues,
-                            "verification": verification,
-                            "timestamp": datetime.now().isoformat(),
-                        })
-                    except Exception:
-                        pass
-                    return {"status": "contact_verification_invalid", "message_id": message_id, "issues": issues}
-            except Exception as e:
-                # Non-fatal; continue webhook
-                print(f"[treament_flow] Error in validation flow: {e}")
-            handled_text = True
+        # Name/Contact verification removed as per new requirements.
 
     return {"status": "skipped" if not handled_text else "handled", "message_id": message_id}
 
