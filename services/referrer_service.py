@@ -203,6 +203,20 @@ class ReferrerService:
             print(f"Error parsing appointment date: {e}")
             return None
         
+        # Idempotency: if the same slot is already booked, return existing without rewriting
+        try:
+            from datetime import datetime as _dt
+            if (
+                referrer.is_appointment_booked and
+                isinstance(referrer.appointment_date, _dt) and
+                referrer.appointment_time and
+                referrer.appointment_date.date() == parsed_date.date() and
+                str(referrer.appointment_time).strip().lower() == str(appointment_time).strip().lower()
+            ):
+                return referrer
+        except Exception:
+            pass
+
         # Update the referrer record
         referrer.appointment_date = parsed_date
         referrer.appointment_time = appointment_time
@@ -212,6 +226,77 @@ class ReferrerService:
         db.commit()
         db.refresh(referrer)
         return referrer
+
+    @staticmethod
+    def create_appointment_booking(db: Session, wa_id: str, appointment_date: str, appointment_time: str, treatment_type: str) -> Optional[ReferrerTracking]:
+        """Create a NEW appointment row for this wa_id, allowing multiple bookings per wa_id.
+        Copies customer and center/location from the earliest referrer record if available.
+        """
+        from datetime import datetime as dt
+        try:
+            # Parse date with the same formats as update
+            date_formats = [
+                "%Y-%m-%d",
+                "%d-%m-%Y",
+                "%d/%m/%Y",
+                "%Y/%m/%d",
+                "%d %B %Y",
+                "%B %d, %Y"
+            ]
+            parsed_date = None
+            for fmt in date_formats:
+                try:
+                    parsed_date = dt.strptime(appointment_date, fmt)
+                    break
+                except ValueError:
+                    continue
+            if not parsed_date:
+                print(f"Could not parse appointment date: {appointment_date}")
+                return None
+
+            # Find earliest referrer to copy context from
+            oldest = (
+                db.query(ReferrerTracking)
+                .filter(ReferrerTracking.wa_id == wa_id)
+                .order_by(ReferrerTracking.created_at.asc())
+                .first()
+            )
+
+            center_name = getattr(oldest, "center_name", None) or "Oliva Clinics"
+            location = getattr(oldest, "location", None) or "Multiple Locations"
+            customer_id = getattr(oldest, "customer_id", None)
+
+            if not customer_id:
+                try:
+                    from services.customer_service import get_or_create_customer
+                    from schemas.customer_schema import CustomerCreate
+                    customer = get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name="Unknown"))
+                    customer_id = customer.id
+                except Exception:
+                    customer_id = None
+
+            # Create a brand-new row
+            new_row = ReferrerTracking(
+                wa_id=wa_id,
+                center_name=center_name,
+                location=location,
+                customer_id=customer_id,
+                appointment_date=parsed_date,
+                appointment_time=appointment_time,
+                treatment_type=treatment_type,
+                is_appointment_booked=True,
+            )
+            db.add(new_row)
+            db.commit()
+            db.refresh(new_row)
+            return new_row
+        except Exception as e:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            print(f"create_appointment_booking error: {str(e)}")
+            return None
     
     @staticmethod
     def extract_appointment_info_from_message(message_body: str) -> dict:
