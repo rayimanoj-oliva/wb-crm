@@ -75,49 +75,38 @@ VERIFY_TOKEN = "Oliva@123"
 # Legacy address text guidance removed per new Provide Address flow
 
 
-def _generate_next_dates(num_days: int = 7):
-    try:
-        today = datetime.now()
-        rows = []
-        for i in range(num_days):
-            d = today + timedelta(days=i + 1)
-            date_id = d.strftime("date_%Y-%m-%d")
-            title = d.strftime("%d %b %Y (%A)")
-            rows.append({"id": date_id, "title": title})
-        return rows
-    except Exception:
-        return []
+# Legacy date list removed. Week/day selection is handled in controllers.components.interactive_type
 
 
-async def send_date_list(wa_id: str, db: Session, header_text: str | None = None):
+async def _send_address_flow_directly(wa_id: str, db: Session, customer_id=None):
+    """Send address collection flow directly when template fails"""
     try:
         token_entry = get_latest_token(db)
         if not token_entry or not token_entry.token:
-            await send_message_to_waid(wa_id, "❌ Unable to fetch appointment dates right now.", db)
-            return {"success": False}
+            await send_message_to_waid(wa_id, "❌ Unable to send address form right now. Please try again later.", db)
+            return
 
         access_token = token_entry.token
         headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
         phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
 
-        rows = _generate_next_dates(7)
-        if not rows:
-            await send_message_to_waid(wa_id, "❌ No dates available. Please try again later.", db)
-            return {"success": False}
-
+        # Send address flow directly
         payload = {
             "messaging_product": "whatsapp",
             "to": wa_id,
             "type": "interactive",
             "interactive": {
-                "type": "list",
-                **({"header": {"type": "text", "text": header_text}} if header_text else {}),
-                "body": {"text": "Please select your preferred appointment date \ud83d\udcc5"},
+                "type": "flow",
+                "header": {"type": "text", "text": "📍 Address Collection"},
+                "body": {"text": "Please provide your delivery address using the form below."},
+                "footer": {"text": "All fields are required for delivery"},
                 "action": {
-                    "button": "Choose Date",
-                    "sections": [
-                        {"title": "Available Dates", "rows": rows}
-                    ]
+                    "name": "flow",
+                    "parameters": {
+                        "flow_message_version": "3",
+                        "flow_id": "1314521433687006",
+                        "flow_cta": "Provide Address"
+                    }
                 }
             }
         }
@@ -125,24 +114,38 @@ async def send_date_list(wa_id: str, db: Session, header_text: str | None = None
         resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
         if resp.status_code == 200:
             try:
-                display_from = os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376")
+                flow_msg_id = resp.json()["messages"][0]["id"]
+                flow_message = MessageCreate(
+                    message_id=flow_msg_id,
+                    from_wa_id=os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                    to_wa_id=wa_id,
+                    type="interactive",
+                    body="Address collection flow sent",
+                    timestamp=datetime.now(),
+                    customer_id=customer_id
+                )
+                message_service.create_message(db, flow_message)
+                
                 await manager.broadcast({
-                    "from": display_from,
+                    "from": os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
                     "to": wa_id,
                     "type": "interactive",
-                    "message": "Please select your preferred appointment date",
-                    "timestamp": datetime.now().isoformat(),
-                    "meta": {"kind": "list", "section": "Available Dates"}
+                    "message": "Address collection flow sent",
+                    "timestamp": datetime.now().isoformat()
                 })
-            except Exception:
-                pass
-            return {"success": True}
+                
+                # Mark user as awaiting address
+                awaiting_address_users[wa_id] = True
+                address_nudge_sent[wa_id] = False
+                
+            except Exception as e:
+                print(f"Error saving address flow message: {e}")
         else:
-            await send_message_to_waid(wa_id, "❌ Could not send date options. Please try again.", db)
-            return {"success": False, "error": resp.text}
+            print(f"Failed to send address flow: {resp.text}")
+            await send_message_to_waid(wa_id, "❌ Unable to send address form right now. Please try again later.", db)
     except Exception as e:
-        await send_message_to_waid(wa_id, f"❌ Error sending date options: {str(e)}", db)
-        return {"success": False, "error": str(e)}
+        print(f"Error in _send_address_flow_directly: {e}")
+        await send_message_to_waid(wa_id, "❌ Unable to send address form right now. Please try again later.", db)
 
 
 async def send_time_buttons(wa_id: str, db: Session):
@@ -599,7 +602,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 "timestamp": timestamp.isoformat(),
             })
 
-            # NEW ADDRESS COLLECTION SYSTEM - Send "collect_address" template from Meta
+            # NEW ADDRESS COLLECTION SYSTEM - Send "address_collection" template from Meta
             try:
                 # Calculate order total
                 total_amount = sum([p.get("item_price", 0) * p.get("quantity", 1) for p in order["product_items"]])
@@ -611,13 +614,13 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
                     phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
                     
-                    # Send collect_address template from Meta (no parameters)
+                    # Send address_collection template from Meta (no parameters)
                     payload = {
                         "messaging_product": "whatsapp",
                         "to": wa_id,
                         "type": "template",
                         "template": {
-                            "name": "collect_address",
+                            "name": "address_collection",
                             "language": {"code": "en_US"}
                         }
                     }
@@ -649,21 +652,24 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                             awaiting_address_users[wa_id] = True
                             address_nudge_sent[wa_id] = False
                             
+                            # Also send the address flow directly to ensure it opens
+                            await _send_address_flow_directly(wa_id, db, customer_id=customer.id)
+                            
                         except Exception as e:
-                            print(f"Error saving collect_address template message: {e}")
+                            print(f"Error saving address_collection template message: {e}")
                     else:
-                        print(f"Failed to send collect_address template: {resp.text}")
-                        # Fallback to simple text guidance
-                        await _send_address_text_guidance(wa_id, db)
+                        print(f"Failed to send address_collection template: {resp.text}")
+                        # Fallback: Send address flow directly
+                        await _send_address_flow_directly(wa_id, db, customer_id=customer.id)
                 else:
-                    print("No WhatsApp token available for collect_address template")
-                    # Fallback to simple text guidance
-                    await _send_address_text_guidance(wa_id, db)
+                    print("No WhatsApp token available for address_collection template")
+                    # Fallback: Send address flow directly
+                    await _send_address_flow_directly(wa_id, db, customer_id=customer.id)
                     
             except Exception as e:
-                print(f"Error sending collect_address template: {e}")
-                # Fallback to simple text guidance
-                await _send_address_text_guidance(wa_id, db)
+                print(f"Error sending address_collection template: {e}")
+                # Fallback: Send address flow directly
+                await _send_address_flow_directly(wa_id, db, customer_id=customer.id)
         elif message_type == "location":
             location = message["location"]
             location_name = location.get("name", "")
@@ -864,6 +870,12 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         elif message_type == "interactive":
             interactive = message.get("interactive", {})
             i_type = interactive.get("type")
+            print(f"[ws_webhook] DEBUG - Interactive type: {i_type}")
+            if i_type == "flow":
+                flow_response = interactive.get("flow_response", {})
+                flow_id = flow_response.get("flow_id", "")
+                print(f"[ws_webhook] DEBUG - Flow ID: {flow_id}")
+                print(f"[ws_webhook] DEBUG - Flow payload: {flow_response.get('flow_action_payload', {})}")
             # Delegate interactive handling to component
             result_interactive = await run_interactive_type(
                 db,
@@ -877,6 +889,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 wa_id=wa_id,
                 customer=customer,
             )
+            print(f"[ws_webhook] DEBUG - Interactive result: {result_interactive}")
             if (result_interactive or {}).get("status") != "skipped":
                 return result_interactive
             
@@ -1120,10 +1133,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     button_id = button_reply.get("id", "")
                     button_title = button_reply.get("title", "")
                     
-                    if ((button_id or "").lower() == "book_appointment" or 
-                        (button_title or "").strip().lower() in {"book an appointment", "book appointment"}):
-                        await send_date_list(wa_id, db)
-                        return {"status": "date_list_sent", "message_id": message_id}
+                    # Book Appointment is now fully handled inside controllers.components.interactive_type.run_interactive_type
                     
                     if ((button_id or "").lower() == "request_callback" or 
                         (button_title or "").strip().lower() == "request a call back"):
@@ -1220,6 +1230,24 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                             # Ask for full name or first name and set awaiting_name flag
                             try:
                                 st = appointment_state.get(wa_id) or {}
+                                # If date/time missing in memory, try to recover from DB to avoid restarting flow
+                                if not st.get("date") or not st.get("time"):
+                                    try:
+                                        from services.referrer_service import referrer_service
+                                        existing_ref = referrer_service.get_referrer_by_wa_id(db, wa_id)
+                                        if existing_ref and getattr(existing_ref, "appointment_date", None) and getattr(existing_ref, "appointment_time", None):
+                                            try:
+                                                date_iso_rec = getattr(existing_ref.appointment_date, "date", None)()
+                                                st["date"] = date_iso_rec.isoformat()
+                                            except Exception:
+                                                # Fallback string formatting
+                                                try:
+                                                    st["date"] = existing_ref.appointment_date.strftime("%Y-%m-%d")
+                                                except Exception:
+                                                    pass
+                                            st["time"] = existing_ref.appointment_time
+                                    except Exception:
+                                        pass
                                 st["awaiting_name"] = True
                                 st.pop("awaiting_phone", None)
                                 st.pop("corrected_name", None)
@@ -1230,8 +1258,40 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                             await send_message_to_waid(wa_id, "No problem. Please share your name (full name or first name).", db)
                             return {"status": "awaiting_name", "message_id": message_id}
                         else:
-                            await send_message_to_waid(wa_id, "Please select a date first.", db)
-                            await send_date_list(wa_id, db)
+                            # Before sending user back, try to recover any existing appointment from DB
+                            try:
+                                from services.referrer_service import referrer_service
+                                existing_ref = referrer_service.get_referrer_by_wa_id(db, wa_id)
+                                if existing_ref and getattr(existing_ref, "appointment_date", None) and getattr(existing_ref, "appointment_time", None):
+                                    st = appointment_state.get(wa_id) or {}
+                                    try:
+                                        date_iso_rec = getattr(existing_ref.appointment_date, "date", None)()
+                                        st["date"] = date_iso_rec.isoformat()
+                                    except Exception:
+                                        try:
+                                            st["date"] = existing_ref.appointment_date.strftime("%Y-%m-%d")
+                                        except Exception:
+                                            pass
+                                    st["time"] = existing_ref.appointment_time
+                                    appointment_state[wa_id] = st
+                                    # If we recovered date/time and the user had pressed Yes earlier, confirm now
+                                    if norm_btn_id in yes_ids or norm_btn_title in yes_ids:
+                                        await _confirm_appointment(wa_id, db, st.get("date"), st.get("time"))
+                                        return {"status": "appointment_captured", "message_id": message_id}
+                                    # If it was not an explicit Yes, at least proceed to name capture without resetting flow
+                                    await send_message_to_waid(wa_id, "No problem. Please share your name (full name or first name).", db)
+                                    st["awaiting_name"] = True
+                                    appointment_state[wa_id] = st
+                                    return {"status": "awaiting_name", "message_id": message_id}
+                            except Exception:
+                                pass
+                            # Fallback: ask to pick week/date
+                            await send_message_to_waid(wa_id, "Please select a week and then a date.", db)
+                            try:
+                                from controllers.components.interactive_type import send_week_list  # type: ignore
+                                await send_week_list(db, wa_id)
+                            except Exception:
+                                pass
                             return {"status": "need_date_first", "message_id": message_id}
             except Exception:
                 pass
@@ -1442,9 +1502,10 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         else:
                             # Date/time should exist at this point (user tapped No on confirm).
                             # If somehow missing, prompt user to pick date again.
-                            await send_message_to_waid(wa_id, "Please select a date first.", db)
+                            await send_message_to_waid(wa_id, "Please select a week and then a date.", db)
                             try:
-                                await send_date_list(wa_id, db)
+                                from controllers.components.interactive_type import send_week_list  # type: ignore
+                                await send_week_list(db, wa_id)
                             except Exception:
                                 pass
                             return {"status": "need_date_first", "message_id": message_id}

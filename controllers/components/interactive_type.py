@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
 import os
@@ -54,7 +54,9 @@ async def run_interactive_type(
         except Exception:
             pass
 
-        if (flow_id == "address_collection_flow") or ("address" in flow_id.lower()):
+        if (flow_id == "address_collection_flow") or (flow_id == "1314521433687006") or ("address" in flow_id.lower()):
+            print(f"[flow_handler] DEBUG - Processing address flow: {flow_id}")
+            print(f"[flow_handler] DEBUG - Flow payload: {flow_action_payload}")
             try:
                 # Extract address data
                 address_data: Dict[str, Any] = {}
@@ -62,12 +64,14 @@ async def run_interactive_type(
                     field_mappings = {
                         "full_name": ["full_name", "name", "customer_name"],
                         "phone_number": ["phone_number", "phone", "mobile"],
-                        "house_street": ["house_street", "address_line_1", "street"],
+                        "house_street": ["house_street", "address_line_1", "street", "address_line"],
                         "locality": ["locality", "area", "neighborhood"],
                         "city": ["city", "town"],
                         "state": ["state", "province"],
                         "pincode": ["pincode", "postal_code", "zip_code"],
                         "landmark": ["landmark", "landmark_nearby"],
+                        "floor_number": ["floor_number"],
+                        "tower_number": ["tower_number"],
                     }
                     for field_name, possible_keys in field_mappings.items():
                         for key in possible_keys:
@@ -75,18 +79,42 @@ async def run_interactive_type(
                                 address_data[field_name] = flow_action_payload[key]
                                 break
 
-                # Validate & save
-                if address_data.get("full_name") and address_data.get("phone_number") and address_data.get("pincode"):
+                # Validate & save - check for required fields from your flow
+                print(f"[flow_handler] DEBUG - Extracted address data: {address_data}")
+                required_fields = ["full_name", "phone_number", "pincode", "house_street"]
+                missing_fields = [field for field in required_fields if not address_data.get(field)]
+                print(f"[flow_handler] DEBUG - Missing required fields: {missing_fields}")
+                
+                if address_data.get("full_name") and address_data.get("phone_number") and address_data.get("pincode") and address_data.get("house_street"):
                     from schemas.address_schema import CustomerAddressCreate
                     from services.address_service import create_customer_address
 
+                    # Construct enhanced address with floor/tower info
+                    house_street = address_data.get("house_street", "")
+                    floor_number = address_data.get("floor_number", "")
+                    tower_number = address_data.get("tower_number", "")
+                    
+                    # Combine address line with floor/tower if available
+                    if floor_number or tower_number:
+                        additional_info = []
+                        if floor_number:
+                            additional_info.append(f"Floor {floor_number}")
+                        if tower_number:
+                            additional_info.append(f"Tower {tower_number}")
+                        house_street = f"{house_street}, {', '.join(additional_info)}"
+                    
+                    # Default missing locality/city/state to a safe value accepted by validators
+                    locality_val = address_data.get("locality") or "Unknown"
+                    city_val = address_data.get("city") or "Unknown"
+                    state_val = address_data.get("state") or "Unknown"
+                    
                     address_create = CustomerAddressCreate(
                         customer_id=customer.id,
                         full_name=address_data.get("full_name", ""),
-                        house_street=address_data.get("house_street", ""),
-                        locality=address_data.get("locality", ""),
-                        city=address_data.get("city", ""),
-                        state=address_data.get("state", ""),
+                        house_street=house_street,
+                        locality=locality_val,
+                        city=city_val,
+                        state=state_val,
                         pincode=address_data.get("pincode", ""),
                         landmark=address_data.get("landmark", ""),
                         phone=address_data.get("phone_number", customer.wa_id),
@@ -143,7 +171,7 @@ async def run_interactive_type(
                 else:
                     await send_message_to_waid(
                         wa_id,
-                        "❌ Please fill in all required fields (Name, Phone, Pincode, House & Street, Area, City, State).",
+                        "❌ Please fill in all required fields (Name, Phone, Pincode, Address Line).",
                         db,
                     )
                     return {"status": "flow_incomplete", "message_id": message_id}
@@ -257,6 +285,89 @@ async def run_interactive_type(
                 "timestamp": timestamp.isoformat(),
             })
 
+            # 3a) Appointment week/day flow
+            try:
+                # Step 1: book appointment -> send week list
+                if (reply_id or "").strip().lower() == "book_appointment" or (title or "").strip().lower() in {"book an appointment", "book appointment"}:
+                    sent = await _send_week_list(db=db, wa_id=wa_id)
+                    if sent.get("success"):
+                        return {"status": "week_list_sent", "message_id": message_id}
+                    # No legacy fallback
+                    return {"status": "failed_to_send_week_list", "message_id": message_id}
+
+                # Step 2: week selected -> send day list
+                if i_type == "list_reply" and (reply_id or "").lower().startswith("week_"):
+                    # id format: week_YYYY-MM-DD_YYYY-MM-DD (start_end)
+                    try:
+                        parts = (reply_id or "").split("_")
+                        if len(parts) == 3:
+                            # older format week_start_end without underscores in dates isn't used; expect 3 parts
+                            pass
+                        if len(parts) >= 3:
+                            start_end = parts[1:]
+                            start_iso = start_end[0]
+                            end_iso = start_end[1] if len(start_end) > 1 else start_end[0]
+                            sent_days = await _send_day_list_for_week(db=db, wa_id=wa_id, start_iso=start_iso, end_iso=end_iso)
+                            if sent_days.get("success"):
+                                return {"status": "week_selected", "message_id": message_id}
+                    except Exception:
+                        pass
+
+                # Step 3: date picked -> confirm and send time buttons
+                if i_type == "list_reply" and (reply_id or "").lower().startswith("date_"):
+                    try:
+                        date_iso = (reply_id or "")[5:]
+                        if re.match(r"^\d{4}-\d{2}-\d{2}$", date_iso):
+                            # Persist selected date and ask for time
+                            from controllers.web_socket import appointment_state  # local import
+                            appointment_state[wa_id] = {"date": date_iso}
+                            from utils.whatsapp import send_message_to_waid as _send_txt
+                            await _send_txt(wa_id, f"✅ Date selected: {date_iso}", db)
+                            # Ask for time categories (morning/afternoon/evening)
+                            sent_slots = await _send_time_slot_categories(db=db, wa_id=wa_id)
+                            if sent_slots.get("success"):
+                                return {"status": "date_selected", "message_id": message_id}
+                            return {"status": "failed_to_send_time_categories", "message_id": message_id}
+                    except Exception:
+                        pass
+
+                # Step 4: time category picked -> send times list for that slot
+                if i_type == "list_reply" and (reply_id or "").lower().startswith("slot_"):
+                    # e.g., slot_morning, slot_afternoon, slot_evening
+                    slot_id = (reply_id or "").lower().strip()
+                    sent_times = await _send_times_for_slot(db=db, wa_id=wa_id, slot_id=slot_id)
+                    if sent_times.get("success"):
+                        return {"status": "slot_selected", "message_id": message_id}
+
+                # Step 5: exact time picked -> confirm appointment
+                if i_type == "list_reply" and (reply_id or "").lower().startswith("time_"):
+                    try:
+                        # Map id time_HH_MM to label like 09:00 AM
+                        parts = (reply_id or "").split("_")
+                        if len(parts) == 3:
+                            hh = int(parts[1])
+                            mm = int(parts[2])
+                            dt = datetime(2000, 1, 1, hh, mm)
+                            time_label = dt.strftime("%I:%M %p").lstrip("0")
+                        else:
+                            # Fallback to title
+                            time_label = title or ""
+                        if time_label:
+                            from controllers.web_socket import appointment_state, _confirm_appointment  # type: ignore
+                            date_iso = (appointment_state.get(wa_id) or {}).get("date")
+                            if date_iso:
+                                result = await _confirm_appointment(wa_id, db, date_iso, time_label)
+                                return {"status": "appointment_captured", "message_id": message_id}
+                            else:
+                                # Ask for date first (restart)
+                                await send_message_to_waid(wa_id, "Please select a date first.", db)
+                                await _send_week_list(db=db, wa_id=wa_id)
+                                return {"status": "need_date_first", "message_id": message_id}
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
             # Delegate skin/hair/body and next actions
             from controllers.components.treament_flow import run_treatment_buttons_flow  # local import to avoid cycles
             flow_result = await run_treatment_buttons_flow(
@@ -286,3 +397,354 @@ async def run_interactive_type(
     return {"status": "skipped"}
 
 
+def _format_week_label(start: datetime, end: datetime) -> str:
+    try:
+        # Examples: "Oct 14–20", "Oct 28–Nov 3"
+        start_label = start.strftime("%b %d").lstrip("0")
+        if start.month == end.month:
+            end_label = end.strftime("%d").lstrip("0")
+            return f"{start.strftime('%b')} {start.strftime('%d').lstrip('0')}–{end_label}"
+        else:
+            return f"{start.strftime('%b')} {start.strftime('%d').lstrip('0')}–{end.strftime('%b')} {end.strftime('%d').lstrip('0')}"
+    except Exception:
+        return f"{start.strftime('%b %d')}–{end.strftime('%b %d')}"
+
+
+def _generate_week_ranges(num_weeks: int = 4) -> list[dict]:
+    try:
+        today = datetime.now().date()
+        weeks = []
+        # Start from today; build consecutive 7-day windows
+        start_date = today
+        for _ in range(num_weeks):
+            end_date = start_date + timedelta(days=6)
+            label = _format_week_label(datetime.combine(start_date, datetime.min.time()), datetime.combine(end_date, datetime.min.time()))
+            weeks.append({
+                "id": f"week_{start_date.strftime('%Y-%m-%d')}_{end_date.strftime('%Y-%m-%d')}",
+                "title": label,
+            })
+            start_date = end_date + timedelta(days=1)
+        return weeks
+    except Exception:
+        return []
+
+
+def _generate_days_for_range(start_iso: str, end_iso: str) -> list[dict]:
+    try:
+        start = datetime.strptime(start_iso, "%Y-%m-%d").date()
+        end = datetime.strptime(end_iso, "%Y-%m-%d").date()
+        if end < start:
+            start, end = end, start
+        rows = []
+        cur = start
+        while cur <= end:
+            # Skip past dates (only future or today+)
+            if cur >= datetime.now().date():
+                rows.append({
+                    "id": f"date_{cur.strftime('%Y-%m-%d')}",
+                    "title": datetime.strftime(datetime.combine(cur, datetime.min.time()), "%a, %b %d").replace(" 0", " ")
+                })
+            cur += timedelta(days=1)
+        return rows
+    except Exception:
+        return []
+
+
+async def _send_week_list(*, db: Session, wa_id: str) -> Dict[str, Any]:
+    try:
+        token_entry = get_latest_token(db)
+        if not token_entry or not token_entry.token:
+            from utils.whatsapp import send_message_to_waid as _send_txt
+            await _send_txt(wa_id, "❌ Unable to fetch appointment weeks right now.", db)
+            return {"success": False}
+
+        access_token = token_entry.token
+        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+        phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+
+        rows = _generate_week_ranges(4)
+        if not rows:
+            from utils.whatsapp import send_message_to_waid as _send_txt
+            await _send_txt(wa_id, "❌ No weeks available. Please try again later.", db)
+            return {"success": False}
+
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": wa_id,
+            "type": "interactive",
+            "interactive": {
+                "type": "list",
+                "body": {"text": "📅 Please choose your appointment week:"},
+                "action": {
+                    "button": "Choose Week",
+                    "sections": [
+                        {"title": "Available Weeks", "rows": rows}
+                    ]
+                }
+            }
+        }
+
+        resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
+        if resp.status_code == 200:
+            try:
+                await manager.broadcast({
+                    "from": os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                    "to": wa_id,
+                    "type": "interactive",
+                    "message": "📅 Please choose your appointment week:",
+                    "timestamp": datetime.now().isoformat(),
+                    "meta": {"kind": "list", "section": "Available Weeks"}
+                })
+            except Exception:
+                pass
+            return {"success": True}
+        else:
+            from utils.whatsapp import send_message_to_waid as _send_txt
+            await _send_txt(wa_id, "❌ Could not send week options. Please try again.", db)
+            return {"success": False, "error": resp.text}
+    except Exception as e:
+        from utils.whatsapp import send_message_to_waid as _send_txt
+        await _send_txt(wa_id, f"❌ Error sending week options: {str(e)}", db)
+        return {"success": False, "error": str(e)}
+
+
+async def _send_day_list_for_week(*, db: Session, wa_id: str, start_iso: str, end_iso: str) -> Dict[str, Any]:
+    try:
+        token_entry = get_latest_token(db)
+        if not token_entry or not token_entry.token:
+            from utils.whatsapp import send_message_to_waid as _send_txt
+            await _send_txt(wa_id, "❌ Unable to fetch days right now.", db)
+            return {"success": False}
+
+        access_token = token_entry.token
+        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+        phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+
+        rows = _generate_days_for_range(start_iso, end_iso)
+        if not rows:
+            from utils.whatsapp import send_message_to_waid as _send_txt
+            await _send_txt(wa_id, "❌ No days available in this week. Please choose another week.", db)
+            return {"success": False}
+
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": wa_id,
+            "type": "interactive",
+            "interactive": {
+                "type": "list",
+                "body": {"text": "🗓️ Pick a date:"},
+                "action": {
+                    "button": "Pick Day",
+                    "sections": [
+                        {"title": "Available Days", "rows": rows}
+                    ]
+                }
+            }
+        }
+
+        resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
+        if resp.status_code == 200:
+            try:
+                await manager.broadcast({
+                    "from": os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                    "to": wa_id,
+                    "type": "interactive",
+                    "message": "🗓️ Pick a date:",
+                    "timestamp": datetime.now().isoformat(),
+                    "meta": {"kind": "list", "section": "Available Days"}
+                })
+            except Exception:
+                pass
+            return {"success": True}
+        else:
+            from utils.whatsapp import send_message_to_waid as _send_txt
+            await _send_txt(wa_id, "❌ Could not send day options. Please try again.", db)
+            return {"success": False, "error": resp.text}
+    except Exception as e:
+        from utils.whatsapp import send_message_to_waid as _send_txt
+        await _send_txt(wa_id, f"❌ Error sending day options: {str(e)}", db)
+        return {"success": False, "error": str(e)}
+
+
+# Public wrapper to be used by other modules (e.g., webhook) to kick off week selection
+async def send_week_list(db: Session, wa_id: str) -> Dict[str, Any]:
+    return await _send_week_list(db=db, wa_id=wa_id)
+
+
+def _generate_time_rows_for_slot(slot_id: str) -> list[dict]:
+    try:
+        slot_id = (slot_id or "").lower().strip()
+        print(f"DEBUG: Processing slot_id: '{slot_id}'")  # Debug log
+        
+        slot_intervals: dict[str, list[str]] = {
+            "slot_morning": [
+                "09:00 AM", "09:30 AM", "10:00 AM", "10:30 AM", "11:00 AM", "11:30 AM"
+            ],
+            "slot_afternoon": [
+                "12:00 PM", "12:30 PM", "01:00 PM", "01:30 PM", "02:00 PM",
+                "02:30 PM", "03:00 PM", "03:30 PM", "04:00 PM", "04:30 PM"
+            ],
+            "slot_evening": [
+                "05:00 PM", "05:30 PM", "06:00 PM", "06:30 PM", "07:00 PM"
+            ],
+        }
+        times = slot_intervals.get(slot_id, [])
+        print(f"DEBUG: Found times for slot '{slot_id}': {times}")  # Debug log
+        
+        rows: list[dict] = []
+        for label in times:
+            # Parse 12-hour label to 24h components for id
+            try:
+                dt = datetime.strptime(label, "%I:%M %p")
+                hh = dt.strftime("%H")
+                mm = dt.strftime("%M")
+            except Exception:
+                # Fallback: strip non-digits, best-effort
+                import re as _re
+                parts = _re.findall(r"(\d{1,2}):(\d{2})", label)
+                if parts:
+                    hh, mm = parts[0]
+                else:
+                    continue
+            rows.append({"id": f"time_{hh}_{mm}", "title": label})
+        
+        print(f"DEBUG: Generated {len(rows)} rows for slot '{slot_id}'")  # Debug log
+        return rows
+    except Exception as e:
+        print(f"DEBUG: Exception in _generate_time_rows_for_slot: {e}")  # Debug log
+        return []
+
+
+async def _send_time_slot_categories(*, db: Session, wa_id: str) -> Dict[str, Any]:
+    try:
+        token_entry = get_latest_token(db)
+        if not token_entry or not token_entry.token:
+            await send_message_to_waid(wa_id, "❌ Unable to fetch time slots right now.", db)
+            return {"success": False}
+
+        access_token = token_entry.token
+        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+        phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+
+        # Keep titles short to satisfy WhatsApp limits (<=24 chars recommended for row titles)
+        rows = [
+            {"id": "slot_morning", "title": "Morning (9–11 AM)"},
+            {"id": "slot_afternoon", "title": "Afternoon (12–4 PM)"},
+            {"id": "slot_evening", "title": "Evening (5–7 PM)"},
+        ]
+
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": wa_id,
+            "type": "interactive",
+            "interactive": {
+                "type": "list",
+                "header": {"type": "text", "text": "Time Slots"},
+                "body": {"text": "⏰ Choose a time slot category:"},
+                "action": {
+                    "button": "Choose Slot",
+                    "sections": [
+                        {"title": "Time Slots", "rows": rows}
+                    ]
+                }
+            }
+        }
+
+        resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
+        if resp.status_code == 200:
+            try:
+                await manager.broadcast({
+                    "from": os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                    "to": wa_id,
+                    "type": "interactive",
+                    "message": "⏰ Choose a time slot category:",
+                    "timestamp": datetime.now().isoformat(),
+                    "meta": {"kind": "list", "section": "Time Slots"}
+                })
+            except Exception:
+                pass
+            return {"success": True}
+        else:
+            try:
+                err_txt = resp.text
+            except Exception:
+                err_txt = ""
+            await send_message_to_waid(wa_id, "❌ Could not send time slot categories.", db)
+            try:
+                import logging
+                logging.getLogger(__name__).error("Time slot categories send failed: %s", err_txt)
+            except Exception:
+                pass
+            return {"success": False, "error": resp.text}
+    except Exception as e:
+        await send_message_to_waid(wa_id, f"❌ Error sending time slot categories: {str(e)}", db)
+        return {"success": False, "error": str(e)}
+
+
+async def _send_times_for_slot(*, db: Session, wa_id: str, slot_id: str) -> Dict[str, Any]:
+    try:
+        token_entry = get_latest_token(db)
+        if not token_entry or not token_entry.token:
+            await send_message_to_waid(wa_id, "❌ Unable to fetch times right now.", db)
+            return {"success": False}
+
+        access_token = token_entry.token
+        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+        phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+
+        rows = _generate_time_rows_for_slot(slot_id)
+        if not rows:
+            await send_message_to_waid(wa_id, "❌ No times available in this slot.", db)
+            return {"success": False}
+
+        section_title = (
+            "Morning" if slot_id == "slot_morning" else (
+                "Afternoon" if slot_id == "slot_afternoon" else "Evening"
+            )
+        )
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": wa_id,
+            "type": "interactive",
+            "interactive": {
+                "type": "list",
+                "header": {"type": "text", "text": f"{section_title} Times"},
+                "body": {"text": f"⏱️ Pick a time in {section_title} Slot:"},
+                "action": {
+                    "button": "Pick Time",
+                    "sections": [
+                        {"title": f"{section_title} Times", "rows": rows}
+                    ]
+                }
+            }
+        }
+
+        resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
+        if resp.status_code == 200:
+            try:
+                await manager.broadcast({
+                    "from": os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                    "to": wa_id,
+                    "type": "interactive",
+                    "message": f"⏱️ Pick a time in {section_title} Slot:",
+                    "timestamp": datetime.now().isoformat(),
+                    "meta": {"kind": "list", "section": f"{section_title} Times"}
+                })
+            except Exception:
+                pass
+            return {"success": True}
+        else:
+            try:
+                err_txt = resp.text
+            except Exception:
+                err_txt = ""
+            await send_message_to_waid(wa_id, "❌ Could not send times.", db)
+            try:
+                import logging
+                logging.getLogger(__name__).error("Time list send failed for %s: %s", section_title, err_txt)
+            except Exception:
+                pass
+            return {"success": False, "error": resp.text}
+    except Exception as e:
+        await send_message_to_waid(wa_id, f"❌ Error sending times: {str(e)}", db)
+        return {"success": False, "error": str(e)}

@@ -400,9 +400,9 @@ async def run_book_appointment_flow(db: Session, *, wa_id: str) -> Dict[str, Any
 
     try:
         # Local import to avoid circular dependency
-        from controllers.web_socket import send_date_list  # type: ignore
-        await send_date_list(wa_id, db)
-        return {"status": "date_list_sent"}
+        from controllers.components.interactive_type import send_week_list  # type: ignore
+        await send_week_list(db, wa_id)
+        return {"status": "week_list_sent"}
     except Exception as e:
         return {"status": "failed", "error": str(e)[:200]}
 
@@ -453,9 +453,9 @@ async def run_appointment_buttons_flow(
             or normalized_payload in {"book an appointment", "book appointment"}
         ):
             try:
-                from controllers.web_socket import send_date_list  # type: ignore
-                await send_date_list(wa_id, db)
-                return {"status": "date_list_sent"}
+                from controllers.components.interactive_type import send_week_list  # type: ignore
+                await send_week_list(db, wa_id)
+                return {"status": "week_list_sent"}
             except Exception as e:
                 return {"status": "failed", "error": str(e)[:200]}
 
@@ -503,9 +503,10 @@ async def run_appointment_buttons_flow(
                     )
                     if result.get("status") == "appointment_captured":
                         return result
-                # Need date first
-                await send_message_to_waid(wa_id, "Please select a date first.", db)
-                await send_date_list(wa_id, db)
+                # Need date first -> start from week selection
+                await send_message_to_waid(wa_id, "Please select a week and then a date.", db)
+                from controllers.components.interactive_type import send_week_list  # type: ignore
+                await send_week_list(db, wa_id)
                 return {"status": "need_date_first"}
             except Exception as e:
                 return {"status": "failed", "error": str(e)[:200]}
