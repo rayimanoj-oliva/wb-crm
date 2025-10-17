@@ -313,19 +313,29 @@ async def run_treatment_buttons_flow(
 
     # List selections arriving as plain buttons
     norm_btn = (btn_id or btn_text or btn_payload or "").strip().lower()
+    # Canonicalize label/id to avoid hyphen/space/ampersand differences
+    def _canon(txt: str) -> str:
+        try:
+            import re as _re
+            return _re.sub(r"[^a-z0-9]+", " ", (txt or "").lower()).strip()
+        except Exception:
+            return (txt or "").lower().strip()
+
+    canon_btn = _canon(norm_btn)
+
     skin_concerns = {
-        "acne / acne scars",
+        "acne acne scars",
         "pigmentation",
         "uneven skin tone",
-        "anti-aging ",
+        "anti aging",
         "skin rejuvenation",
         "laser hair removal",
         "other skin concerns",
     }
     hair_concerns = {
-        "hair loss / hair fall",
+        "hair loss hair fall",
         "hair transplant",
-        "dandruff & scalp care",
+        "dandruff scalp care",
         "other hair concerns",
     }
     body_concerns = {
@@ -335,7 +345,7 @@ async def run_treatment_buttons_flow(
         "other body concerns",
     }
 
-    if norm_btn in skin_concerns or norm_btn in hair_concerns or norm_btn in body_concerns:
+    if canon_btn in skin_concerns or canon_btn in hair_concerns or canon_btn in body_concerns:
         try:
             token_entry_book = get_latest_token(db)
             if token_entry_book and token_entry_book.token:
