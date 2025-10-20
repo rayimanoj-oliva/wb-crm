@@ -946,6 +946,19 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     import json
                     response_data = json.loads(nfm_reply.get("response_json", "{}"))
                     print(f"[ws_webhook] DEBUG - Parsed NFM data: {response_data}")
+                    
+                    # Check if we got template variables instead of actual values
+                    has_template_vars = any("{{" in str(v) and "}}" in str(v) for v in response_data.values())
+                    if has_template_vars:
+                        print(f"[ws_webhook] WARNING - Received template variables instead of actual values: {response_data}")
+                        # Send error message to user and resend address form
+                        await send_message_to_waid(wa_id, "❌ The address form wasn't filled out properly. Please try again.", db)
+                        try:
+                            await _send_address_flow_directly(wa_id, db, customer_id=customer.id)
+                        except Exception:
+                            pass
+                        return {"status": "form_not_filled", "message_id": message_id}
+                    
                     # Convert nfm_reply to flow_response format for compatibility
                     interactive["type"] = "flow"
                     interactive["flow_response"] = {
