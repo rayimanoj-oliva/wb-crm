@@ -716,21 +716,13 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 "timestamp": timestamp.isoformat(),
             })
 
-            # If this submission MERGED into an open order, go straight to address selection.
-            # Otherwise (new order), show Modify/Cancel/Proceed.
-            merged_flag = getattr(order_obj, "_merged", False)
-            if merged_flag:
-                try:
-                    await _send_address_flow_directly(wa_id, db, customer_id=customer.id)
-                except Exception:
-                    pass
-            else:
-                try:
-                    from controllers.components.products_flow import send_cart_next_actions  # type: ignore
-                    await send_cart_next_actions(db, wa_id=wa_id)
-                except Exception:
-                    # Fallback: send address selection
-                    await _send_address_flow_directly(wa_id, db, customer_id=customer.id)
+            # After cart selection, ask the user to Modify / Cancel / Proceed
+            try:
+                from controllers.components.products_flow import send_cart_next_actions  # type: ignore
+                await send_cart_next_actions(db, wa_id=wa_id)
+            except Exception:
+                # As a fallback, keep legacy behavior of sending address flow directly
+                await _send_address_flow_directly(wa_id, db, customer_id=customer.id)
         elif message_type == "location":
             location = message["location"]
             location_name = location.get("name", "")
