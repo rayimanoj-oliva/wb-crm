@@ -79,7 +79,112 @@ VERIFY_TOKEN = "Oliva@123"
 
 
 async def _send_address_flow_directly(wa_id: str, db: Session, customer_id=None):
-    """Send address collection flow directly when template fails"""
+    """Send smart address selection - check for saved addresses first"""
+    try:
+        # First check if user has saved addresses
+        if customer_id:
+            from services.address_service import get_customer_addresses
+            saved_addresses = get_customer_addresses(db, customer_id)
+            
+            if saved_addresses:
+                # User has saved addresses - show smart selection
+                await _send_smart_address_selection(wa_id, db, saved_addresses, customer_id)
+                return
+        
+        # No saved addresses or customer_id not provided - send address form directly
+        await _send_address_form_directly(wa_id, db, customer_id)
+        
+    except Exception as e:
+        print(f"Error in _send_address_flow_directly: {e}")
+        await send_message_to_waid(wa_id, "❌ Unable to send address form right now. Please try again later.", db)
+
+
+async def _send_smart_address_selection(wa_id: str, db: Session, saved_addresses: list, customer_id):
+    """Send interactive message with saved address and options"""
+    try:
+        token_entry = get_latest_token(db)
+        if not token_entry or not token_entry.token:
+            await send_message_to_waid(wa_id, "❌ Unable to send address selection right now. Please try again later.", db)
+            return
+
+        access_token = token_entry.token
+        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+        phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+
+        # Get the most recent/default address
+        default_address = next((addr for addr in saved_addresses if addr.is_default), saved_addresses[0])
+        
+        # Create address display text
+        address_text = f"📍 {default_address.full_name}\n{default_address.house_street}\n{default_address.city} - {default_address.pincode}"
+        
+        # Create interactive message with buttons
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": wa_id,
+            "type": "interactive",
+            "interactive": {
+                "type": "button",
+                "header": {"type": "text", "text": "📍 Delivery Address"},
+                "body": {"text": f"We found your saved address:\n\n{address_text}\n\nWould you like to use this address or add a new one?"},
+                "action": {
+                    "buttons": [
+                        {
+                            "type": "reply",
+                            "reply": {
+                                "id": "use_saved_address",
+                                "title": "✅ Use This Address"
+                            }
+                        },
+                        {
+                            "type": "reply", 
+                            "reply": {
+                                "id": "add_new_address",
+                                "title": "➕ Add New Address"
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+
+        resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
+        if resp.status_code == 200:
+            try:
+                msg_id = resp.json()["messages"][0]["id"]
+                message = MessageCreate(
+                    message_id=msg_id,
+                    from_wa_id=os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                    to_wa_id=wa_id,
+                    type="interactive",
+                    body="Address selection sent",
+                    timestamp=datetime.now(),
+                    customer_id=customer_id
+                )
+                message_service.create_message(db, message)
+                
+                await manager.broadcast({
+                    "from": os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                    "to": wa_id,
+                    "type": "interactive",
+                    "message": "Address selection sent",
+                    "timestamp": datetime.now().isoformat()
+                })
+                
+            except Exception as e:
+                print(f"Error saving address selection message: {e}")
+        else:
+            print(f"Failed to send address selection: {resp.text}")
+            # Fallback to direct address form
+            await _send_address_form_directly(wa_id, db, customer_id)
+            
+    except Exception as e:
+        print(f"Error in _send_smart_address_selection: {e}")
+        # Fallback to direct address form
+        await _send_address_form_directly(wa_id, db, customer_id)
+
+
+async def _send_address_form_directly(wa_id: str, db: Session, customer_id=None):
+    """Send address collection flow directly (original function)"""
     try:
         token_entry = get_latest_token(db)
         if not token_entry or not token_entry.token:
@@ -144,7 +249,7 @@ async def _send_address_flow_directly(wa_id: str, db: Session, customer_id=None)
             print(f"Failed to send address flow: {resp.text}")
             await send_message_to_waid(wa_id, "❌ Unable to send address form right now. Please try again later.", db)
     except Exception as e:
-        print(f"Error in _send_address_flow_directly: {e}")
+        print(f"Error in _send_address_form_directly: {e}")
         await send_message_to_waid(wa_id, "❌ Unable to send address form right now. Please try again later.", db)
 
 
@@ -581,17 +686,19 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 OrderItemCreate(
                     product_retailer_id=prod["product_retailer_id"],
                     quantity=prod["quantity"],
-                    item_price=prod["item_price"],
-                    currency=prod["currency"]
+                    item_price=prod.get("item_price"),
+                    currency=prod.get("currency")
                 ) for prod in order["product_items"]
             ]
-            order_data = OrderCreate(
+
+            # Merge into latest open order (if any); else create a new one
+            order_obj = order_service.merge_or_create_order(
+                db,
                 customer_id=customer.id,
-                catalog_id=order["catalog_id"],
+                catalog_id=order.get("catalog_id"),
                 timestamp=timestamp,
-                items=order_items
+                items=order_items,
             )
-            order_obj = order_service.create_order(db, order_data)
 
             await manager.broadcast({
                 "from": from_wa_id,
@@ -602,73 +709,12 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 "timestamp": timestamp.isoformat(),
             })
 
-            # NEW ADDRESS COLLECTION SYSTEM - Send "address_collection" template from Meta
+            # After cart selection, ask the user to Modify / Cancel / Proceed
             try:
-                # Calculate order total
-                total_amount = sum([p.get("item_price", 0) * p.get("quantity", 1) for p in order["product_items"]])
-                
-                # Get WhatsApp token
-                token_entry = get_latest_token(db)
-                if token_entry and token_entry.token:
-                    access_token = token_entry.token
-                    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-                    phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
-                    
-                    # Send address_collection template from Meta (no parameters)
-                    payload = {
-                        "messaging_product": "whatsapp",
-                        "to": wa_id,
-                        "type": "template",
-                        "template": {
-                            "name": "address_collection",
-                            "language": {"code": "en_US"}
-                        }
-                    }
-                    
-                    resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
-                    if resp.status_code == 200:
-                        try:
-                            tpl_msg_id = resp.json()["messages"][0]["id"]
-                            tpl_message = MessageCreate(
-                                message_id=tpl_msg_id,
-                                from_wa_id=to_wa_id,
-                                to_wa_id=wa_id,
-                                type="template",
-                                body=f"Address collection template sent to {customer.name or 'Customer'}",
-                                timestamp=datetime.now(),
-                                customer_id=customer.id
-                            )
-                            message_service.create_message(db, tpl_message)
-                            
-                            await manager.broadcast({
-                                "from": to_wa_id,
-                                "to": wa_id,
-                                "type": "template",
-                                "message": f"Address collection template sent to {customer.name or 'Customer'}",
-                                "timestamp": datetime.now().isoformat()
-                            })
-                            
-                            # Mark user as awaiting address for button responses and reset nudge flag
-                            awaiting_address_users[wa_id] = True
-                            address_nudge_sent[wa_id] = False
-                            
-                            # Also send the address flow directly to ensure it opens
-                            await _send_address_flow_directly(wa_id, db, customer_id=customer.id)
-                            
-                        except Exception as e:
-                            print(f"Error saving address_collection template message: {e}")
-                    else:
-                        print(f"Failed to send address_collection template: {resp.text}")
-                        # Fallback: Send address flow directly
-                        await _send_address_flow_directly(wa_id, db, customer_id=customer.id)
-                else:
-                    print("No WhatsApp token available for address_collection template")
-                    # Fallback: Send address flow directly
-                    await _send_address_flow_directly(wa_id, db, customer_id=customer.id)
-                    
-            except Exception as e:
-                print(f"Error sending address_collection template: {e}")
-                # Fallback: Send address flow directly
+                from controllers.components.products_flow import send_cart_next_actions  # type: ignore
+                await send_cart_next_actions(db, wa_id=wa_id)
+            except Exception:
+                # As a fallback, keep legacy behavior of sending address flow directly
                 await _send_address_flow_directly(wa_id, db, customer_id=customer.id)
         elif message_type == "location":
             location = message["location"]

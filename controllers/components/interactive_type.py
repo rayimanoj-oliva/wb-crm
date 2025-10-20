@@ -65,13 +65,10 @@ async def run_interactive_type(
                         "full_name": ["full_name", "name", "customer_name"],
                         "phone_number": ["phone_number", "phone", "mobile"],
                         "house_street": ["house_street", "address_line_1", "street", "address_line"],
-                        "locality": ["locality", "area", "neighborhood"],
                         "city": ["city", "town"],
                         "state": ["state", "province"],
                         "pincode": ["pincode", "postal_code", "zip_code"],
-                        "landmark": ["landmark", "landmark_nearby"],
-                        "floor_number": ["floor_number"],
-                        "tower_number": ["tower_number"],
+                       
                     }
                     for field_name, possible_keys in field_mappings.items():
                         for key in possible_keys:
@@ -103,30 +100,59 @@ async def run_interactive_type(
                             additional_info.append(f"Tower {tower_number}")
                         house_street = f"{house_street}, {', '.join(additional_info)}"
                     
-                    # Default missing locality/city/state to a safe value accepted by validators
-                    locality_val = address_data.get("locality") or "Unknown"
+                    # Use city and state directly
                     city_val = address_data.get("city") or "Unknown"
                     state_val = address_data.get("state") or "Unknown"
+
+                    # Sanitize phone: ensure 10 digits; fallback to WA ID
+                    try:
+                        import re as _re
+                        phone_source = address_data.get("phone_number") or customer.wa_id or ""
+                        phone_digits = _re.sub(r"\D", "", str(phone_source))
+                        if len(phone_digits) >= 10:
+                            phone_final = phone_digits[-10:]
+                        else:
+                            wa_digits = _re.sub(r"\D", "", str(customer.wa_id or ""))
+                            phone_final = wa_digits[-10:] if len(wa_digits) >= 10 else (phone_digits + ("0" * (10 - len(phone_digits))))[:10]
+                        print(f"[flow_handler] DEBUG - Phone processing: source={phone_source}, digits={phone_digits}, final={phone_final}")
+                    except Exception as e:
+                        print(f"[flow_handler] DEBUG - Phone processing error: {e}")
+                        phone_final = (str(customer.wa_id)[-10:] if customer and getattr(customer, 'wa_id', None) else "0000000000")
+                    
+                    # Normalize pincode to 6 digits if possible (keep as-is if already valid)
+                    try:
+                        import re as _re2
+                        pin_src = address_data.get("pincode", "")
+                        pin_digits = _re2.sub(r"\D", "", str(pin_src))
+                        pincode_final = pin_digits[:6] if len(pin_digits) >= 6 else pin_digits
+                        print(f"[flow_handler] DEBUG - Pincode processing: source={pin_src}, digits={pin_digits}, final={pincode_final}")
+                    except Exception as e:
+                        print(f"[flow_handler] DEBUG - Pincode processing error: {e}")
+                        pincode_final = address_data.get("pincode", "")
+                    
+                    print(f"[flow_handler] DEBUG - Creating address with: full_name={address_data.get('full_name', '')}, house_street={house_street}, locality={city_val}, city={city_val}, state={state_val}, pincode={pincode_final}, phone={phone_final}")
                     
                     address_create = CustomerAddressCreate(
                         customer_id=customer.id,
                         full_name=address_data.get("full_name", ""),
                         house_street=house_street,
-                        locality=locality_val,
+                        locality=city_val,  # Use city as locality fallback
                         city=city_val,
                         state=state_val,
-                        pincode=address_data.get("pincode", ""),
+                        pincode=pincode_final,
                         landmark=address_data.get("landmark", ""),
-                        phone=address_data.get("phone_number", customer.wa_id),
+                        phone=phone_final,
                         address_type="home",
                         is_default=True,
                     )
+                    print(f"[flow_handler] DEBUG - AddressCreate object created successfully")
                     saved_address = create_customer_address(db, address_create)
+                    print(f"[flow_handler] DEBUG - Address saved successfully with ID: {saved_address.id}")
 
                     await send_message_to_waid(wa_id, "✅ Address saved successfully!", db)
                     await send_message_to_waid(
                         wa_id,
-                        f"📍 {saved_address.full_name}, {saved_address.house_street}, {saved_address.locality}, {saved_address.city} - {saved_address.pincode}",
+                        f"📍 {saved_address.full_name}, {saved_address.house_street}, {saved_address.city} - {saved_address.pincode}",
                         db,
                     )
 
@@ -176,6 +202,10 @@ async def run_interactive_type(
                     )
                     return {"status": "flow_incomplete", "message_id": message_id}
             except Exception as e:
+                print(f"[flow_handler] ERROR - Exception in address processing: {str(e)}")
+                print(f"[flow_handler] ERROR - Exception type: {type(e).__name__}")
+                import traceback
+                print(f"[flow_handler] ERROR - Traceback: {traceback.format_exc()}")
                 await send_message_to_waid(wa_id, "❌ Error processing your address. Please try again.", db)
                 return {"status": "flow_error", "message_id": message_id}
 
@@ -216,7 +246,7 @@ async def run_interactive_type(
                     await send_message_to_waid(wa_id, "✅ Address saved successfully!", db)
                     await send_message_to_waid(
                         wa_id,
-                        f"📍 {saved_address.full_name}, {saved_address.house_street}, {saved_address.locality}, {saved_address.city} - {saved_address.pincode}",
+                        f"📍 {saved_address.full_name}, {saved_address.house_street}, {saved_address.city} - {saved_address.pincode}",
                         db,
                     )
 
@@ -365,6 +395,83 @@ async def run_interactive_type(
                                 return {"status": "need_date_first", "message_id": message_id}
                     except Exception:
                         pass
+            except Exception:
+                pass
+
+            # Handle address selection buttons first
+            try:
+                if reply_id in ["use_saved_address", "add_new_address"]:
+                    from controllers.web_socket import _send_address_form_directly
+                    from services.address_service import get_customer_default_address
+                    
+                    if reply_id == "use_saved_address":
+                        # User wants to use saved address - get their default address
+                        default_address = get_customer_default_address(db, customer.id)
+                        if default_address:
+                            await send_message_to_waid(wa_id, "✅ Using your saved address!", db)
+                            await send_message_to_waid(
+                                wa_id,
+                                f"📍 {default_address.full_name}, {default_address.house_street}, {default_address.city} - {default_address.pincode}",
+                                db,
+                            )
+                            
+                            # Continue with payment flow
+                            try:
+                                latest_order = (
+                                    db.query(order_service.Order)
+                                    .filter(order_service.Order.customer_id == customer.id)
+                                    .order_by(order_service.Order.timestamp.desc())
+                                    .first()
+                                )
+                                total_amount = 0
+                                if latest_order:
+                                    for item in latest_order.items:
+                                        qty = item.quantity or 1
+                                        price = item.item_price or item.price or 0
+                                        total_amount += float(price) * int(qty)
+                                if total_amount > 0:
+                                    from utils.razorpay_utils import create_razorpay_payment_link
+                                    try:
+                                        payment_resp = create_razorpay_payment_link(
+                                            amount=float(total_amount),
+                                            currency="INR",
+                                            description=f"WA Order {str(latest_order.id) if latest_order else ''}",
+                                        )
+                                        pay_link = payment_resp.get("short_url") if isinstance(payment_resp, dict) else None
+                                        if pay_link:
+                                            await send_message_to_waid(wa_id, f"💳 Please complete your payment using this link: {pay_link}", db)
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
+                            
+                            return {"status": "saved_address_used", "message_id": message_id}
+                        else:
+                            await send_message_to_waid(wa_id, "❌ No saved address found. Please add a new address.", db)
+                            await _send_address_form_directly(wa_id, db, customer_id=customer.id)
+                            return {"status": "address_form_sent", "message_id": message_id}
+                    
+                    elif reply_id == "add_new_address":
+                        # User wants to add new address - send address form
+                        await send_message_to_waid(wa_id, "📝 Please provide your new address details.", db)
+                        await _send_address_form_directly(wa_id, db, customer_id=customer.id)
+                        return {"status": "address_form_sent", "message_id": message_id}
+                        
+            except Exception as e:
+                print(f"[address_selection] ERROR - Exception in address selection: {str(e)}")
+                pass
+
+            # Handle cart next actions (modify/cancel/proceed) first
+            try:
+                from controllers.components.products_flow import handle_cart_next_action  # type: ignore
+                cart_result = await handle_cart_next_action(
+                    db,
+                    wa_id=wa_id,
+                    reply_id=(reply_id or ""),
+                    customer=customer,
+                )
+                if (cart_result or {}).get("status") in {"modify_catalog_sent", "catalog_link_sent", "order_cancel_ack", "address_template_sent", "address_prompt_sent"}:
+                    return cart_result
             except Exception:
                 pass
 

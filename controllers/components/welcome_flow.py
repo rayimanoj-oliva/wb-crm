@@ -49,7 +49,7 @@ async def run_welcome_flow(
         headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
         phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
 
-        media_id = os.getenv("WELCOME_TEMPLATE_MEDIA_ID") or "2185668755244609"
+        media_id = os.getenv("WELCOME_TEMPLATE_MEDIA_ID") or "2332791820506535"
         if not media_id:
             try:
                 user_prior_messages = message_service.get_messages_by_wa_id(db, wa_id)
