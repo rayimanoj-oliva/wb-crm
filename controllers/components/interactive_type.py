@@ -398,14 +398,68 @@ async def run_interactive_type(
             except Exception:
                 pass
 
-            # Handle address selection buttons first
+            # Handle address selection (buttons or list) first
             try:
-                if reply_id in ["use_saved_address", "add_new_address"]:
+                if reply_id in ["use_saved_address", "add_new_address"] or (reply_id or "").startswith("use_address_"):
                     from controllers.web_socket import _send_address_form_directly
-                    from services.address_service import get_customer_default_address
+                    from services.address_service import get_customer_default_address, get_address_by_id, set_default_address
                     
+                    # Using a specific address from list (use_address_<uuid>)
+                    if (reply_id or "").startswith("use_address_"):
+                        try:
+                            addr_id = (reply_id or "")[12:]
+                            selected = get_address_by_id(db, addr_id)
+                        except Exception:
+                            selected = None
+                        if selected and getattr(selected, "customer_id", None) == getattr(customer, "id", None):
+                            # Optionally set as default for convenience
+                            try:
+                                set_default_address(db, customer.id, selected.id)
+                            except Exception:
+                                pass
+                            await send_message_to_waid(wa_id, "✅ Using your selected address!", db)
+                            await send_message_to_waid(
+                                wa_id,
+                                f"📍 {selected.full_name}, {selected.house_street}, {selected.city} - {selected.pincode}",
+                                db,
+                            )
+                            # Continue with payment flow
+                            try:
+                                latest_order = (
+                                    db.query(order_service.Order)
+                                    .filter(order_service.Order.customer_id == customer.id)
+                                    .order_by(order_service.Order.timestamp.desc())
+                                    .first()
+                                )
+                                total_amount = 0
+                                if latest_order:
+                                    for item in latest_order.items:
+                                        qty = item.quantity or 1
+                                        price = item.item_price or item.price or 0
+                                        total_amount += float(price) * int(qty)
+                                if total_amount > 0:
+                                    from utils.razorpay_utils import create_razorpay_payment_link
+                                    try:
+                                        payment_resp = create_razorpay_payment_link(
+                                            amount=float(total_amount),
+                                            currency="INR",
+                                            description=f"WA Order {str(latest_order.id) if latest_order else ''}",
+                                        )
+                                        pay_link = payment_resp.get("short_url") if isinstance(payment_resp, dict) else None
+                                        if pay_link:
+                                            await send_message_to_waid(wa_id, f"💳 Please complete your payment using this link: {pay_link}", db)
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
+                            return {"status": "saved_address_used", "message_id": message_id}
+                        else:
+                            await send_message_to_waid(wa_id, "❌ Address not found. Please add a new address.", db)
+                            await _send_address_form_directly(wa_id, db, customer_id=customer.id)
+                            return {"status": "address_form_sent", "message_id": message_id}
+
                     if reply_id == "use_saved_address":
-                        # User wants to use saved address - get their default address
+                        # Backward-compatible: use default address
                         default_address = get_customer_default_address(db, customer.id)
                         if default_address:
                             await send_message_to_waid(wa_id, "✅ Using your saved address!", db)

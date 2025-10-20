@@ -49,6 +49,32 @@ def get_customer_default_address(db: Session, customer_id: UUID) -> Optional[Cus
     ).first()
 
 
+def get_address_by_id(db: Session, address_id: UUID) -> Optional[CustomerAddress]:
+    return db.query(CustomerAddress).filter(CustomerAddress.id == address_id).first()
+
+
+def set_default_address(db: Session, customer_id: UUID, address_id: UUID) -> Optional[CustomerAddress]:
+    """Mark one address as default and unset others for this customer."""
+    address = db.query(CustomerAddress).filter(
+        CustomerAddress.id == address_id,
+        CustomerAddress.customer_id == customer_id,
+    ).first()
+    if not address:
+        return None
+
+    # Unset other defaults
+    db.query(CustomerAddress).filter(
+        CustomerAddress.customer_id == customer_id,
+        CustomerAddress.id != address_id,
+        CustomerAddress.is_default == True,
+    ).update({"is_default": False})
+
+    address.is_default = True
+    db.commit()
+    db.refresh(address)
+    return address
+
+
 def update_customer_address(db: Session, address_id: UUID, address_data: CustomerAddressUpdate) -> Optional[CustomerAddress]:
     """Update a customer address"""
     address = db.query(CustomerAddress).filter(CustomerAddress.id == address_id).first()

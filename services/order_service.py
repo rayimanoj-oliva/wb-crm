@@ -92,10 +92,15 @@ def merge_or_create_order(
         latest_order.timestamp = timestamp or datetime.utcnow()
         db.commit()
         db.refresh(latest_order)
+        # Mark as merged for caller logic (ephemeral attribute)
+        try:
+            setattr(latest_order, "_merged", True)
+        except Exception:
+            pass
         return latest_order
 
     # Otherwise create a new order
-    return create_order(
+    created = create_order(
         db,
         OrderCreate(
             customer_id=customer_id,
@@ -104,6 +109,11 @@ def merge_or_create_order(
             items=list(items),
         ),
     )
+    try:
+        setattr(created, "_merged", False)
+    except Exception:
+        pass
+    return created
 
 def get_order(db: Session, order_id: int):
     return db.query(Order).filter(Order.id == order_id).first()

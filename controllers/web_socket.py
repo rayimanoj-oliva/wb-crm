@@ -100,7 +100,11 @@ async def _send_address_flow_directly(wa_id: str, db: Session, customer_id=None)
 
 
 async def _send_smart_address_selection(wa_id: str, db: Session, saved_addresses: list, customer_id):
-    """Send interactive message with saved address and options"""
+    """Send interactive message with saved addresses and options.
+
+    If multiple addresses exist, send a list message where each row selects that address.
+    Also include an action to add a new address.
+    """
     try:
         token_entry = get_latest_token(db)
         if not token_entry or not token_entry.token:
@@ -111,36 +115,39 @@ async def _send_smart_address_selection(wa_id: str, db: Session, saved_addresses
         headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
         phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
 
-        # Get the most recent/default address
-        default_address = next((addr for addr in saved_addresses if addr.is_default), saved_addresses[0])
-        
-        # Create address display text
-        address_text = f"📍 {default_address.full_name}\n{default_address.house_street}\n{default_address.city} - {default_address.pincode}"
-        
-        # Create interactive message with buttons
+        # Build a list of saved addresses (max 10 per WhatsApp constraints)
+        rows = []
+        for addr in saved_addresses[:10]:
+            title = f"{addr.full_name[:35]}"  # titles are limited; keep concise
+            subtitle = f"{addr.house_street[:60]} | {addr.city} - {addr.pincode}"
+            rows.append({
+                "id": f"use_address_{addr.id}",
+                "title": title,
+                "description": subtitle,
+            })
+
+        # Create interactive list with an extra row to add a new address
+        rows.append({
+            "id": "add_new_address",
+            "title": "➕ Add New Address",
+            "description": "Provide a different delivery address",
+        })
+
         payload = {
             "messaging_product": "whatsapp",
             "to": wa_id,
             "type": "interactive",
             "interactive": {
-                "type": "button",
-                "header": {"type": "text", "text": "📍 Delivery Address"},
-                "body": {"text": f"We found your saved address:\n\n{address_text}\n\nWould you like to use this address or add a new one?"},
+                "type": "list",
+                "header": {"type": "text", "text": "📍 Choose Delivery Address"},
+                "body": {"text": "Select one of your saved addresses or add a new one."},
+                "footer": {"text": "You can manage addresses anytime."},
                 "action": {
-                    "buttons": [
+                    "button": "Select",
+                    "sections": [
                         {
-                            "type": "reply",
-                            "reply": {
-                                "id": "use_saved_address",
-                                "title": "✅ Use This Address"
-                            }
-                        },
-                        {
-                            "type": "reply", 
-                            "reply": {
-                                "id": "add_new_address",
-                                "title": "➕ Add New Address"
-                            }
+                            "title": "Saved Addresses",
+                            "rows": rows
                         }
                     ]
                 }
@@ -709,13 +716,21 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 "timestamp": timestamp.isoformat(),
             })
 
-            # After cart selection, ask the user to Modify / Cancel / Proceed
-            try:
-                from controllers.components.products_flow import send_cart_next_actions  # type: ignore
-                await send_cart_next_actions(db, wa_id=wa_id)
-            except Exception:
-                # As a fallback, keep legacy behavior of sending address flow directly
-                await _send_address_flow_directly(wa_id, db, customer_id=customer.id)
+            # If this submission MERGED into an open order, go straight to address selection.
+            # Otherwise (new order), show Modify/Cancel/Proceed.
+            merged_flag = getattr(order_obj, "_merged", False)
+            if merged_flag:
+                try:
+                    await _send_address_flow_directly(wa_id, db, customer_id=customer.id)
+                except Exception:
+                    pass
+            else:
+                try:
+                    from controllers.components.products_flow import send_cart_next_actions  # type: ignore
+                    await send_cart_next_actions(db, wa_id=wa_id)
+                except Exception:
+                    # Fallback: send address selection
+                    await _send_address_flow_directly(wa_id, db, customer_id=customer.id)
         elif message_type == "location":
             location = message["location"]
             location_name = location.get("name", "")
@@ -922,6 +937,26 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 flow_id = flow_response.get("flow_id", "")
                 print(f"[ws_webhook] DEBUG - Flow ID: {flow_id}")
                 print(f"[ws_webhook] DEBUG - Flow payload: {flow_response.get('flow_action_payload', {})}")
+            elif i_type == "nfm_reply":
+                # Handle native flow message (new format)
+                nfm_reply = interactive.get("nfm_reply", {})
+                print(f"[ws_webhook] DEBUG - NFM Reply: {nfm_reply}")
+                # Parse the response_json to extract flow data
+                try:
+                    import json
+                    response_data = json.loads(nfm_reply.get("response_json", "{}"))
+                    print(f"[ws_webhook] DEBUG - Parsed NFM data: {response_data}")
+                    # Convert nfm_reply to flow_response format for compatibility
+                    interactive["type"] = "flow"
+                    interactive["flow_response"] = {
+                        "flow_id": "1314521433687006",  # Default address flow ID
+                        "flow_cta": "Submit",
+                        "flow_action_payload": response_data
+                    }
+                    i_type = "flow"  # Update type for processing
+                except Exception as e:
+                    print(f"[ws_webhook] ERROR - Failed to parse NFM response: {e}")
+                    pass
             # Delegate interactive handling to component
             result_interactive = await run_interactive_type(
                 db,
