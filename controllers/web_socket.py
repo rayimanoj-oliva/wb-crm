@@ -448,10 +448,19 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             os.makedirs(log_dir, exist_ok=True)
             ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             log_path = os.path.join(log_dir, f"webhook_{ts}.json")
+
+            # Prepare content first to avoid creating empty files
+            try:
+                serialized = json.dumps(body, ensure_ascii=False, indent=2, default=str)
+            except Exception as e:
+                # Fallback to raw request body text
+                raw = await request.body()
+                serialized = raw.decode("utf-8", errors="replace")
+
             with open(log_path, "w", encoding="utf-8") as lf:
-                lf.write(json.dumps(body, ensure_ascii=False, indent=2))
-        except Exception:
-            pass
+                lf.write(serialized)
+        except Exception as e:
+            print(f"[ws_webhook] WARN - webhook logging failed: {e}")
         # Handle different payload structures
         if "entry" in body:
             # Standard WhatsApp Business API webhook structure
