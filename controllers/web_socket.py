@@ -629,11 +629,21 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     response_json = nfm.get("response_json", "{}")
                     try:
                         response_data = json.loads(response_json)
-                        # Create a meaningful body text from the form data
+                        # Create a meaningful body text from the form data using mapped field names
                         form_fields = []
                         for key, value in response_data.items():
                             if value and str(value).strip() and not ("{{" in str(value) and "}}" in str(value)):
-                                form_fields.append(f"{key}: {value}")
+                                # Use user-friendly field names for display
+                                display_names = {
+                                    "full_name": "Name",
+                                    "phone_number": "Phone", 
+                                    "house_street": "Address",
+                                    "pincode": "Pincode",
+                                    "city": "City",
+                                    "state": "State"
+                                }
+                                display_key = display_names.get(key, key)
+                                form_fields.append(f"{display_key}: {value}")
                         body_text = " | ".join(form_fields) if form_fields else "Form submitted"
                         print(f"[ws_webhook] DEBUG - NFM body_text: {body_text}")
                     except Exception as e:
@@ -1143,11 +1153,13 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     response_data = json.loads(response_json)
                     print(f"[ws_webhook] DEBUG - Parsed NFM data: {response_data}")
                     print(f"[ws_webhook] DEBUG - Parsed data keys: {list(response_data.keys()) if isinstance(response_data, dict) else 'Not a dict'}")
-                    
+
                     # Check if we got template variables instead of actual values
                     has_template_vars = any("{{" in str(v) and "}}" in str(v) for v in response_data.values())
                     if has_template_vars:
                         print(f"[ws_webhook] WARNING - Received template variables instead of actual values: {response_data}")
+                        print(f"[ws_webhook] ERROR - Flow configuration issue: Response schema contains placeholders instead of user input")
+                        print(f"[ws_webhook] ERROR - Please fix the WhatsApp Flow Response Schema in Meta Business Manager")
                         # Send error message to user and resend address form
                         await send_message_to_waid(wa_id, "❌ The address form wasn't filled out properly. Please try again.", db)
                         try:
@@ -1155,23 +1167,42 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         except Exception:
                             pass
                         return {"status": "form_not_filled", "message_id": message_id}
-                    
+
+                    # Map flow field names to expected field names
+                    field_mapping = {
+                        "name": "full_name",
+                        "phone": "phone_number",
+                        "address_line": "house_street",
+                        "pincode": "pincode",
+                        "city": "city",
+                        "state": "state",
+                    }
+
+                    # Transform the response data to match expected field names
+                    mapped_data = {}
+                    for flow_field, expected_field in field_mapping.items():
+                        if flow_field in response_data:
+                            mapped_data[expected_field] = response_data[flow_field]
+
+                    print(f"[ws_webhook] DEBUG - Mapped flow data: {mapped_data}")
+                    response_data = mapped_data
+
                     # Validate that we have actual data
                     if not response_data or (isinstance(response_data, dict) and not any(response_data.values())):
                         print(f"[ws_webhook] WARNING - Empty or invalid response data: {response_data}")
                         await send_message_to_waid(wa_id, "❌ No data received from the form. Please try again.", db)
                         return {"status": "empty_form_data", "message_id": message_id}
-                    
+
                     # Convert nfm_reply to flow_response format for compatibility
                     interactive["type"] = "flow"
                     interactive["flow_response"] = {
                         "flow_id": "1314521433687006",  # Default address flow ID
                         "flow_cta": "Submit",
-                        "flow_action_payload": response_data
+                        "flow_action_payload": response_data,
                     }
                     i_type = "flow"  # Update type for processing
                     print(f"[ws_webhook] DEBUG - Converted to flow format, processing as flow")
-                    
+
                 except json.JSONDecodeError as e:
                     print(f"[ws_webhook] ERROR - Invalid JSON in NFM response: {e}")
                     print(f"[ws_webhook] ERROR - Raw response_json: {response_json}")
