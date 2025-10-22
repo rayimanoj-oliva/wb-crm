@@ -58,29 +58,113 @@ async def run_interactive_type(
             print(f"[flow_handler] DEBUG - Processing address flow: {flow_id}")
             print(f"[flow_handler] DEBUG - Flow payload: {flow_action_payload}")
             try:
-                # Extract address data
+                # Extract address data using comprehensive field mapping
                 address_data: Dict[str, Any] = {}
                 if flow_action_payload:
+                    # Enhanced field mappings to handle various flow configurations
                     field_mappings = {
-                        "full_name": ["full_name", "name", "customer_name"],
-                        "phone_number": ["phone_number", "phone", "mobile"],
-                        "house_street": ["house_street", "address_line_1", "street", "address_line"],
-                        "city": ["city", "town"],
-                        "state": ["state", "province"],
-                        "pincode": ["pincode", "postal_code", "zip_code"],
-                       
+                        "full_name": [
+                            "full_name", "name", "customer_name", "fullname", 
+                            "customer_full_name", "user_name", "contact_name"
+                        ],
+                        "phone_number": [
+                            "phone_number", "phone", "mobile", "mobile_number",
+                            "contact_number", "phone_no", "telephone", "contact_phone"
+                        ],
+                        "house_street": [
+                            "house_street", "address_line_1", "street", "address_line",
+                            "house_number", "street_address", "address1", "line1"
+                        ],
+                        "locality": [
+                            "locality", "area", "neighborhood", "sector", "block"
+                        ],
+                        "city": [
+                            "city", "town", "municipality", "district"
+                        ],
+                        "state": [
+                            "state", "province", "region"
+                        ],
+                        "pincode": [
+                            "pincode", "postal_code", "zip_code", "zipcode", "postcode"
+                        ],
+                        "landmark": [
+                            "landmark", "nearby", "reference_point", "landmark_nearby"
+                        ]
                     }
+                    
+                    # Extract data using field mappings
                     for field_name, possible_keys in field_mappings.items():
                         for key in possible_keys:
-                            if key in flow_action_payload:
-                                address_data[field_name] = flow_action_payload[key]
+                            if key in flow_action_payload and flow_action_payload[key]:
+                                address_data[field_name] = str(flow_action_payload[key]).strip()
                                 break
+                    
+                    # Also check for nested data structures
+                    if not address_data.get("full_name"):
+                        # Check for nested contact info
+                        if "contact" in flow_action_payload:
+                            contact = flow_action_payload["contact"]
+                            if isinstance(contact, dict):
+                                for key in ["name", "full_name", "customer_name"]:
+                                    if key in contact and contact[key]:
+                                        address_data["full_name"] = str(contact[key]).strip()
+                                        break
+                    
+                    # Check for address object
+                    if "address" in flow_action_payload:
+                        address_obj = flow_action_payload["address"]
+                        if isinstance(address_obj, dict):
+                            for field_name, possible_keys in field_mappings.items():
+                                if not address_data.get(field_name):
+                                    for key in possible_keys:
+                                        if key in address_obj and address_obj[key]:
+                                            address_data[field_name] = str(address_obj[key]).strip()
+                                            break
 
                 # Validate & save - check for required fields from your flow
                 print(f"[flow_handler] DEBUG - Extracted address data: {address_data}")
+                print(f"[flow_handler] DEBUG - Raw flow payload keys: {list(flow_action_payload.keys()) if flow_action_payload else 'None'}")
+                
                 required_fields = ["full_name", "phone_number", "pincode", "house_street"]
                 missing_fields = [field for field in required_fields if not address_data.get(field)]
                 print(f"[flow_handler] DEBUG - Missing required fields: {missing_fields}")
+                
+                # If we have some data but missing required fields, try alternative extraction
+                if missing_fields and any(address_data.values()):
+                    print(f"[flow_handler] DEBUG - Attempting alternative field extraction...")
+                    # Try to extract from any remaining keys in the payload
+                    for key, value in flow_action_payload.items():
+                        if isinstance(value, str) and value.strip():
+                            # Try to match by content patterns
+                            value_lower = value.lower().strip()
+                            if any(name_word in value_lower for name_word in ["name", "full"]):
+                                if not address_data.get("full_name"):
+                                    address_data["full_name"] = value.strip()
+                                    print(f"[flow_handler] DEBUG - Found name in key '{key}': {value}")
+                            elif any(phone_word in value_lower for phone_word in ["phone", "mobile", "contact"]):
+                                if not address_data.get("phone_number"):
+                                    address_data["phone_number"] = value.strip()
+                                    print(f"[flow_handler] DEBUG - Found phone in key '{key}': {value}")
+                            elif any(addr_word in value_lower for addr_word in ["address", "street", "house"]):
+                                if not address_data.get("house_street"):
+                                    address_data["house_street"] = value.strip()
+                                    print(f"[flow_handler] DEBUG - Found address in key '{key}': {value}")
+                            elif value.isdigit() and len(value) == 6:
+                                if not address_data.get("pincode"):
+                                    address_data["pincode"] = value.strip()
+                                    print(f"[flow_handler] DEBUG - Found pincode in key '{key}': {value}")
+                    
+                    # Re-check missing fields after alternative extraction
+                    missing_fields = [field for field in required_fields if not address_data.get(field)]
+                    print(f"[flow_handler] DEBUG - Missing fields after alternative extraction: {missing_fields}")
+                
+                # Final validation with fallbacks
+                if not address_data.get("phone_number") and customer and hasattr(customer, 'wa_id'):
+                    # Use customer's WA ID as phone fallback
+                    wa_digits = ''.join(filter(str.isdigit, str(customer.wa_id)))
+                    if len(wa_digits) >= 10:
+                        address_data["phone_number"] = wa_digits[-10:]
+                        print(f"[flow_handler] DEBUG - Using WA ID as phone fallback: {address_data['phone_number']}")
                 
                 if address_data.get("full_name") and address_data.get("phone_number") and address_data.get("pincode") and address_data.get("house_street"):
                     from schemas.address_schema import CustomerAddressCreate
@@ -195,11 +279,22 @@ async def run_interactive_type(
 
                     return {"status": "address_saved", "message_id": message_id}
                 else:
-                    await send_message_to_waid(
-                        wa_id,
-                        "❌ Please fill in all required fields (Name, Phone, Pincode, Address Line).",
-                        db,
-                    )
+                    print(f"[flow_handler] DEBUG - Missing required fields, cannot save address")
+                    print(f"[flow_handler] DEBUG - Available data: {address_data}")
+                    print(f"[flow_handler] DEBUG - Flow payload structure: {json.dumps(flow_action_payload, indent=2) if flow_action_payload else 'None'}")
+                    
+                    # Send more specific error message
+                    missing_list = [field.replace('_', ' ').title() for field in missing_fields]
+                    error_msg = f"❌ Please fill in all required fields. Missing: {', '.join(missing_list)}"
+                    await send_message_to_waid(wa_id, error_msg, db)
+                    
+                    # Try to resend the address form
+                    try:
+                        from controllers.web_socket import _send_address_flow_directly
+                        await _send_address_flow_directly(wa_id, db, customer_id=customer.id)
+                    except Exception as e:
+                        print(f"[flow_handler] DEBUG - Failed to resend address form: {e}")
+                    
                     return {"status": "flow_incomplete", "message_id": message_id}
             except Exception as e:
                 print(f"[flow_handler] ERROR - Exception in address processing: {str(e)}")
