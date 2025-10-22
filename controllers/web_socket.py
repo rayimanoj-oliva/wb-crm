@@ -11,6 +11,7 @@ import asyncio
 import os
 import json
 import requests
+import uuid
 
 from sqlalchemy.orm import Session
 from starlette.responses import PlainTextResponse
@@ -46,6 +47,15 @@ address_nudge_sent = {}
 # In-memory appointment scheduling state per user
 # Structure: { wa_id: { "date": "YYYY-MM-DD" } }
 appointment_state = {}
+
+# Flow token storage
+flow_tokens = {}
+
+def generate_flow_token(wa_id: str) -> str:
+    """Generate a unique flow token for a user"""
+    flow_token = str(uuid.uuid4())
+    flow_tokens[wa_id] = flow_token
+    return flow_token
 
 
 # WebSocket endpoint
@@ -217,7 +227,8 @@ async def _send_address_form_directly(wa_id: str, db: Session, customer_id=None)
                     "parameters": {
                         "flow_message_version": "3",
                         "flow_id": "1314521433687006",
-                        "flow_cta": "Provide Address"
+                        "flow_cta": "Provide Address",
+                        "flow_token": generate_flow_token(wa_id)
                     }
                 }
             }

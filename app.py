@@ -25,6 +25,7 @@ from controllers.payment_controller import router as payment_router
 from controllers.address_controller import router as address_router
 from controllers.catalog import router as catalog_router
 from controllers.catalog import seed_categories, seed_subcategories
+from flow_integration import router as flow_router
 from database.db import SessionLocal, engine, get_db
 from models import models
 from schemas.token_schema import Token
@@ -82,6 +83,7 @@ app.include_router(media_controller.router, prefix="/media")
 app.include_router(payment_router, prefix="/payments")
 # app.include_router(address_router, prefix="/address")
 app.include_router(catalog_router)
+app.include_router(flow_router, prefix="/flow")
 
 
 
