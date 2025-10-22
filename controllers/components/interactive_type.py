@@ -125,6 +125,26 @@ async def run_interactive_type(
                 # Validate & save - check for required fields from your flow
                 print(f"[flow_handler] DEBUG - Extracted address data: {address_data}")
                 print(f"[flow_handler] DEBUG - Raw flow payload keys: {list(flow_action_payload.keys()) if flow_action_payload else 'None'}")
+                print(f"[flow_handler] DEBUG - Raw flow payload values: {flow_action_payload}")
+                print(f"[flow_handler] DEBUG - Address data keys: {list(address_data.keys())}")
+                print(f"[flow_handler] DEBUG - Address data values: {list(address_data.values())}")
+                
+                # Enhanced debugging for flow data extraction
+                try:
+                    from controllers.web_socket import debug_flow_data_extraction
+                    debug_flow_data_extraction(flow_action_payload, address_data)
+                except Exception as e:
+                    print(f"[flow_handler] DEBUG - Could not run flow debug: {e}")
+                
+                # Check if we have any actual data
+                has_data = any(value and str(value).strip() for value in address_data.values())
+                print(f"[flow_handler] DEBUG - Has any data: {has_data}")
+                
+                if not has_data:
+                    print(f"[flow_handler] WARNING - No data extracted from flow response!")
+                    print(f"[flow_handler] WARNING - This might indicate a flow configuration issue or data extraction problem")
+                    await send_message_to_waid(wa_id, "❌ No data received from the form. Please check your flow configuration.", db)
+                    return {"status": "no_data_extracted", "flow_payload": flow_action_payload}
                 
                 required_fields = ["full_name", "phone_number", "pincode", "house_street"]
                 missing_fields = [field for field in required_fields if not address_data.get(field)]
@@ -217,22 +237,46 @@ async def run_interactive_type(
                     
                     print(f"[flow_handler] DEBUG - Creating address with: full_name={address_data.get('full_name', '')}, house_street={house_street}, locality={city_val}, city={city_val}, state={state_val}, pincode={pincode_final}, phone={phone_final}")
                     
-                    address_create = CustomerAddressCreate(
-                        customer_id=customer.id,
-                        full_name=address_data.get("full_name", ""),
-                        house_street=house_street,
-                        locality=city_val,  # Use city as locality fallback
-                        city=city_val,
-                        state=state_val,
-                        pincode=pincode_final,
-                        landmark=address_data.get("landmark", ""),
-                        phone=phone_final,
-                        address_type="home",
-                        is_default=True,
-                    )
-                    print(f"[flow_handler] DEBUG - AddressCreate object created successfully")
-                    saved_address = create_customer_address(db, address_create)
-                    print(f"[flow_handler] DEBUG - Address saved successfully with ID: {saved_address.id}")
+                    try:
+                        address_create = CustomerAddressCreate(
+                            customer_id=customer.id,
+                            full_name=address_data.get("full_name", ""),
+                            house_street=house_street,
+                            locality=city_val,  # Use city as locality fallback
+                            city=city_val,
+                            state=state_val,
+                            pincode=pincode_final,
+                            landmark=address_data.get("landmark", ""),
+                            phone=phone_final,
+                            address_type="home",
+                            is_default=True,
+                        )
+                        print(f"[flow_handler] DEBUG - AddressCreate object created successfully")
+                        print(f"[flow_handler] DEBUG - AddressCreate data: {address_create.dict()}")
+                        
+                        # Validate required fields before saving
+                        required_fields = ["customer_id", "full_name", "house_street", "city", "pincode", "phone"]
+                        missing_fields = []
+                        for field in required_fields:
+                            value = getattr(address_create, field, None)
+                            if not value or (isinstance(value, str) and not value.strip()):
+                                missing_fields.append(field)
+                        
+                        if missing_fields:
+                            print(f"[flow_handler] ERROR - Missing required fields: {missing_fields}")
+                            await send_message_to_waid(wa_id, f"❌ Missing required information: {', '.join(missing_fields)}. Please fill the form completely.", db)
+                            return {"status": "missing_fields", "missing_fields": missing_fields}
+                        
+                        saved_address = create_customer_address(db, address_create)
+                        print(f"[flow_handler] DEBUG - Address saved successfully with ID: {saved_address.id}")
+                        print(f"[flow_handler] DEBUG - Saved address details: {saved_address.__dict__}")
+                        
+                    except Exception as e:
+                        print(f"[flow_handler] ERROR - Failed to create address: {e}")
+                        print(f"[flow_handler] ERROR - Exception type: {type(e).__name__}")
+                        print(f"[flow_handler] ERROR - Address data: {address_data}")
+                        await send_message_to_waid(wa_id, f"❌ Error saving address: {str(e)}. Please try again.", db)
+                        return {"status": "address_creation_failed", "error": str(e)}
 
                     await send_message_to_waid(wa_id, "✅ Address saved successfully!", db)
                     await send_message_to_waid(

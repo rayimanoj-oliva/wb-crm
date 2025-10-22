@@ -90,7 +90,52 @@ async def send_cart_next_actions(db: Session, *, wa_id: str) -> Dict[str, Any]:
             },
         }
 
-        requests.post(get_messages_url(phone_id), headers=headers, json=payload)
+        response = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
+        
+        # Save to database and broadcast to WebSocket if message was sent successfully
+        if response.status_code == 200:
+            try:
+                # Get message ID from response
+                response_data = response.json()
+                message_id = response_data.get("messages", [{}])[0].get("id", f"outbound_{datetime.now().timestamp()}")
+                
+                # Get or create customer
+                from services.customer_service import get_or_create_customer
+                from schemas.customer_schema import CustomerCreate
+                customer = get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
+                
+                # Save outbound message to database
+                from services.message_service import create_message
+                from schemas.message_schema import MessageCreate
+                
+                outbound_message = MessageCreate(
+                    message_id=message_id,
+                    from_wa_id=os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                    to_wa_id=wa_id,
+                    type="interactive",
+                    body="Would you like to modify your cart, cancel, or proceed?",
+                    timestamp=datetime.now(),
+                    customer_id=customer.id,
+                )
+                create_message(db, outbound_message)
+                print(f"[products_flow] DEBUG - Outbound message saved to database: {message_id}")
+                
+                # Broadcast to WebSocket
+                from utils.ws_manager import manager
+                await manager.broadcast({
+                    "from": os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                    "to": wa_id,
+                    "type": "interactive",
+                    "message": "Would you like to modify your cart, cancel, or proceed?",
+                    "timestamp": datetime.now().isoformat(),
+                    "meta": {
+                        "kind": "buttons",
+                        "options": ["Modify", "Cancel", "Proceed"]
+                    }
+                })
+            except Exception as e:
+                print(f"[products_flow] WARNING - Database save or WebSocket broadcast failed: {e}")
+        
         return {"status": "sent"}
     except Exception as e:
         return {"status": "failed", "error": str(e)[:200]}

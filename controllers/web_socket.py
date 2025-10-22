@@ -4,7 +4,7 @@ from http.client import HTTPException
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, APIRouter
 from fastapi.params import Depends
 from fastapi.responses import JSONResponse
-from typing import List
+from typing import List, Dict, Any
 import re
 import mimetypes
 import asyncio
@@ -22,6 +22,7 @@ from services import customer_service, message_service, order_service
 from services import payment_service
 from schemas.customer_schema import CustomerCreate
 from schemas.message_schema import MessageCreate
+from models.models import Message
 from utils.whatsapp import send_message_to_waid
 from utils.name_validator import validate_human_name
 from utils.phone_validator import validate_indian_phone
@@ -29,6 +30,96 @@ from services.whatsapp_service import get_latest_token
 from config.constants import get_messages_url, get_media_url
 from utils.razorpay_utils import create_razorpay_payment_link
 from utils.ws_manager import manager
+
+def debug_webhook_payload(body: Dict[str, Any], raw_body: str = None) -> None:
+    """Enhanced debugging utility for webhook payloads"""
+    try:
+        print(f"[webhook_debug] Payload keys: {list(body.keys())}")
+        
+        if "entry" in body:
+            entry = body["entry"][0] if body["entry"] else {}
+            print(f"[webhook_debug] Entry ID: {entry.get('id', 'N/A')}")
+            
+            if "changes" in entry:
+                change = entry["changes"][0] if entry["changes"] else {}
+                print(f"[webhook_debug] Change field: {change.get('field', 'N/A')}")
+                
+                value = change.get("value", {})
+                print(f"[webhook_debug] Value keys: {list(value.keys())}")
+                
+                if "messages" in value:
+                    messages = value["messages"]
+                    print(f"[webhook_debug] Message count: {len(messages)}")
+                    
+                    for i, msg in enumerate(messages):
+                        print(f"[webhook_debug] Message {i}: type={msg.get('type', 'N/A')}, id={msg.get('id', 'N/A')}")
+                        
+                        if msg.get("type") == "interactive":
+                            interactive = msg.get("interactive", {})
+                            print(f"[webhook_debug] Interactive type: {interactive.get('type', 'N/A')}")
+                            
+                            if interactive.get("type") == "nfm_reply":
+                                nfm = interactive.get("nfm_reply", {})
+                                response_json = nfm.get("response_json", "")
+                                print(f"[webhook_debug] NFM response_json length: {len(response_json)}")
+                                print(f"[webhook_debug] NFM response_json preview: {response_json[:200]}...")
+                                
+                                # Check for truncation indicators
+                                if response_json.endswith('...') or len(response_json) < 50:
+                                    print(f"[webhook_debug] WARNING - Possible truncation detected!")
+                                    
+                                # Validate JSON structure
+                                try:
+                                    parsed = json.loads(response_json)
+                                    print(f"[webhook_debug] NFM parsed keys: {list(parsed.keys()) if isinstance(parsed, dict) else 'Not a dict'}")
+                                    print(f"[webhook_debug] NFM parsed values: {parsed}")
+                                    
+                                    # Check for template variables
+                                    has_template_vars = any("{{" in str(v) and "}}" in str(v) for v in parsed.values())
+                                    if has_template_vars:
+                                        print(f"[webhook_debug] WARNING - Template variables detected in parsed data!")
+                                    
+                                    # Check for empty values
+                                    empty_values = [k for k, v in parsed.items() if not v or (isinstance(v, str) and not v.strip())]
+                                    if empty_values:
+                                        print(f"[webhook_debug] WARNING - Empty values found: {empty_values}")
+                                        
+                                except json.JSONDecodeError as e:
+                                    print(f"[webhook_debug] ERROR - Invalid JSON in NFM response: {e}")
+        
+        if raw_body:
+            print(f"[webhook_debug] Raw body length: {len(raw_body)}")
+            print(f"[webhook_debug] Raw body preview: {raw_body[:300]}...")
+            
+    except Exception as e:
+        print(f"[webhook_debug] ERROR - Debug function failed: {e}")
+
+def debug_flow_data_extraction(flow_payload: Dict[str, Any], extracted_data: Dict[str, Any]) -> None:
+    """Debug flow data extraction process"""
+    try:
+        print(f"[flow_debug] Flow payload keys: {list(flow_payload.keys())}")
+        print(f"[flow_debug] Flow payload values: {flow_payload}")
+        print(f"[flow_debug] Extracted data keys: {list(extracted_data.keys())}")
+        print(f"[flow_debug] Extracted data values: {list(extracted_data.values())}")
+        
+        # Check for common field patterns
+        common_fields = ["name", "phone", "address", "city", "state", "pincode", "zipcode"]
+        found_fields = []
+        for field in common_fields:
+            if any(field.lower() in key.lower() for key in flow_payload.keys()):
+                found_fields.append(field)
+        
+        print(f"[flow_debug] Common fields found in payload: {found_fields}")
+        
+        # Check for nested data structures
+        for key, value in flow_payload.items():
+            if isinstance(value, dict):
+                print(f"[flow_debug] Nested object '{key}': {value}")
+            elif isinstance(value, list):
+                print(f"[flow_debug] Array '{key}': {value}")
+                
+    except Exception as e:
+        print(f"[flow_debug] ERROR - Debug function failed: {e}")
 from utils.shopify_admin import update_variant_price
 from utils.address_validator import analyze_address, format_errors_for_user
 from controllers.components.welcome_flow import run_welcome_flow, trigger_buy_products_from_welcome
@@ -178,6 +269,7 @@ async def _send_smart_address_selection(wa_id: str, db: Session, saved_addresses
                     customer_id=customer_id
                 )
                 message_service.create_message(db, message)
+                db.commit()  # Explicitly commit the transaction
                 
                 await manager.broadcast({
                     "from": os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
@@ -248,6 +340,7 @@ async def _send_address_form_directly(wa_id: str, db: Session, customer_id=None)
                     customer_id=customer_id
                 )
                 message_service.create_message(db, flow_message)
+                db.commit()  # Explicitly commit the transaction
                 
                 await manager.broadcast({
                     "from": os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
@@ -452,7 +545,18 @@ def _upload_header_image(access_token: str, image_path_or_url: str, phone_id: st
 @router.post("/webhook")
 async def receive_message(request: Request, db: Session = Depends(get_db)):
     try:
-        body = await request.json()
+        # CRITICAL: Capture raw request body BEFORE JSON parsing to avoid truncation
+        raw_body = await request.body()
+        raw_body_str = raw_body.decode("utf-8", errors="replace")
+        
+        # Parse JSON from raw body
+        try:
+            body = json.loads(raw_body_str)
+        except json.JSONDecodeError as e:
+            print(f"[ws_webhook] ERROR - Invalid JSON in webhook payload: {e}")
+            print(f"[ws_webhook] Raw body: {raw_body_str[:500]}...")
+            return {"status": "error", "message": "Invalid JSON payload"}
+        
         # Persist raw webhook payload to file for debugging/auditing
         try:
             log_dir = "webhook_logs"
@@ -460,18 +564,25 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             log_path = os.path.join(log_dir, f"webhook_{ts}.json")
 
-            # Prepare content first to avoid creating empty files
-            try:
-                serialized = json.dumps(body, ensure_ascii=False, indent=2, default=str)
-            except Exception as e:
-                # Fallback to raw request body text
-                raw = await request.body()
-                serialized = raw.decode("utf-8", errors="replace")
-
+            # Write the complete raw body to ensure no truncation
             with open(log_path, "w", encoding="utf-8") as lf:
-                lf.write(serialized)
+                lf.write(raw_body_str)
+                
+            # Also create a formatted version for easier debugging
+            formatted_path = os.path.join(log_dir, f"webhook_{ts}_formatted.json")
+            try:
+                formatted_json = json.dumps(body, ensure_ascii=False, indent=2, default=str)
+                with open(formatted_path, "w", encoding="utf-8") as lf:
+                    lf.write(formatted_json)
+            except Exception as e:
+                print(f"[ws_webhook] WARN - Could not create formatted log: {e}")
+
         except Exception as e:
             print(f"[ws_webhook] WARN - webhook logging failed: {e}")
+        
+        # Enhanced debugging for webhook payloads
+        debug_webhook_payload(body, raw_body_str)
+        
         # Handle different payload structures
         if "entry" in body:
             # Standard WhatsApp Business API webhook structure
@@ -512,6 +623,34 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     lr = it.get("list_reply", {})
                     # Include both title and id to help downstream parsers (e.g., date_2025-10-01)
                     body_text = " ".join(filter(None, [lr.get("title"), lr.get("id")]))
+                elif it.get("type") == "nfm_reply":
+                    # Handle Native Flow Message reply - extract meaningful data
+                    nfm = it.get("nfm_reply", {})
+                    response_json = nfm.get("response_json", "{}")
+                    try:
+                        response_data = json.loads(response_json)
+                        # Create a meaningful body text from the form data
+                        form_fields = []
+                        for key, value in response_data.items():
+                            if value and str(value).strip() and not ("{{" in str(value) and "}}" in str(value)):
+                                form_fields.append(f"{key}: {value}")
+                        body_text = " | ".join(form_fields) if form_fields else "Form submitted"
+                        print(f"[ws_webhook] DEBUG - NFM body_text: {body_text}")
+                    except Exception as e:
+                        body_text = "Form submitted"
+                        print(f"[ws_webhook] DEBUG - NFM body_text fallback: {e}")
+                elif it.get("type") == "flow":
+                    # Handle flow response
+                    flow_response = it.get("flow_response", {})
+                    flow_payload = flow_response.get("flow_action_payload", {})
+                    if flow_payload:
+                        form_fields = []
+                        for key, value in flow_payload.items():
+                            if value and str(value).strip():
+                                form_fields.append(f"{key}: {value}")
+                        body_text = " | ".join(form_fields) if form_fields else "Flow submitted"
+                    else:
+                        body_text = "Flow submitted"
             elif message_type == "button":
                 btn = message.get("button", {})
                 body_text = btn.get("text") or btn.get("payload") or ""
@@ -666,25 +805,33 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             except Exception:
                 pass
 
-        # 4️⃣ Regular text messages (non-address) - only if not already handled above
-        if message_type == "text" and not handled_text:
-            inbound_text_msg = MessageCreate(
-                message_id=message_id,
-                from_wa_id=from_wa_id,
-                to_wa_id=to_wa_id,
-                type="text",
-                body=body_text,
-                timestamp=timestamp,
-                customer_id=customer.id
-            )
-            message_service.create_message(db, inbound_text_msg)
-            await manager.broadcast({
-                "from": from_wa_id,
-                "to": to_wa_id,
-                "type": "text",
-                "message": body_text,
-                "timestamp": timestamp.isoformat()
-            })
+        # 4️⃣ Regular text messages - ALWAYS save to database regardless of handling
+        if message_type == "text":
+            # Check if already saved to avoid duplicates
+            existing_msg = db.query(Message).filter(Message.message_id == message_id).first()
+            if not existing_msg:
+                inbound_text_msg = MessageCreate(
+                    message_id=message_id,
+                    from_wa_id=from_wa_id,
+                    to_wa_id=to_wa_id,
+                    type="text",
+                    body=body_text,
+                    timestamp=timestamp,
+                    customer_id=customer.id
+                )
+                message_service.create_message(db, inbound_text_msg)
+                db.commit()  # Explicitly commit the transaction
+                print(f"[ws_webhook] DEBUG - Text message saved to database: {message_id}")
+            
+            # Always broadcast to WebSocket (even if already saved)
+            if not handled_text:  # Only broadcast if not already handled by treatment flow
+                await manager.broadcast({
+                    "from": from_wa_id,
+                    "to": to_wa_id,
+                    "type": "text",
+                    "message": body_text,
+                    "timestamp": timestamp.isoformat()
+                })
 
             # Catalog link is sent only on explicit button clicks; no text keyword trigger
 
@@ -784,6 +931,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         longitude=longitude,
                     )
                     message_service.create_message(db, message_data)
+                    db.commit()  # Explicitly commit the transaction
                     
                     await manager.broadcast({
                         "from": from_wa_id,
@@ -814,6 +962,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 longitude=longitude,
             )
             message_service.create_message(db, message_data)
+            db.commit()  # Explicitly commit the transaction
 
             broadcast_payload = {
                 "from": from_wa_id,
@@ -856,6 +1005,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 mime_type=mime_type,
             )
             new_msg = message_service.create_message(db, message_data)
+            db.commit()  # Explicitly commit the transaction
 
             # Broadcast to WebSocket clients
             await manager.broadcast({
@@ -876,6 +1026,34 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             btn_text = btn.get("text", "")
             btn_id = btn.get("payload") or btn.get("id") or ""
 
+            # Check if this is actually a flow submission disguised as a button
+            # Look for flow-related data in the message
+            if "flow" in str(message).lower() or "nfm" in str(message).lower():
+                print(f"[ws_webhook] DEBUG - Detected flow submission in button message: {message}")
+                # Process as flow submission instead of button
+                try:
+                    # Try to extract flow data from the message
+                    flow_data = message.get("flow", {}) or message.get("nfm_reply", {})
+                    if flow_data:
+                        print(f"[ws_webhook] DEBUG - Processing flow data from button message: {flow_data}")
+                        # Process the flow submission
+                        result = await run_interactive_type(
+                            db,
+                            message=message,
+                            interactive={"type": "nfm_reply", "nfm_reply": flow_data},
+                            i_type="nfm_reply",
+                            timestamp=timestamp,
+                            message_id=message_id,
+                            from_wa_id=from_wa_id,
+                            to_wa_id=to_wa_id,
+                            wa_id=wa_id,
+                            customer=customer,
+                        )
+                        if result.get("status") != "skipped":
+                            return result
+                except Exception as e:
+                    print(f"[ws_webhook] DEBUG - Failed to process flow from button message: {e}")
+
             reply_text = btn_text or btn_id or "[Button Reply]"
             msg_button = MessageCreate(
                 message_id=message_id,
@@ -887,6 +1065,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 customer_id=customer.id,
             )
             message_service.create_message(db, msg_button)
+            db.commit()  # Explicitly commit the transaction
             
             # Optionally broadcast button click for frontend display, but avoid noise for main flows
             noisy_btn_id = (btn_id or "").lower()
@@ -953,11 +1132,17 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 # Handle native flow message (new format)
                 nfm_reply = interactive.get("nfm_reply", {})
                 print(f"[ws_webhook] DEBUG - NFM Reply: {nfm_reply}")
+                
+                # Enhanced logging for debugging
+                response_json = nfm_reply.get("response_json", "{}")
+                print(f"[ws_webhook] DEBUG - Raw response_json: {response_json}")
+                print(f"[ws_webhook] DEBUG - Response JSON length: {len(response_json)}")
+                
                 # Parse the response_json to extract flow data
                 try:
-                    import json
-                    response_data = json.loads(nfm_reply.get("response_json", "{}"))
+                    response_data = json.loads(response_json)
                     print(f"[ws_webhook] DEBUG - Parsed NFM data: {response_data}")
+                    print(f"[ws_webhook] DEBUG - Parsed data keys: {list(response_data.keys()) if isinstance(response_data, dict) else 'Not a dict'}")
                     
                     # Check if we got template variables instead of actual values
                     has_template_vars = any("{{" in str(v) and "}}" in str(v) for v in response_data.values())
@@ -971,6 +1156,12 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                             pass
                         return {"status": "form_not_filled", "message_id": message_id}
                     
+                    # Validate that we have actual data
+                    if not response_data or (isinstance(response_data, dict) and not any(response_data.values())):
+                        print(f"[ws_webhook] WARNING - Empty or invalid response data: {response_data}")
+                        await send_message_to_waid(wa_id, "❌ No data received from the form. Please try again.", db)
+                        return {"status": "empty_form_data", "message_id": message_id}
+                    
                     # Convert nfm_reply to flow_response format for compatibility
                     interactive["type"] = "flow"
                     interactive["flow_response"] = {
@@ -979,9 +1170,18 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         "flow_action_payload": response_data
                     }
                     i_type = "flow"  # Update type for processing
+                    print(f"[ws_webhook] DEBUG - Converted to flow format, processing as flow")
+                    
+                except json.JSONDecodeError as e:
+                    print(f"[ws_webhook] ERROR - Invalid JSON in NFM response: {e}")
+                    print(f"[ws_webhook] ERROR - Raw response_json: {response_json}")
+                    await send_message_to_waid(wa_id, "❌ There was an error processing your form. Please try again.", db)
+                    return {"status": "json_parse_error", "message_id": message_id}
                 except Exception as e:
                     print(f"[ws_webhook] ERROR - Failed to parse NFM response: {e}")
-                    pass
+                    print(f"[ws_webhook] ERROR - Exception type: {type(e).__name__}")
+                    await send_message_to_waid(wa_id, "❌ There was an error processing your form. Please try again.", db)
+                    return {"status": "parse_error", "message_id": message_id}
             # Delegate interactive handling to component
             result_interactive = await run_interactive_type(
                 db,
@@ -1030,6 +1230,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         customer_id=customer.id,
                     )
                     message_service.create_message(db, msg_interactive_any)
+                    db.commit()  # Explicitly commit the transaction
                     await manager.broadcast({
                         "from": from_wa_id,
                         "to": to_wa_id,
@@ -1491,6 +1692,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 )
                 # Save only; avoid second broadcast to prevent duplicates
                 message_service.create_message(db, msg_interactive)
+                db.commit()  # Explicitly commit the transaction
 
             # If user chose Buy Products → send only the WhatsApp catalog link (strict match)
             try:
@@ -1527,6 +1729,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 mime_type=mime_type,
             )
             new_msg = message_service.create_message(db, message_data)
+            db.commit()  # Explicitly commit the transaction
 
             # Broadcast to WebSocket clients
             await manager.broadcast({
@@ -1632,6 +1835,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 customer_id=customer.id
             )
             message_service.create_message(db, message_data)
+            db.commit()  # Explicitly commit the transaction
             await manager.broadcast({
                 "from": from_wa_id,
                 "to": to_wa_id,

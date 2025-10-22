@@ -172,7 +172,38 @@ async def run_treament_flow(
                                         },
                                     },
                                 }
-                                requests.post(get_messages_url(phone_id_prefill), headers=headers_btn2, json=payload_btn2)
+                                resp_btn2 = requests.post(get_messages_url(phone_id_prefill), headers=headers_btn2, json=payload_btn2)
+                                if resp_btn2.status_code == 200:
+                                    try:
+                                        # Save outbound message to database
+                                        response_data = resp_btn2.json()
+                                        message_id = response_data.get("messages", [{}])[0].get("id", f"outbound_{datetime.now().timestamp()}")
+                                        
+                                        from services.message_service import create_message
+                                        from schemas.message_schema import MessageCreate
+                                        
+                                        outbound_message = MessageCreate(
+                                            message_id=message_id,
+                                            from_wa_id=to_wa_id,
+                                            to_wa_id=wa_id,
+                                            type="interactive",
+                                            body="What treatment are you interested in?",
+                                            timestamp=datetime.now(),
+                                            customer_id=customer.id,
+                                        )
+                                        create_message(db, outbound_message)
+                                        print(f"[treatment_flow] DEBUG - Outbound treatment buttons saved to database: {message_id}")
+                                        
+                                        await manager.broadcast({
+                                            "from": to_wa_id,
+                                            "to": wa_id,
+                                            "type": "interactive",
+                                            "message": "What treatment are you interested in?",
+                                            "timestamp": datetime.now().isoformat(),
+                                            "meta": {"kind": "buttons", "options": ["Skin", "Hair", "Body"]}
+                                        })
+                                    except Exception as e:
+                                        print(f"[treatment_flow] WARNING - Database save or WebSocket broadcast failed: {e}")
                         except Exception:
                             pass
 
@@ -278,7 +309,38 @@ async def run_treatment_buttons_flow(
                             },
                         },
                     }
-                    requests.post(get_messages_url(phone_id2), headers=headers2, json=payload_list)
+                    resp_list = requests.post(get_messages_url(phone_id2), headers=headers2, json=payload_list)
+                    if resp_list.status_code == 200:
+                        try:
+                            # Save outbound message to database
+                            response_data = resp_list.json()
+                            message_id = response_data.get("messages", [{}])[0].get("id", f"outbound_{datetime.now().timestamp()}")
+                            
+                            from services.message_service import create_message
+                            from schemas.message_schema import MessageCreate
+                            
+                            outbound_message = MessageCreate(
+                                message_id=message_id,
+                                from_wa_id=to_wa_id,
+                                to_wa_id=wa_id,
+                                type="interactive",
+                                body=f"Choose your {topic} treatment:",
+                                timestamp=datetime.now(),
+                                customer_id=customer.id,
+                            )
+                            create_message(db, outbound_message)
+                            print(f"[treatment_flow] DEBUG - Outbound treatment list saved to database: {message_id}")
+                            
+                            await manager.broadcast({
+                                "from": to_wa_id,
+                                "to": wa_id,
+                                "type": "interactive",
+                                "message": f"Choose your {topic} treatment:",
+                                "timestamp": datetime.now().isoformat(),
+                                "meta": {"kind": "list", "section": f"{topic.title()} Treatments"}
+                            })
+                        except Exception as e:
+                            print(f"[treatment_flow] WARNING - Database save or WebSocket broadcast failed: {e}")
                     return {"status": "list_sent", "message_id": message_id}
 
                 if topic == "hair":
