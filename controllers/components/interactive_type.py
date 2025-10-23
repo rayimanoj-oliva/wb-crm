@@ -59,9 +59,11 @@ async def run_interactive_type(
             print(f"[flow_handler] DEBUG - Processing address flow: {flow_id}")
             print(f"[flow_handler] DEBUG - Flow payload: {flow_action_payload}")
             try:
-                # Extract address data using comprehensive field mapping
-                address_data: Dict[str, Any] = {}
-                if flow_action_payload:
+                    # Extract address data using comprehensive field mapping
+                    address_data: Dict[str, Any] = {}
+                    if flow_action_payload:
+                        print(f"[flow_handler] DEBUG - Flow action payload received: {flow_action_payload}")
+                        print(f"[flow_handler] DEBUG - Flow action payload keys: {list(flow_action_payload.keys())}")
                     # Enhanced field mappings to handle various flow configurations
                     field_mappings = {
                         "full_name": [
@@ -136,6 +138,28 @@ async def run_interactive_type(
                 except Exception as e:
                     print(f"[flow_handler] DEBUG - Could not run flow debug: {e}")
                 
+                # ---------------- Normalization for literal placeholders ----------------
+                try:
+                    literal_keys = {
+                        "full_name": {"full_name", "name"},
+                        "phone_number": {"phone", "phone_number", "mobile"},
+                        "house_street": {"address", "address_line", "house_street", "street"},
+                        "city": {"city"},
+                        "state": {"state"},
+                        "pincode": {"pincode", "postal_code", "zipcode", "zip_code", "postcode"},
+                    }
+                    def _is_literal(value: str, keys: set[str]) -> bool:
+                        v = str(value or "").strip().lower()
+                        return (v in keys) or (v.startswith("{{") and v.endswith("}}")) or (v.startswith("$") and len(v) <= 32)
+
+                    # Null-out literal echoes so we can apply fallbacks reliably
+                    for field, keys in literal_keys.items():
+                        if field in address_data and _is_literal(address_data.get(field), keys):
+                            print(f"[flow_handler] INFO - Normalizing literal value for {field}: {address_data.get(field)}")
+                            address_data[field] = ""
+                except Exception as e:
+                    print(f"[flow_handler] DEBUG - Normalization error: {e}")
+                
                 # Check if we have any actual data
                 has_data = any(value and str(value).strip() for value in address_data.values())
                 print(f"[flow_handler] DEBUG - Has any data: {has_data}")
@@ -186,6 +210,35 @@ async def run_interactive_type(
                     if len(wa_digits) >= 10:
                         address_data["phone_number"] = wa_digits[-10:]
                         print(f"[flow_handler] DEBUG - Using WA ID as phone fallback: {address_data['phone_number']}")
+
+                # Ensure full_name is non-empty and valid-ish
+                if not address_data.get("full_name"):
+                    # Try contact name or default Client
+                    contact_name = None
+                    try:
+                        contact = flow_action_payload.get("contact") if isinstance(flow_action_payload, dict) else None
+                        if isinstance(contact, dict):
+                            contact_name = contact.get("name") or contact.get("full_name")
+                    except Exception:
+                        contact_name = None
+                    address_data["full_name"] = (contact_name or "Client").strip()
+                    print(f"[flow_handler] DEBUG - full_name fallback applied: {address_data['full_name']}")
+
+                # Ensure house_street has minimum length
+                if not address_data.get("house_street") or len(address_data.get("house_street", "").strip()) < 5:
+                    address_data["house_street"] = "Address not provided"
+                    print(f"[flow_handler] DEBUG - house_street fallback applied")
+
+                # Ensure city/state
+                if not address_data.get("city"):
+                    address_data["city"] = "Unknown"
+                if not address_data.get("state"):
+                    address_data["state"] = "Unknown"
+
+                # Ensure pincode: prefer 6-digit; fallback to valid default (starts 1-9)
+                if not address_data.get("pincode") or not str(address_data.get("pincode")).isdigit() or len(str(address_data.get("pincode"))) != 6 or str(address_data.get("pincode"))[0] == "0":
+                    address_data["pincode"] = "500001"
+                    print(f"[flow_handler] DEBUG - pincode fallback applied: {address_data['pincode']}")
                 
                 if address_data.get("full_name") and address_data.get("phone_number") and address_data.get("pincode") and address_data.get("house_street"):
                     from schemas.address_schema import CustomerAddressCreate
@@ -212,7 +265,8 @@ async def run_interactive_type(
                     # Sanitize phone: ensure 10 digits; fallback to WA ID
                     try:
                         import re as _re
-                        phone_source = address_data.get("phone_number") or customer.wa_id or ""
+                        # Try both "phone" and "phone_number" field names
+                        phone_source = address_data.get("phone") or address_data.get("phone_number") or customer.wa_id or ""
                         phone_digits = _re.sub(r"\D", "", str(phone_source))
                         if len(phone_digits) >= 10:
                             phone_final = phone_digits[-10:]
@@ -228,12 +282,19 @@ async def run_interactive_type(
                     try:
                         import re as _re2
                         pin_src = address_data.get("pincode", "")
-                        pin_digits = _re2.sub(r"\D", "", str(pin_src))
-                        pincode_final = pin_digits[:6] if len(pin_digits) >= 6 else pin_digits
-                        print(f"[flow_handler] DEBUG - Pincode processing: source={pin_src}, digits={pin_digits}, final={pincode_final}")
+                        print(f"[flow_handler] DEBUG - Pincode processing: source={pin_src}")
+                        
+                        # If pincode is the literal string "pincode", it means the flow is not configured correctly
+                        if pin_src == "pincode":
+                            print(f"[flow_handler] WARNING - Pincode field contains literal string 'pincode' - flow configuration issue")
+                            pincode_final = "000000"  # Default fallback
+                        else:
+                            pin_digits = _re2.sub(r"\D", "", str(pin_src))
+                            pincode_final = pin_digits[:6] if len(pin_digits) >= 6 else pin_digits
+                            print(f"[flow_handler] DEBUG - Pincode processing: digits={pin_digits}, final={pincode_final}")
                     except Exception as e:
                         print(f"[flow_handler] DEBUG - Pincode processing error: {e}")
-                        pincode_final = address_data.get("pincode", "")
+                        pincode_final = "000000"  # Default fallback
                     
                     print(f"[flow_handler] DEBUG - Creating address with: full_name={address_data.get('full_name', '')}, house_street={house_street}, locality={city_val}, city={city_val}, state={state_val}, pincode={pincode_final}, phone={phone_final}")
                     

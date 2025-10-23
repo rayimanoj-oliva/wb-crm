@@ -1205,6 +1205,10 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     print(f"[ws_webhook] DEBUG - Flow response data: {response_data}")
                     print(f"[ws_webhook] INFO - Flow fields received: {list(response_data.keys())}")
                     
+                    # Debug each field individually
+                    for key, value in response_data.items():
+                        print(f"[ws_webhook] DEBUG - Field '{key}': '{value}' (type: {type(value)})")
+                    
                     # No field mapping needed - use the data as received from Meta
                     # Meta's Flow Builder defines the field names and structure
 
