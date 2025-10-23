@@ -59,48 +59,26 @@ async def run_interactive_type(
             print(f"[flow_handler] DEBUG - Processing address flow: {flow_id}")
             print(f"[flow_handler] DEBUG - Flow payload: {flow_action_payload}")
             try:
-                    # Extract address data using comprehensive field mapping
+                    # Use flow data directly without complex mapping
                     address_data: Dict[str, Any] = {}
                     if flow_action_payload:
                         print(f"[flow_handler] DEBUG - Flow action payload received: {flow_action_payload}")
                         print(f"[flow_handler] DEBUG - Flow action payload keys: {list(flow_action_payload.keys())}")
-                    # Enhanced field mappings to handle various flow configurations
-                    field_mappings = {
-                        "full_name": [
-                            "full_name", "name", "customer_name", "fullname", 
-                            "customer_full_name", "user_name", "contact_name"
-                        ],
-                        "phone_number": [
-                            "phone_number", "phone", "mobile", "mobile_number",
-                            "contact_number", "phone_no", "telephone", "contact_phone"
-                        ],
-                        "house_street": [
-                            "house_street", "address_line_1", "street", "address_line",
-                            "house_number", "street_address", "address1", "line1"
-                        ],
-                        "locality": [
-                            "locality", "area", "neighborhood", "sector", "block"
-                        ],
-                        "city": [
-                            "city", "town", "municipality", "district"
-                        ],
-                        "state": [
-                            "state", "province", "region"
-                        ],
-                        "pincode": [
-                            "pincode", "postal_code", "zip_code", "zipcode", "postcode"
-                        ],
-                        "landmark": [
-                            "landmark", "nearby", "reference_point", "landmark_nearby"
-                        ]
+                    
+                    # Simple direct mapping - use flow data as-is
+                    address_data = {
+                        "full_name": flow_action_payload.get("name") or flow_action_payload.get("full_name", ""),
+                        "phone_number": flow_action_payload.get("phone") or flow_action_payload.get("phone_number", ""),
+                        "house_street": flow_action_payload.get("address_line") or flow_action_payload.get("house_street", ""),
+                        "locality": flow_action_payload.get("locality", ""),
+                        "city": flow_action_payload.get("city", ""),
+                        "state": flow_action_payload.get("state", ""),
+                        "pincode": flow_action_payload.get("pincode", ""),
+                        "landmark": flow_action_payload.get("landmark", "")
                     }
                     
-                    # Extract data using field mappings
-                    for field_name, possible_keys in field_mappings.items():
-                        for key in possible_keys:
-                            if key in flow_action_payload and flow_action_payload[key]:
-                                address_data[field_name] = str(flow_action_payload[key]).strip()
-                                break
+                    # Clean up empty strings
+                    address_data = {k: v.strip() if v else "" for k, v in address_data.items()}
                     
                     # Also check for nested data structures
                     if not address_data.get("full_name"):
@@ -331,14 +309,8 @@ async def run_interactive_type(
                             saved_address = create_customer_address(db, address_create)
                             print(f"[flow_handler] DEBUG - Address saved successfully with ID: {saved_address.id}")
                             print(f"[flow_handler] DEBUG - Saved address details: {saved_address.__dict__}")
-                            
-                        except Exception as e:
-                            print(f"[flow_handler] ERROR - Failed to create address: {e}")
-                            print(f"[flow_handler] ERROR - Exception type: {type(e).__name__}")
-                            print(f"[flow_handler] ERROR - Address data: {address_data}")
-                            await send_message_to_waid(wa_id, f"❌ Error saving address: {str(e)}. Please try again.", db)
-                            return {"status": "address_creation_failed", "error": str(e)}
 
+                            # Notify customer on successful save
                             await send_message_to_waid(wa_id, "✅ Address saved successfully!", db)
                             await send_message_to_waid(
                                 wa_id,
@@ -384,24 +356,68 @@ async def run_interactive_type(
                                 pass
 
                             return {"status": "address_saved", "message_id": message_id}
+
+                        except Exception as e:
+                            print(f"[flow_handler] ERROR - Failed to create address: {e}")
+                            print(f"[flow_handler] ERROR - Exception type: {type(e).__name__}")
+                            print(f"[flow_handler] ERROR - Address data: {address_data}")
+                            await send_message_to_waid(wa_id, f"❌ Error saving address: {str(e)}. Please try again.", db)
+                            return {"status": "address_creation_failed", "error": str(e)}
                     else:
-                        print(f"[flow_handler] DEBUG - Missing required fields, cannot save address")
+                        print(f"[flow_handler] DEBUG - Missing required fields, attempting partial save")
                         print(f"[flow_handler] DEBUG - Available data: {address_data}")
                         print(f"[flow_handler] DEBUG - Flow payload structure: {json.dumps(flow_action_payload, indent=2) if flow_action_payload else 'None'}")
-                        
-                        # Send more specific error message
-                        missing_list = [field.replace('_', ' ').title() for field in missing_fields]
-                        error_msg = f"❌ Please fill in all required fields. Missing: {', '.join(missing_list)}"
-                        await send_message_to_waid(wa_id, error_msg, db)
-                        
-                        # Try to resend the address form
+
+                        # Attempt a partial save with sensible defaults and embed raw payload in landmark
                         try:
-                            from controllers.web_socket import _send_address_flow_directly
-                            await _send_address_flow_directly(wa_id, db, customer_id=customer.id)
+                            from schemas.address_schema import CustomerAddressCreate as _AddrCreate
+                            from services.address_service import create_customer_address as _create_addr
+                            raw_short = ""  # keep landmark concise
+                            try:
+                                raw_short = json.dumps(flow_action_payload)[:400]
+                            except Exception:
+                                raw_short = str(flow_action_payload)[:400]
+
+                            partial = _AddrCreate(
+                                customer_id=customer.id,
+                                full_name=(address_data.get("full_name") or "Client").strip(),
+                                house_street=(address_data.get("house_street") or "Address not provided").strip(),
+                                locality=(address_data.get("locality") or address_data.get("city") or "Unknown").strip(),
+                                city=(address_data.get("city") or "Unknown").strip(),
+                                state=(address_data.get("state") or "Unknown").strip(),
+                                pincode=(address_data.get("pincode") or "000000").strip(),
+                                landmark=((address_data.get("landmark") or "") + (f" | Raw: {raw_short}" if raw_short else ""))[:255],
+                                phone=(address_data.get("phone_number") or str(getattr(customer, 'wa_id', '') or "0000000000")[-10:]).strip(),
+                                address_type="home",
+                                is_default=True,
+                            )
+                            saved_partial = _create_addr(db, partial)
+                            print(f"[flow_handler] WARN - Saved partial address with ID: {saved_partial.id}")
+
+                            await send_message_to_waid(wa_id, "✅ Address saved with available details.", db)
+                            await send_message_to_waid(
+                                wa_id,
+                                f"📍 {partial.full_name}, {partial.house_street}, {partial.city} - {partial.pincode}",
+                                db,
+                            )
+                            await send_message_to_waid(wa_id, "ℹ️ You can update any missing details anytime.", db)
+
+                            return {"status": "address_saved_partial", "message_id": message_id, "missing_fields": missing_fields}
                         except Exception as e:
-                            print(f"[flow_handler] DEBUG - Failed to resend address form: {e}")
-                        
-                        return {"status": "flow_incomplete", "message_id": message_id}
+                            print(f"[flow_handler] ERROR - Partial save failed: {e}")
+
+                            # Send more specific error message and resend form as fallback
+                            missing_list = [field.replace('_', ' ').title() for field in missing_fields]
+                            error_msg = f"❌ Please fill in all required fields. Missing: {', '.join(missing_list)}"
+                            await send_message_to_waid(wa_id, error_msg, db)
+
+                            try:
+                                from controllers.web_socket import _send_address_flow_directly
+                                await _send_address_flow_directly(wa_id, db, customer_id=customer.id)
+                            except Exception as e2:
+                                print(f"[flow_handler] DEBUG - Failed to resend address form: {e2}")
+
+                            return {"status": "flow_incomplete", "message_id": message_id}
             except Exception as e:
                 print(f"[flow_handler] ERROR - Exception in address processing: {str(e)}")
                 print(f"[flow_handler] ERROR - Exception type: {type(e).__name__}")
