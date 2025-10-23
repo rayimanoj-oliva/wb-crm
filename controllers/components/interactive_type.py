@@ -123,285 +123,285 @@ async def run_interactive_type(
                                         if key in address_obj and address_obj[key]:
                                             address_data[field_name] = str(address_obj[key]).strip()
                                             break
-
-                # Validate & save - check for required fields from your flow
-                print(f"[flow_handler] DEBUG - Extracted address data: {address_data}")
-                print(f"[flow_handler] DEBUG - Raw flow payload keys: {list(flow_action_payload.keys()) if flow_action_payload else 'None'}")
-                print(f"[flow_handler] DEBUG - Raw flow payload values: {flow_action_payload}")
-                print(f"[flow_handler] DEBUG - Address data keys: {list(address_data.keys())}")
-                print(f"[flow_handler] DEBUG - Address data values: {list(address_data.values())}")
-                
-                # Enhanced debugging for flow data extraction
-                try:
-                    from controllers.web_socket import debug_flow_data_extraction
-                    debug_flow_data_extraction(flow_action_payload, address_data)
-                except Exception as e:
-                    print(f"[flow_handler] DEBUG - Could not run flow debug: {e}")
-                
-                # ---------------- Normalization for literal placeholders ----------------
-                try:
-                    literal_keys = {
-                        "full_name": {"full_name", "name"},
-                        "phone_number": {"phone", "phone_number", "mobile"},
-                        "house_street": {"address", "address_line", "house_street", "street"},
-                        "city": {"city"},
-                        "state": {"state"},
-                        "pincode": {"pincode", "postal_code", "zipcode", "zip_code", "postcode"},
-                    }
-                    def _is_literal(value: str, keys: set[str]) -> bool:
-                        v = str(value or "").strip().lower()
-                        return (v in keys) or (v.startswith("{{") and v.endswith("}}")) or (v.startswith("$") and len(v) <= 32)
-
-                    # Null-out literal echoes so we can apply fallbacks reliably
-                    for field, keys in literal_keys.items():
-                        if field in address_data and _is_literal(address_data.get(field), keys):
-                            print(f"[flow_handler] INFO - Normalizing literal value for {field}: {address_data.get(field)}")
-                            address_data[field] = ""
-                except Exception as e:
-                    print(f"[flow_handler] DEBUG - Normalization error: {e}")
-                
-                # Check if we have any actual data
-                has_data = any(value and str(value).strip() for value in address_data.values())
-                print(f"[flow_handler] DEBUG - Has any data: {has_data}")
-                
-                if not has_data:
-                    print(f"[flow_handler] WARNING - No data extracted from flow response!")
-                    print(f"[flow_handler] WARNING - This might indicate a flow configuration issue or data extraction problem")
-                    await send_message_to_waid(wa_id, "❌ No data received from the form. Please check your flow configuration.", db)
-                    return {"status": "no_data_extracted", "flow_payload": flow_action_payload}
-                
-                required_fields = ["full_name", "phone_number", "pincode", "house_street"]
-                missing_fields = [field for field in required_fields if not address_data.get(field)]
-                print(f"[flow_handler] DEBUG - Missing required fields: {missing_fields}")
-                
-                # If we have some data but missing required fields, try alternative extraction
-                if missing_fields and any(address_data.values()):
-                    print(f"[flow_handler] DEBUG - Attempting alternative field extraction...")
-                    # Try to extract from any remaining keys in the payload
-                    for key, value in flow_action_payload.items():
-                        if isinstance(value, str) and value.strip():
-                            # Try to match by content patterns
-                            value_lower = value.lower().strip()
-                            if any(name_word in value_lower for name_word in ["name", "full"]):
-                                if not address_data.get("full_name"):
-                                    address_data["full_name"] = value.strip()
-                                    print(f"[flow_handler] DEBUG - Found name in key '{key}': {value}")
-                            elif any(phone_word in value_lower for phone_word in ["phone", "mobile", "contact"]):
-                                if not address_data.get("phone_number"):
-                                    address_data["phone_number"] = value.strip()
-                                    print(f"[flow_handler] DEBUG - Found phone in key '{key}': {value}")
-                            elif any(addr_word in value_lower for addr_word in ["address", "street", "house"]):
-                                if not address_data.get("house_street"):
-                                    address_data["house_street"] = value.strip()
-                                    print(f"[flow_handler] DEBUG - Found address in key '{key}': {value}")
-                            elif value.isdigit() and len(value) == 6:
-                                if not address_data.get("pincode"):
-                                    address_data["pincode"] = value.strip()
-                                    print(f"[flow_handler] DEBUG - Found pincode in key '{key}': {value}")
                     
-                    # Re-check missing fields after alternative extraction
+                    # Validate & save - check for required fields from your flow
+                    print(f"[flow_handler] DEBUG - Extracted address data: {address_data}")
+                    print(f"[flow_handler] DEBUG - Raw flow payload keys: {list(flow_action_payload.keys()) if flow_action_payload else 'None'}")
+                    print(f"[flow_handler] DEBUG - Raw flow payload values: {flow_action_payload}")
+                    print(f"[flow_handler] DEBUG - Address data keys: {list(address_data.keys())}")
+                    print(f"[flow_handler] DEBUG - Address data values: {list(address_data.values())}")
+                    
+                    # Enhanced debugging for flow data extraction
+                    try:
+                        from controllers.web_socket import debug_flow_data_extraction
+                        debug_flow_data_extraction(flow_action_payload, address_data)
+                    except Exception as e:
+                        print(f"[flow_handler] DEBUG - Could not run flow debug: {e}")
+                    
+                    # ---------------- Normalization for literal placeholders ----------------
+                    try:
+                        literal_keys = {
+                            "full_name": {"full_name", "name"},
+                            "phone_number": {"phone", "phone_number", "mobile"},
+                            "house_street": {"address", "address_line", "house_street", "street"},
+                            "city": {"city"},
+                            "state": {"state"},
+                            "pincode": {"pincode", "postal_code", "zipcode", "zip_code", "postcode"},
+                        }
+                        def _is_literal(value: str, keys: set[str]) -> bool:
+                            v = str(value or "").strip().lower()
+                            return (v in keys) or (v.startswith("{{") and v.endswith("}}")) or (v.startswith("$") and len(v) <= 32)
+
+                        # Null-out literal echoes so we can apply fallbacks reliably
+                        for field, keys in literal_keys.items():
+                            if field in address_data and _is_literal(address_data.get(field), keys):
+                                print(f"[flow_handler] INFO - Normalizing literal value for {field}: {address_data.get(field)}")
+                                address_data[field] = ""
+                    except Exception as e:
+                        print(f"[flow_handler] DEBUG - Normalization error: {e}")
+                    
+                    # Check if we have any actual data
+                    has_data = any(value and str(value).strip() for value in address_data.values())
+                    print(f"[flow_handler] DEBUG - Has any data: {has_data}")
+                    
+                    if not has_data:
+                        print(f"[flow_handler] WARNING - No data extracted from flow response!")
+                        print(f"[flow_handler] WARNING - This might indicate a flow configuration issue or data extraction problem")
+                        await send_message_to_waid(wa_id, "❌ No data received from the form. Please check your flow configuration.", db)
+                        return {"status": "no_data_extracted", "flow_payload": flow_action_payload}
+                    
+                    required_fields = ["full_name", "phone_number", "pincode", "house_street"]
                     missing_fields = [field for field in required_fields if not address_data.get(field)]
-                    print(f"[flow_handler] DEBUG - Missing fields after alternative extraction: {missing_fields}")
-                
-                # Final validation with fallbacks
-                if not address_data.get("phone_number") and customer and hasattr(customer, 'wa_id'):
-                    # Use customer's WA ID as phone fallback
-                    wa_digits = ''.join(filter(str.isdigit, str(customer.wa_id)))
-                    if len(wa_digits) >= 10:
-                        address_data["phone_number"] = wa_digits[-10:]
-                        print(f"[flow_handler] DEBUG - Using WA ID as phone fallback: {address_data['phone_number']}")
+                    print(f"[flow_handler] DEBUG - Missing required fields: {missing_fields}")
+                    
+                    # If we have some data but missing required fields, try alternative extraction
+                    if missing_fields and any(address_data.values()):
+                        print(f"[flow_handler] DEBUG - Attempting alternative field extraction...")
+                        # Try to extract from any remaining keys in the payload
+                        for key, value in flow_action_payload.items():
+                            if isinstance(value, str) and value.strip():
+                                # Try to match by content patterns
+                                value_lower = value.lower().strip()
+                                if any(name_word in value_lower for name_word in ["name", "full"]):
+                                    if not address_data.get("full_name"):
+                                        address_data["full_name"] = value.strip()
+                                        print(f"[flow_handler] DEBUG - Found name in key '{key}': {value}")
+                                elif any(phone_word in value_lower for phone_word in ["phone", "mobile", "contact"]):
+                                    if not address_data.get("phone_number"):
+                                        address_data["phone_number"] = value.strip()
+                                        print(f"[flow_handler] DEBUG - Found phone in key '{key}': {value}")
+                                elif any(addr_word in value_lower for addr_word in ["address", "street", "house"]):
+                                    if not address_data.get("house_street"):
+                                        address_data["house_street"] = value.strip()
+                                        print(f"[flow_handler] DEBUG - Found address in key '{key}': {value}")
+                                elif value.isdigit() and len(value) == 6:
+                                    if not address_data.get("pincode"):
+                                        address_data["pincode"] = value.strip()
+                                        print(f"[flow_handler] DEBUG - Found pincode in key '{key}': {value}")
+                        
+                        # Re-check missing fields after alternative extraction
+                        missing_fields = [field for field in required_fields if not address_data.get(field)]
+                        print(f"[flow_handler] DEBUG - Missing fields after alternative extraction: {missing_fields}")
+                    
+                    # Final validation with fallbacks
+                    if not address_data.get("phone_number") and customer and hasattr(customer, 'wa_id'):
+                        # Use customer's WA ID as phone fallback
+                        wa_digits = ''.join(filter(str.isdigit, str(customer.wa_id)))
+                        if len(wa_digits) >= 10:
+                            address_data["phone_number"] = wa_digits[-10:]
+                            print(f"[flow_handler] DEBUG - Using WA ID as phone fallback: {address_data['phone_number']}")
 
-                # Ensure full_name is non-empty and valid-ish
-                if not address_data.get("full_name"):
-                    # Try contact name or default Client
-                    contact_name = None
-                    try:
-                        contact = flow_action_payload.get("contact") if isinstance(flow_action_payload, dict) else None
-                        if isinstance(contact, dict):
-                            contact_name = contact.get("name") or contact.get("full_name")
-                    except Exception:
+                    # Ensure full_name is non-empty and valid-ish
+                    if not address_data.get("full_name"):
+                        # Try contact name or default Client
                         contact_name = None
-                    address_data["full_name"] = (contact_name or "Client").strip()
-                    print(f"[flow_handler] DEBUG - full_name fallback applied: {address_data['full_name']}")
+                        try:
+                            contact = flow_action_payload.get("contact") if isinstance(flow_action_payload, dict) else None
+                            if isinstance(contact, dict):
+                                contact_name = contact.get("name") or contact.get("full_name")
+                        except Exception:
+                            contact_name = None
+                        address_data["full_name"] = (contact_name or "Client").strip()
+                        print(f"[flow_handler] DEBUG - full_name fallback applied: {address_data['full_name']}")
 
-                # Ensure house_street has minimum length
-                if not address_data.get("house_street") or len(address_data.get("house_street", "").strip()) < 5:
-                    address_data["house_street"] = "Address not provided"
-                    print(f"[flow_handler] DEBUG - house_street fallback applied")
+                    # Ensure house_street has minimum length
+                    if not address_data.get("house_street") or len(address_data.get("house_street", "").strip()) < 5:
+                        address_data["house_street"] = "Address not provided"
+                        print(f"[flow_handler] DEBUG - house_street fallback applied")
 
-                # Ensure city/state
-                if not address_data.get("city"):
-                    address_data["city"] = "Unknown"
-                if not address_data.get("state"):
-                    address_data["state"] = "Unknown"
+                    # Ensure city/state
+                    if not address_data.get("city"):
+                        address_data["city"] = "Unknown"
+                    if not address_data.get("state"):
+                        address_data["state"] = "Unknown"
 
-                # Ensure pincode: prefer 6-digit; fallback to valid default (starts 1-9)
-                if not address_data.get("pincode") or not str(address_data.get("pincode")).isdigit() or len(str(address_data.get("pincode"))) != 6 or str(address_data.get("pincode"))[0] == "0":
-                    address_data["pincode"] = "500001"
-                    print(f"[flow_handler] DEBUG - pincode fallback applied: {address_data['pincode']}")
-                
-                if address_data.get("full_name") and address_data.get("phone_number") and address_data.get("pincode") and address_data.get("house_street"):
-                    from schemas.address_schema import CustomerAddressCreate
-                    from services.address_service import create_customer_address
-
-                    # Construct enhanced address with floor/tower info
-                    house_street = address_data.get("house_street", "")
-                    floor_number = address_data.get("floor_number", "")
-                    tower_number = address_data.get("tower_number", "")
+                    # Ensure pincode: prefer 6-digit; fallback to valid default (starts 1-9)
+                    if not address_data.get("pincode") or not str(address_data.get("pincode")).isdigit() or len(str(address_data.get("pincode"))) != 6 or str(address_data.get("pincode"))[0] == "0":
+                        address_data["pincode"] = "500001"
+                        print(f"[flow_handler] DEBUG - pincode fallback applied: {address_data['pincode']}")
                     
-                    # Combine address line with floor/tower if available
-                    if floor_number or tower_number:
-                        additional_info = []
-                        if floor_number:
-                            additional_info.append(f"Floor {floor_number}")
-                        if tower_number:
-                            additional_info.append(f"Tower {tower_number}")
-                        house_street = f"{house_street}, {', '.join(additional_info)}"
-                    
-                    # Use city and state directly
-                    city_val = address_data.get("city") or "Unknown"
-                    state_val = address_data.get("state") or "Unknown"
+                    if address_data.get("full_name") and address_data.get("phone_number") and address_data.get("pincode") and address_data.get("house_street"):
+                        from schemas.address_schema import CustomerAddressCreate
+                        from services.address_service import create_customer_address
 
-                    # Sanitize phone: ensure 10 digits; fallback to WA ID
-                    try:
-                        import re as _re
-                        # Try both "phone" and "phone_number" field names
-                        phone_source = address_data.get("phone") or address_data.get("phone_number") or customer.wa_id or ""
-                        phone_digits = _re.sub(r"\D", "", str(phone_source))
-                        if len(phone_digits) >= 10:
-                            phone_final = phone_digits[-10:]
-                        else:
-                            wa_digits = _re.sub(r"\D", "", str(customer.wa_id or ""))
-                            phone_final = wa_digits[-10:] if len(wa_digits) >= 10 else (phone_digits + ("0" * (10 - len(phone_digits))))[:10]
-                        print(f"[flow_handler] DEBUG - Phone processing: source={phone_source}, digits={phone_digits}, final={phone_final}")
-                    except Exception as e:
-                        print(f"[flow_handler] DEBUG - Phone processing error: {e}")
-                        phone_final = (str(customer.wa_id)[-10:] if customer and getattr(customer, 'wa_id', None) else "0000000000")
-                    
-                    # Normalize pincode to 6 digits if possible (keep as-is if already valid)
-                    try:
-                        import re as _re2
-                        pin_src = address_data.get("pincode", "")
-                        print(f"[flow_handler] DEBUG - Pincode processing: source={pin_src}")
+                        # Construct enhanced address with floor/tower info
+                        house_street = address_data.get("house_street", "")
+                        floor_number = address_data.get("floor_number", "")
+                        tower_number = address_data.get("tower_number", "")
                         
-                        # If pincode is the literal string "pincode", it means the flow is not configured correctly
-                        if pin_src == "pincode":
-                            print(f"[flow_handler] WARNING - Pincode field contains literal string 'pincode' - flow configuration issue")
+                        # Combine address line with floor/tower if available
+                        if floor_number or tower_number:
+                            additional_info = []
+                            if floor_number:
+                                additional_info.append(f"Floor {floor_number}")
+                            if tower_number:
+                                additional_info.append(f"Tower {tower_number}")
+                            house_street = f"{house_street}, {', '.join(additional_info)}"
+                        
+                        # Use city and state directly
+                        city_val = address_data.get("city") or "Unknown"
+                        state_val = address_data.get("state") or "Unknown"
+
+                        # Sanitize phone: ensure 10 digits; fallback to WA ID
+                        try:
+                            import re as _re
+                            # Try both "phone" and "phone_number" field names
+                            phone_source = address_data.get("phone") or address_data.get("phone_number") or customer.wa_id or ""
+                            phone_digits = _re.sub(r"\D", "", str(phone_source))
+                            if len(phone_digits) >= 10:
+                                phone_final = phone_digits[-10:]
+                            else:
+                                wa_digits = _re.sub(r"\D", "", str(customer.wa_id or ""))
+                                phone_final = wa_digits[-10:] if len(wa_digits) >= 10 else (phone_digits + ("0" * (10 - len(phone_digits))))[:10]
+                            print(f"[flow_handler] DEBUG - Phone processing: source={phone_source}, digits={phone_digits}, final={phone_final}")
+                        except Exception as e:
+                            print(f"[flow_handler] DEBUG - Phone processing error: {e}")
+                            phone_final = (str(customer.wa_id)[-10:] if customer and getattr(customer, 'wa_id', None) else "0000000000")
+                        
+                        # Normalize pincode to 6 digits if possible (keep as-is if already valid)
+                        try:
+                            import re as _re2
+                            pin_src = address_data.get("pincode", "")
+                            print(f"[flow_handler] DEBUG - Pincode processing: source={pin_src}")
+                            
+                            # If pincode is the literal string "pincode", it means the flow is not configured correctly
+                            if pin_src == "pincode":
+                                print(f"[flow_handler] WARNING - Pincode field contains literal string 'pincode' - flow configuration issue")
+                                pincode_final = "000000"  # Default fallback
+                            else:
+                                pin_digits = _re2.sub(r"\D", "", str(pin_src))
+                                pincode_final = pin_digits[:6] if len(pin_digits) >= 6 else pin_digits
+                                print(f"[flow_handler] DEBUG - Pincode processing: digits={pin_digits}, final={pincode_final}")
+                        except Exception as e:
+                            print(f"[flow_handler] DEBUG - Pincode processing error: {e}")
                             pincode_final = "000000"  # Default fallback
-                        else:
-                            pin_digits = _re2.sub(r"\D", "", str(pin_src))
-                            pincode_final = pin_digits[:6] if len(pin_digits) >= 6 else pin_digits
-                            print(f"[flow_handler] DEBUG - Pincode processing: digits={pin_digits}, final={pincode_final}")
-                    except Exception as e:
-                        print(f"[flow_handler] DEBUG - Pincode processing error: {e}")
-                        pincode_final = "000000"  # Default fallback
-                    
-                    print(f"[flow_handler] DEBUG - Creating address with: full_name={address_data.get('full_name', '')}, house_street={house_street}, locality={city_val}, city={city_val}, state={state_val}, pincode={pincode_final}, phone={phone_final}")
-                    
-                    try:
-                        address_create = CustomerAddressCreate(
-                            customer_id=customer.id,
-                            full_name=address_data.get("full_name", ""),
-                            house_street=house_street,
-                            locality=city_val,  # Use city as locality fallback
-                            city=city_val,
-                            state=state_val,
-                            pincode=pincode_final,
-                            landmark=address_data.get("landmark", ""),
-                            phone=phone_final,
-                            address_type="home",
-                            is_default=True,
-                        )
-                        print(f"[flow_handler] DEBUG - AddressCreate object created successfully")
-                        print(f"[flow_handler] DEBUG - AddressCreate data: {address_create.dict()}")
                         
-                        # Validate required fields before saving
-                        required_fields = ["customer_id", "full_name", "house_street", "city", "pincode", "phone"]
-                        missing_fields = []
-                        for field in required_fields:
-                            value = getattr(address_create, field, None)
-                            if not value or (isinstance(value, str) and not value.strip()):
-                                missing_fields.append(field)
+                        print(f"[flow_handler] DEBUG - Creating address with: full_name={address_data.get('full_name', '')}, house_street={house_street}, locality={city_val}, city={city_val}, state={state_val}, pincode={pincode_final}, phone={phone_final}")
                         
-                        if missing_fields:
-                            print(f"[flow_handler] ERROR - Missing required fields: {missing_fields}")
-                            await send_message_to_waid(wa_id, f"❌ Missing required information: {', '.join(missing_fields)}. Please fill the form completely.", db)
-                            return {"status": "missing_fields", "missing_fields": missing_fields}
-                        
-                        saved_address = create_customer_address(db, address_create)
-                        print(f"[flow_handler] DEBUG - Address saved successfully with ID: {saved_address.id}")
-                        print(f"[flow_handler] DEBUG - Saved address details: {saved_address.__dict__}")
-                        
-                    except Exception as e:
-                        print(f"[flow_handler] ERROR - Failed to create address: {e}")
-                        print(f"[flow_handler] ERROR - Exception type: {type(e).__name__}")
-                        print(f"[flow_handler] ERROR - Address data: {address_data}")
-                        await send_message_to_waid(wa_id, f"❌ Error saving address: {str(e)}. Please try again.", db)
-                        return {"status": "address_creation_failed", "error": str(e)}
+                        try:
+                            address_create = CustomerAddressCreate(
+                                customer_id=customer.id,
+                                full_name=address_data.get("full_name", ""),
+                                house_street=house_street,
+                                locality=city_val,  # Use city as locality fallback
+                                city=city_val,
+                                state=state_val,
+                                pincode=pincode_final,
+                                landmark=address_data.get("landmark", ""),
+                                phone=phone_final,
+                                address_type="home",
+                                is_default=True,
+                            )
+                            print(f"[flow_handler] DEBUG - AddressCreate object created successfully")
+                            print(f"[flow_handler] DEBUG - AddressCreate data: {address_create.dict()}")
+                            
+                            # Validate required fields before saving
+                            required_fields = ["customer_id", "full_name", "house_street", "city", "pincode", "phone"]
+                            missing_fields = []
+                            for field in required_fields:
+                                value = getattr(address_create, field, None)
+                                if not value or (isinstance(value, str) and not value.strip()):
+                                    missing_fields.append(field)
+                            
+                            if missing_fields:
+                                print(f"[flow_handler] ERROR - Missing required fields: {missing_fields}")
+                                await send_message_to_waid(wa_id, f"❌ Missing required information: {', '.join(missing_fields)}. Please fill the form completely.", db)
+                                return {"status": "missing_fields", "missing_fields": missing_fields}
+                            
+                            saved_address = create_customer_address(db, address_create)
+                            print(f"[flow_handler] DEBUG - Address saved successfully with ID: {saved_address.id}")
+                            print(f"[flow_handler] DEBUG - Saved address details: {saved_address.__dict__}")
+                            
+                        except Exception as e:
+                            print(f"[flow_handler] ERROR - Failed to create address: {e}")
+                            print(f"[flow_handler] ERROR - Exception type: {type(e).__name__}")
+                            print(f"[flow_handler] ERROR - Address data: {address_data}")
+                            await send_message_to_waid(wa_id, f"❌ Error saving address: {str(e)}. Please try again.", db)
+                            return {"status": "address_creation_failed", "error": str(e)}
 
-                    await send_message_to_waid(wa_id, "✅ Address saved successfully!", db)
-                    await send_message_to_waid(
-                        wa_id,
-                        f"📍 {saved_address.full_name}, {saved_address.house_street}, {saved_address.city} - {saved_address.pincode}",
-                        db,
-                    )
+                            await send_message_to_waid(wa_id, "✅ Address saved successfully!", db)
+                            await send_message_to_waid(
+                                wa_id,
+                                f"📍 {saved_address.full_name}, {saved_address.house_street}, {saved_address.city} - {saved_address.pincode}",
+                                db,
+                            )
 
-                    # Clear awaiting address flag if present (best-effort; ignore if missing)
-                    try:
-                        from controllers.web_socket import awaiting_address_users  # type: ignore
-                        awaiting_address_users[wa_id] = False
-                    except Exception:
-                        pass
-
-                    # Continue with payment flow (best-effort)
-                    try:
-                        latest_order = (
-                            db.query(order_service.Order)
-                            .filter(order_service.Order.customer_id == customer.id)
-                            .order_by(order_service.Order.timestamp.desc())
-                            .first()
-                        )
-                        total_amount = 0
-                        if latest_order:
-                            for item in latest_order.items:
-                                qty = item.quantity or 1
-                                price = item.item_price or item.price or 0
-                                total_amount += float(price) * int(qty)
-                        if total_amount > 0:
-                            from utils.razorpay_utils import create_razorpay_payment_link
+                            # Clear awaiting address flag if present (best-effort; ignore if missing)
                             try:
-                                payment_resp = create_razorpay_payment_link(
-                                    amount=float(total_amount),
-                                    currency="INR",
-                                    description=f"WA Order {str(latest_order.id) if latest_order else ''}",
-                                )
-                                pay_link = payment_resp.get("short_url") if isinstance(payment_resp, dict) else None
-                                if pay_link:
-                                    await send_message_to_waid(wa_id, f"💳 Please complete your payment using this link: {pay_link}", db)
+                                from controllers.web_socket import awaiting_address_users  # type: ignore
+                                awaiting_address_users[wa_id] = False
                             except Exception:
                                 pass
-                    except Exception:
-                        pass
 
-                    return {"status": "address_saved", "message_id": message_id}
-                else:
-                    print(f"[flow_handler] DEBUG - Missing required fields, cannot save address")
-                    print(f"[flow_handler] DEBUG - Available data: {address_data}")
-                    print(f"[flow_handler] DEBUG - Flow payload structure: {json.dumps(flow_action_payload, indent=2) if flow_action_payload else 'None'}")
-                    
-                    # Send more specific error message
-                    missing_list = [field.replace('_', ' ').title() for field in missing_fields]
-                    error_msg = f"❌ Please fill in all required fields. Missing: {', '.join(missing_list)}"
-                    await send_message_to_waid(wa_id, error_msg, db)
-                    
-                    # Try to resend the address form
-                    try:
-                        from controllers.web_socket import _send_address_flow_directly
-                        await _send_address_flow_directly(wa_id, db, customer_id=customer.id)
-                    except Exception as e:
-                        print(f"[flow_handler] DEBUG - Failed to resend address form: {e}")
-                    
-                    return {"status": "flow_incomplete", "message_id": message_id}
+                            # Continue with payment flow (best-effort)
+                            try:
+                                latest_order = (
+                                    db.query(order_service.Order)
+                                    .filter(order_service.Order.customer_id == customer.id)
+                                    .order_by(order_service.Order.timestamp.desc())
+                                    .first()
+                                )
+                                total_amount = 0
+                                if latest_order:
+                                    for item in latest_order.items:
+                                        qty = item.quantity or 1
+                                        price = item.item_price or item.price or 0
+                                        total_amount += float(price) * int(qty)
+                                if total_amount > 0:
+                                    from utils.razorpay_utils import create_razorpay_payment_link
+                                    try:
+                                        payment_resp = create_razorpay_payment_link(
+                                            amount=float(total_amount),
+                                            currency="INR",
+                                            description=f"WA Order {str(latest_order.id) if latest_order else ''}",
+                                        )
+                                        pay_link = payment_resp.get("short_url") if isinstance(payment_resp, dict) else None
+                                        if pay_link:
+                                            await send_message_to_waid(wa_id, f"💳 Please complete your payment using this link: {pay_link}", db)
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
+
+                            return {"status": "address_saved", "message_id": message_id}
+                    else:
+                        print(f"[flow_handler] DEBUG - Missing required fields, cannot save address")
+                        print(f"[flow_handler] DEBUG - Available data: {address_data}")
+                        print(f"[flow_handler] DEBUG - Flow payload structure: {json.dumps(flow_action_payload, indent=2) if flow_action_payload else 'None'}")
+                        
+                        # Send more specific error message
+                        missing_list = [field.replace('_', ' ').title() for field in missing_fields]
+                        error_msg = f"❌ Please fill in all required fields. Missing: {', '.join(missing_list)}"
+                        await send_message_to_waid(wa_id, error_msg, db)
+                        
+                        # Try to resend the address form
+                        try:
+                            from controllers.web_socket import _send_address_flow_directly
+                            await _send_address_flow_directly(wa_id, db, customer_id=customer.id)
+                        except Exception as e:
+                            print(f"[flow_handler] DEBUG - Failed to resend address form: {e}")
+                        
+                        return {"status": "flow_incomplete", "message_id": message_id}
             except Exception as e:
                 print(f"[flow_handler] ERROR - Exception in address processing: {str(e)}")
                 print(f"[flow_handler] ERROR - Exception type: {type(e).__name__}")
