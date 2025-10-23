@@ -290,6 +290,7 @@ async def whatsapp_auto_welcome_webhook(request: Request, db: Session = Depends(
                 customer_id=customer.id,
             )
             message_service.create_message(db, inbound)
+            db.commit()  # Explicitly commit the transaction
             try:
                 # Broadcast inbound to websocket clients
                 await manager.broadcast({
@@ -524,6 +525,7 @@ async def whatsapp_auto_welcome_webhook(request: Request, db: Session = Depends(
                     customer_id=customer.id,
                 )
                 message_service.create_message(db, tpl_message)
+                db.commit()  # Explicitly commit the transaction
                 try:
                     # Broadcast template send event to websocket clients
                     await manager.broadcast({

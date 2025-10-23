@@ -49,6 +49,16 @@ async def send_message_to_waid(wa_id: str, message_body: str, db, from_wa_id="91
         customer_id=customer.id,
     )
     new_msg = message_service.create_message(db, message_data)
+    
+    # Debug: Print message details to verify saving
+    print(f"[send_message_to_waid] DEBUG - Outbound message saved:")
+    print(f"  - Message ID: {new_msg.message_id}")
+    print(f"  - From: {new_msg.from_wa_id}")
+    print(f"  - To: {new_msg.to_wa_id}")
+    print(f"  - Type: {new_msg.type}")
+    print(f"  - Body: {new_msg.body}")
+    print(f"  - Timestamp: {new_msg.timestamp}")
+    print(f"  - Customer ID: {new_msg.customer_id}")
 
     await manager.broadcast({
         "from": new_msg.from_wa_id,

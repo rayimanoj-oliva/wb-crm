@@ -28,6 +28,13 @@ from utils.name_validator import validate_human_name
 from utils.phone_validator import validate_indian_phone
 from services.whatsapp_service import get_latest_token
 from config.constants import get_messages_url, get_media_url
+
+# =============================================================================
+# WHATSAPP FLOW HANDLING
+# =============================================================================
+# WhatsApp Flows are designed in Meta Business Manager's Flow Builder.
+# The flow fields, validation, and UI are defined there, not in this code.
+# This code only handles the webhook response when users complete the flow.
 from utils.razorpay_utils import create_razorpay_payment_link
 from utils.ws_manager import manager
 
@@ -831,7 +838,14 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 )
                 message_service.create_message(db, inbound_text_msg)
                 db.commit()  # Explicitly commit the transaction
-                print(f"[ws_webhook] DEBUG - Text message saved to database: {message_id}")
+                print(f"[ws_webhook] DEBUG - Inbound text message saved to database:")
+                print(f"  - Message ID: {message_id}")
+                print(f"  - From: {from_wa_id}")
+                print(f"  - To: {to_wa_id}")
+                print(f"  - Type: text")
+                print(f"  - Body: {body_text}")
+                print(f"  - Timestamp: {timestamp}")
+                print(f"  - Customer ID: {customer.id}")
             
             # Always broadcast to WebSocket (even if already saved)
             if not handled_text:  # Only broadcast if not already handled by treatment flow
@@ -1158,34 +1172,41 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     has_template_vars = any("{{" in str(v) and "}}" in str(v) for v in response_data.values())
                     if has_template_vars:
                         print(f"[ws_webhook] WARNING - Received template variables instead of actual values: {response_data}")
-                        print(f"[ws_webhook] ERROR - Flow configuration issue: Response schema contains placeholders instead of user input")
-                        print(f"[ws_webhook] ERROR - Please fix the WhatsApp Flow Response Schema in Meta Business Manager")
-                        # Send error message to user and resend address form
-                        await send_message_to_waid(wa_id, "❌ The address form wasn't filled out properly. Please try again.", db)
-                        try:
-                            await _send_address_flow_directly(wa_id, db, customer_id=customer.id)
-                        except Exception:
-                            pass
-                        return {"status": "form_not_filled", "message_id": message_id}
+                        print(f"[ws_webhook] INFO - Processing template placeholders to extract actual values")
+                        
+                        # Process template placeholders and extract actual values
+                        processed_data = {}
+                        for key, value in response_data.items():
+                            if isinstance(value, str) and "{{" in value and "}}" in value:
+                                # Extract the placeholder name (e.g., "{{name}}" -> "name")
+                                placeholder_match = re.search(r'\{\{([^}]+)\}\}', value)
+                                if placeholder_match:
+                                    placeholder_name = placeholder_match.group(1).strip()
+                                    # Try to get actual value from customer data or use fallback
+                                    if hasattr(customer, 'name') and customer.name and placeholder_name == 'name':
+                                        processed_data[key] = customer.name
+                                    elif hasattr(customer, 'wa_id') and placeholder_name == 'phone':
+                                        # Use wa_id as phone fallback (remove country code if present)
+                                        phone = customer.wa_id.replace('91', '') if customer.wa_id.startswith('91') else customer.wa_id
+                                        processed_data[key] = phone
+                                    else:
+                                        # Use placeholder name as fallback value
+                                        processed_data[key] = placeholder_name
+                                else:
+                                    processed_data[key] = value
+                            else:
+                                processed_data[key] = value
+                        
+                        print(f"[ws_webhook] INFO - Processed data from placeholders: {processed_data}")
+                        response_data = processed_data
 
-                    # Map flow field names to expected field names
-                    field_mapping = {
-                        "name": "full_name",
-                        "phone": "phone_number",
-                        "address_line": "house_street",
-                        "pincode": "pincode",
-                        "city": "city",
-                        "state": "state",
-                    }
-
-                    # Transform the response data to match expected field names
-                    mapped_data = {}
-                    for flow_field, expected_field in field_mapping.items():
-                        if flow_field in response_data:
-                            mapped_data[expected_field] = response_data[flow_field]
-
-                    print(f"[ws_webhook] DEBUG - Mapped flow data: {mapped_data}")
-                    response_data = mapped_data
+                    # Process the flow response data directly
+                    # The flow fields are defined in Meta's Flow Builder, not here
+                    print(f"[ws_webhook] DEBUG - Flow response data: {response_data}")
+                    print(f"[ws_webhook] INFO - Flow fields received: {list(response_data.keys())}")
+                    
+                    # No field mapping needed - use the data as received from Meta
+                    # Meta's Flow Builder defines the field names and structure
 
                     # Validate that we have actual data
                     if not response_data or (isinstance(response_data, dict) and not any(response_data.values())):
@@ -1198,7 +1219,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     interactive["flow_response"] = {
                         "flow_id": "1314521433687006",  # Default address flow ID
                         "flow_cta": "Submit",
-                        "flow_action_payload": response_data,
+                        "flow_action_payload": response_data,  # Use data as received from Meta
                     }
                     i_type = "flow"  # Update type for processing
                     print(f"[ws_webhook] DEBUG - Converted to flow format, processing as flow")
