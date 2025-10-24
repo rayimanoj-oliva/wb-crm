@@ -209,6 +209,9 @@ class Order(Base):
     timestamp = Column(DateTime, default=datetime.utcnow)
     # Shipping address associated with the order
     shipping_address_id = Column(UUID(as_uuid=True), ForeignKey("customer_addresses.id"), nullable=True)
+    
+    # Track modification state
+    modification_started_at = Column(DateTime, nullable=True)
 
     customer = relationship("Customer", back_populates="orders")
     items = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
@@ -256,6 +259,9 @@ class OrderItem(Base):
     currency = Column(String, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
+    # Track if this item was added during order modification
+    is_modification_addition = Column(Boolean, default=False, nullable=False)
+    modification_timestamp = Column(DateTime, nullable=True)
 
     order = relationship("Order", back_populates="items")
     product = relationship("Product")

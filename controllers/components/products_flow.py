@@ -159,9 +159,13 @@ async def handle_cart_next_action(
 
     # Modify → show catalog again, with a Your Cart section if we can fetch it
     if normalized == "modify_order":
+        print(f"[products_flow] DEBUG - Processing modify_order for wa_id: {wa_id}")
+        print(f"[products_flow] DEBUG - Customer: {customer}")
+        
         try:
             token_entry = get_latest_token(db)
             if not token_entry or not token_entry.token:
+                print(f"[products_flow] DEBUG - No token available, falling back to catalog link")
                 await send_message_to_waid(wa_id, "Opening catalog...", db)
                 from controllers.components.products_flow import run_buy_products_flow as _open_catalog
                 await _open_catalog(db, wa_id=wa_id)
@@ -171,8 +175,11 @@ async def handle_cart_next_action(
             headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
             phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
 
-            # Try to fetch latest order items to show as a section
-            your_cart_rows: list[Dict[str, str]] = []
+            # Try to fetch latest order items separated by modification status
+            original_cart_rows: list[Dict[str, str]] = []
+            new_cart_rows: list[Dict[str, str]] = []
+            all_selected_product_ids: set[str] = set()
+            
             try:
                 latest_order = (
                     db.query(order_service.Order)
@@ -180,30 +187,78 @@ async def handle_cart_next_action(
                     .order_by(order_service.Order.timestamp.desc())
                     .first()
                 )
+                
+                print(f"[products_flow] DEBUG - Latest order found: {latest_order is not None}")
+                if latest_order:
+                    print(f"[products_flow] DEBUG - Order has {len(latest_order.items)} items")
+                    print(f"[products_flow] DEBUG - Order modification_started_at: {latest_order.modification_started_at}")
+                
                 if latest_order and latest_order.items:
-                    for it in latest_order.items[:10]:
+                    # Separate original items from newly added items
+                    for it in latest_order.items[:10]:  # Limit to 10 items per section
                         if it.product_retailer_id:
-                            your_cart_rows.append({"product_retailer_id": it.product_retailer_id})
-            except Exception:
+                            item_data = {"product_retailer_id": it.product_retailer_id}
+                            all_selected_product_ids.add(it.product_retailer_id)
+                            
+                            # Check if the new field exists (for backward compatibility)
+                            try:
+                                is_modification = getattr(it, 'is_modification_addition', False)
+                                if is_modification:
+                                    new_cart_rows.append(item_data)
+                                else:
+                                    original_cart_rows.append(item_data)
+                            except AttributeError:
+                                # If the field doesn't exist, treat all items as original
+                                original_cart_rows.append(item_data)
+            except Exception as e:
+                print(f"[products_flow] ERROR - Failed to fetch order items: {str(e)}")
                 pass
 
             sections = []
-            if your_cart_rows:
+            
+            # Show original items first (shortened title to meet WhatsApp 24 char limit)
+            if original_cart_rows:
                 sections.append({
                     "title": "Your Cart",
-                    "product_items": your_cart_rows,
+                    "product_items": original_cart_rows,
                 })
-            # Generic section to allow adding more items
-            sections.append({
-                "title": "More Products",
-                "product_items": [
-                    {"product_retailer_id": "39302163202202"},
-                    {"product_retailer_id": "39531958435994"},
-                    {"product_retailer_id": "35404294455450"},
-                    {"product_retailer_id": "35411030081690"},
-                    {"product_retailer_id": "40286295392410"},
-                ],
-            })
+            
+            # Show newly added items if any
+            if new_cart_rows:
+                sections.append({
+                    "title": "New Items",
+                    "product_items": new_cart_rows,
+                })
+            
+            # Generic section to allow adding more items (exclude already selected)
+            available_products = [
+                {"product_retailer_id": "39302163202202"},
+                {"product_retailer_id": "39531958435994"},
+                {"product_retailer_id": "35404294455450"},
+                {"product_retailer_id": "35411030081690"},
+                {"product_retailer_id": "40286295392410"},
+            ]
+            
+            # Filter out products that are already in the cart
+            filtered_products = [
+                product for product in available_products 
+                if product["product_retailer_id"] not in all_selected_product_ids
+            ]
+            
+            if filtered_products:  # Only add section if there are products to show
+                sections.append({
+                    "title": "Add More",
+                    "product_items": filtered_products,
+                })
+            
+            # Debug logging
+            print(f"[products_flow] DEBUG - Sections count: {len(sections)}")
+            print(f"[products_flow] DEBUG - Original items: {len(original_cart_rows)}")
+            print(f"[products_flow] DEBUG - New items: {len(new_cart_rows)}")
+            print(f"[products_flow] DEBUG - All selected product IDs: {all_selected_product_ids}")
+            print(f"[products_flow] DEBUG - Available products: {len(available_products)}")
+            print(f"[products_flow] DEBUG - Filtered products: {len(filtered_products)}")
+            print(f"[products_flow] DEBUG - Filtered product IDs: {[p['product_retailer_id'] for p in filtered_products]}")
 
             payload = {
                 "messaging_product": "whatsapp",
@@ -211,18 +266,70 @@ async def handle_cart_next_action(
                 "type": "interactive",
                 "interactive": {
                     "type": "product_list",
-                    "header": {"type": "text", "text": "Modify your order"},
-                    "body": {"text": "Review your cart and add more items if you like."},
-                    "footer": {"text": "Tap to open the catalog"},
+                    "header": {"type": "text", "text": "Modify Your Order"},
+                    "body": {"text": "Your selected items are shown below. You can add more products."},
+                    "footer": {"text": "Tap to view and add items"},
                     "action": {
                         "catalog_id": os.getenv("WHATSAPP_CATALOG_ID", "1093353131080785"),
                         "sections": sections,
                     },
                 },
             }
-            requests.post(get_messages_url(phone_id), headers=headers, json=payload)
+            
+            response = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
+            
+            # Log response for debugging
+            print(f"[products_flow] DEBUG - Modify order response status: {response.status_code}")
+            if response.status_code != 200:
+                print(f"[products_flow] ERROR - Modify order failed: {response.text}")
+            
+            # Save to database and broadcast to WebSocket if message was sent successfully
+            if response.status_code == 200:
+                try:
+                    # Get message ID from response
+                    response_data = response.json()
+                    message_id = response_data.get("messages", [{}])[0].get("id", f"outbound_{datetime.now().timestamp()}")
+                    
+                    # Get or create customer
+                    from services.customer_service import get_or_create_customer
+                    from schemas.customer_schema import CustomerCreate
+                    customer = get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
+                    
+                    # Save outbound message to database
+                    from services.message_service import create_message
+                    from schemas.message_schema import MessageCreate
+                    
+                    outbound_message = MessageCreate(
+                        message_id=message_id,
+                        from_wa_id=os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                        to_wa_id=wa_id,
+                        type="interactive",
+                        body="Modify Your Order - Your selected items are shown below. You can add more products.",
+                        timestamp=datetime.now(),
+                        customer_id=customer.id,
+                    )
+                    create_message(db, outbound_message)
+                    print(f"[products_flow] DEBUG - Modify order message saved to database: {message_id}")
+                    
+                    # Broadcast to WebSocket
+                    from utils.ws_manager import manager
+                    await manager.broadcast({
+                        "from": os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                        "to": wa_id,
+                        "type": "interactive",
+                        "message": "Modify Your Order - Your selected items are shown below. You can add more products.",
+                        "timestamp": datetime.now().isoformat(),
+                        "meta": {
+                            "kind": "product_list",
+                            "sections": sections
+                        }
+                    })
+                except Exception as e:
+                    print(f"[products_flow] WARNING - Database save or WebSocket broadcast failed: {e}")
+            
             return {"status": "modify_catalog_sent"}
-        except Exception:
+        except Exception as e:
+            print(f"[products_flow] ERROR - Modify order failed with exception: {str(e)}")
             # Fallback to catalog link
             await run_buy_products_flow(db, wa_id=wa_id)
             return {"status": "catalog_link_sent"}

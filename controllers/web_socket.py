@@ -889,6 +889,21 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 ) for prod in order["product_items"]
             ]
 
+            # Check if this order addition is happening after a modify order action
+            # by checking if the latest order has modification_started_at set
+            is_modification = False
+            try:
+                latest_order = (
+                    db.query(order_service.Order)
+                    .filter(order_service.Order.customer_id == customer.id)
+                    .order_by(order_service.Order.timestamp.desc())
+                    .first()
+                )
+                if latest_order and latest_order.modification_started_at:
+                    is_modification = True
+            except Exception:
+                pass
+
             # Merge into latest open order (if any); else create a new one
             order_obj = order_service.merge_or_create_order(
                 db,
@@ -896,6 +911,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 catalog_id=order.get("catalog_id"),
                 timestamp=timestamp,
                 items=order_items,
+                is_modification=is_modification,
             )
 
             await manager.broadcast({
