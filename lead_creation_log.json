@@ -1,0 +1,22 @@
+[
+  {
+    "timestamp": "2025-10-24T16:29:11.390926",
+    "wa_id": "918309866859",
+    "customer_name": "Bhargavi",
+    "lead_status": "NO_CALLBACK",
+    "success": false,
+    "lead_id": null,
+    "error_message": "API Error 202: {\"data\":[{\"code\":\"MANDATORY_NOT_FOUND\",\"details\":{\"api_name\":\"Last_Name\"},\"message\":\"required field not found\",\"status\":\"error\"}]}",
+    "appointment_details": {}
+  },
+  {
+    "timestamp": "2025-10-24T16:39:48.567770",
+    "wa_id": "918309866859",
+    "customer_name": "Bhargavi",
+    "lead_status": "NO_CALLBACK",
+    "success": false,
+    "lead_id": null,
+    "error_message": "API Error 202: {\"data\":[{\"code\":\"MANDATORY_NOT_FOUND\",\"details\":{\"api_name\":\"Last_Name\"},\"message\":\"required field not found\",\"status\":\"error\"}]}",
+    "appointment_details": {}
+  }
+]

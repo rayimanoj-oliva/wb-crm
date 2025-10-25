@@ -132,6 +132,7 @@ from utils.address_validator import analyze_address, format_errors_for_user
 from controllers.components.welcome_flow import run_welcome_flow, trigger_buy_products_from_welcome
 from controllers.components.treament_flow import run_treament_flow, run_treatment_buttons_flow
 from controllers.components.interactive_type import run_interactive_type
+from controllers.components.lead_appointment_flow import run_lead_appointment_flow
 from controllers.components.products_flow import run_buy_products_flow
 
 router = APIRouter()
@@ -145,6 +146,10 @@ address_nudge_sent = {}
 # In-memory appointment scheduling state per user
 # Structure: { wa_id: { "date": "YYYY-MM-DD" } }
 appointment_state = {}
+
+# In-memory lead appointment flow state per user
+# Structure: { wa_id: { "selected_city": str, "selected_clinic": str, "custom_date": str, "waiting_for_custom_date": bool, "clinic_id": str } }
+lead_appointment_state = {}
 
 # Flow token storage
 flow_tokens = {}
@@ -614,6 +619,10 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         timestamp = datetime.fromtimestamp(int(message["timestamp"]))
         message_type = message["type"]
         message_id = message["id"]
+        
+        # Initialize interactive variables for all message types
+        interactive = message.get("interactive", {}) if message_type == "interactive" else {}
+        i_type = interactive.get("type") if message_type == "interactive" else None
 
         # Derive a text body for non-text messages (interactive/list/button) so parsers work
         body_text = ""
@@ -796,6 +805,26 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             if status_val in {"welcome_sent", "welcome_failed"}:
                 return result
             handled_text = status_val in {"handled"}
+
+        # 3️⃣ LEAD-TO-APPOINTMENT FLOW - handle Meta ad triggered flows
+        if not handled_text:
+            lead_result = await run_lead_appointment_flow(
+                db,
+                wa_id=wa_id,
+                message_type=message_type,
+                message_id=message_id,
+                from_wa_id=from_wa_id,
+                to_wa_id=to_wa_id,
+                body_text=body_text,
+                timestamp=timestamp,
+                customer=customer,
+                interactive=interactive,
+                i_type=i_type,
+            )
+            lead_status = (lead_result or {}).get("status")
+            if lead_status not in {"skipped", "error"}:
+                return lead_result
+            handled_text = lead_status in {"auto_welcome_sent", "proceed_to_city_selection", "proceed_to_clinic_location", "proceed_to_time_slot", "waiting_for_custom_date", "callback_initiated", "lead_created_no_callback", "thank_you_sent", "week_list_sent", "day_list_sent", "time_slots_sent", "times_sent"}
 
         # Manual date-time fallback parsing before other generic text handling
         if message_type == "text" and not handled_text:
@@ -1160,8 +1189,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             return {"status": "success", "message_id": message_id}
 
         elif message_type == "interactive":
-            interactive = message.get("interactive", {})
-            i_type = interactive.get("type")
+            # interactive and i_type already initialized above
             print(f"[ws_webhook] DEBUG - Interactive type: {i_type}")
             if i_type == "flow":
                 flow_response = interactive.get("flow_response", {})

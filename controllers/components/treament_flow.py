@@ -525,6 +525,7 @@ async def run_appointment_buttons_flow(
             or normalized_payload in {"book an appointment", "book appointment"}
         ):
             try:
+                # Use TREATMENT FLOW specific week list (original function)
                 from controllers.components.interactive_type import send_week_list  # type: ignore
                 await send_week_list(db, wa_id)
                 return {"status": "week_list_sent"}
@@ -577,6 +578,7 @@ async def run_appointment_buttons_flow(
                         return result
                 # Need date first -> start from week selection
                 await send_message_to_waid(wa_id, "Please select a week and then a date.", db)
+                # Use TREATMENT FLOW specific week list (original function)
                 from controllers.components.interactive_type import send_week_list  # type: ignore
                 await send_week_list(db, wa_id)
                 return {"status": "need_date_first"}
