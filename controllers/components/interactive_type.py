@@ -403,7 +403,7 @@ async def run_interactive_type(
                             await send_message_to_waid(wa_id, "✅ Address saved successfully!", db)
                             await send_message_to_waid(
                                 wa_id,
-                                f"📍 {saved_address.full_name}, {saved_address.house_street}, {saved_address.city} - {saved_address.pincode}",
+                                f"📍 {saved_address.full_name}, {saved_address.phone}, {saved_address.house_street}, {saved_address.city}, {saved_address.state} - {saved_address.pincode}",
                                 db,
                             )
 
@@ -552,7 +552,7 @@ async def run_interactive_type(
                     await send_message_to_waid(wa_id, "✅ Address saved successfully!", db)
                     await send_message_to_waid(
                         wa_id,
-                        f"📍 {saved_address.full_name}, {saved_address.house_street}, {saved_address.city} - {saved_address.pincode}",
+                        f"📍 {saved_address.full_name}, {saved_address.phone}, {saved_address.house_street}, {saved_address.city}, {saved_address.state} - {saved_address.pincode}",
                         db,
                     )
 

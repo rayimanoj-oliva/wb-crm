@@ -595,11 +595,29 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         # Enhanced debugging for webhook payloads
         debug_webhook_payload(body, raw_body_str)
         
+        # Check if this is a status update (not a message) - skip it
+        if "entry" in body:
+            value = body["entry"][0]["changes"][0]["value"]
+            # If value contains 'statuses' but no 'messages' or 'contacts', it's a status update
+            if "statuses" in value and ("messages" not in value or "contacts" not in value):
+                print(f"[ws_webhook] DEBUG - Skipping status update webhook")
+                return {"status": "ok", "message": "Status update ignored"}
+        elif "statuses" in body and ("messages" not in body or "contacts" not in body):
+            print(f"[ws_webhook] DEBUG - Skipping status update webhook (alternative structure)")
+            return {"status": "ok", "message": "Status update ignored"}
+        
         # Handle different payload structures
         if "entry" in body:
             # Standard WhatsApp Business API webhook structure
             print(f"[ws_webhook] DEBUG - Using standard webhook structure")
             value = body["entry"][0]["changes"][0]["value"]
+            
+            # Verify we have messages and contacts
+            if "messages" not in value or "contacts" not in value:
+                print(f"[ws_webhook] ERROR - Missing 'messages' or 'contacts' in webhook payload")
+                print(f"[ws_webhook] Available keys in value: {list(value.keys())}")
+                return {"status": "error", "message": "Invalid webhook payload"}
+            
             contact = value["contacts"][0]
             message = value["messages"][0]
             wa_id = contact["wa_id"]
@@ -609,6 +627,13 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         else:
             # Alternative payload structure (direct structure)
             print(f"[ws_webhook] DEBUG - Using alternative payload structure")
+            
+            # Verify we have messages and contacts
+            if "messages" not in body or "contacts" not in body:
+                print(f"[ws_webhook] ERROR - Missing 'messages' or 'contacts' in webhook payload")
+                print(f"[ws_webhook] Available keys in body: {list(body.keys())}")
+                return {"status": "error", "message": "Invalid webhook payload"}
+            
             contact = body["contacts"][0]
             message = body["messages"][0]
             wa_id = contact["wa_id"]
@@ -1991,8 +2016,16 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
 
         return {"status": "success", "message_id": message_id}
 
+    except KeyError as e:
+        print(f"Webhook error: Missing key in webhook payload - {e}")
+        print("This might be a status update webhook that should be skipped")
+        import traceback
+        print(traceback.format_exc())
+        return {"status": "ignored", "message": f"Missing key: {e}"}
     except Exception as e:
         print("Webhook error:", e)
+        import traceback
+        print(traceback.format_exc())
         return {"status": "failed", "error": str(e)}
 
 @router.get("/webhook")
