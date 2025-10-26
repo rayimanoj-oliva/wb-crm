@@ -175,9 +175,8 @@ async def handle_cart_next_action(
             headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
             phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
 
-            # Try to fetch latest order items separated by modification status
-            original_cart_rows: list[Dict[str, str]] = []
-            new_cart_rows: list[Dict[str, str]] = []
+            # Try to fetch latest order items - always show all items in cart
+            cart_rows: list[Dict[str, str]] = []
             all_selected_product_ids: set[str] = set()
             
             try:
@@ -194,40 +193,24 @@ async def handle_cart_next_action(
                     print(f"[products_flow] DEBUG - Order modification_started_at: {latest_order.modification_started_at}")
                 
                 if latest_order and latest_order.items:
-                    # Separate original items from newly added items
-                    for it in latest_order.items[:10]:  # Limit to 10 items per section
+                    # Show ALL items in the cart (both original and new items)
+                    for it in latest_order.items[:10]:  # Limit to 10 items
                         if it.product_retailer_id:
                             item_data = {"product_retailer_id": it.product_retailer_id}
                             all_selected_product_ids.add(it.product_retailer_id)
+                            cart_rows.append(item_data)
                             
-                            # Check if the new field exists (for backward compatibility)
-                            try:
-                                is_modification = getattr(it, 'is_modification_addition', False)
-                                if is_modification:
-                                    new_cart_rows.append(item_data)
-                                else:
-                                    original_cart_rows.append(item_data)
-                            except AttributeError:
-                                # If the field doesn't exist, treat all items as original
-                                original_cart_rows.append(item_data)
             except Exception as e:
                 print(f"[products_flow] ERROR - Failed to fetch order items: {str(e)}")
                 pass
 
             sections = []
             
-            # Show original items first (shortened title to meet WhatsApp 24 char limit)
-            if original_cart_rows:
+            # Always show cart items if they exist
+            if cart_rows:
                 sections.append({
                     "title": "Your Cart",
-                    "product_items": original_cart_rows,
-                })
-            
-            # Show newly added items if any
-            if new_cart_rows:
-                sections.append({
-                    "title": "New Items",
-                    "product_items": new_cart_rows,
+                    "product_items": cart_rows,
                 })
             
             # Generic section to allow adding more items (exclude already selected)
@@ -251,14 +234,27 @@ async def handle_cart_next_action(
                     "product_items": filtered_products,
                 })
             
+            # If no cart items exist, show all available products
+            if not cart_rows:
+                sections.append({
+                    "title": "Available Products",
+                    "product_items": available_products,
+                })
+            
             # Debug logging
             print(f"[products_flow] DEBUG - Sections count: {len(sections)}")
-            print(f"[products_flow] DEBUG - Original items: {len(original_cart_rows)}")
-            print(f"[products_flow] DEBUG - New items: {len(new_cart_rows)}")
+            print(f"[products_flow] DEBUG - Cart items: {len(cart_rows)}")
             print(f"[products_flow] DEBUG - All selected product IDs: {all_selected_product_ids}")
             print(f"[products_flow] DEBUG - Available products: {len(available_products)}")
             print(f"[products_flow] DEBUG - Filtered products: {len(filtered_products)}")
             print(f"[products_flow] DEBUG - Filtered product IDs: {[p['product_retailer_id'] for p in filtered_products]}")
+
+            # Ensure we always have at least one section
+            if not sections:
+                sections.append({
+                    "title": "Available Products",
+                    "product_items": available_products,
+                })
 
             payload = {
                 "messaging_product": "whatsapp",

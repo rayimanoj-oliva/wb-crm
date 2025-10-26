@@ -17,21 +17,26 @@ def create_order(db: Session, order_data: OrderCreate):
         catalog_id=order_data.catalog_id,
         timestamp=order_data.timestamp
     )
-    db.add(order)
-    db.flush()  # Get order.id before adding items
+    try:
+        db.add(order)
+        db.flush()  # Get order.id before adding items
 
-    for item in order_data.items:
-        db.add(OrderItem(
-            order_id=order.id,
-            product_retailer_id=item.product_retailer_id,
-            quantity=item.quantity,
-            item_price=item.item_price,
-            currency=item.currency
-        ))
+        for item in order_data.items:
+            db.add(OrderItem(
+                order_id=order.id,
+                product_retailer_id=item.product_retailer_id,
+                quantity=item.quantity,
+                item_price=item.item_price,
+                currency=item.currency
+            ))
 
-    db.commit()
-    db.refresh(order)
-    return order
+        db.commit()
+        db.refresh(order)
+        return order
+    except Exception as e:
+        print(f"[order_service] Error creating order: {e}")
+        db.rollback()
+        raise
 
 
 def _is_order_open(db: Session, order: Order) -> bool:
@@ -73,25 +78,80 @@ def merge_or_create_order(
     
     Returns the Order instance used.
     """
-    # Find latest order for this customer
-    latest_order = (
-        db.query(Order)
-        .filter(Order.customer_id == customer_id)
-        .order_by(Order.timestamp.desc())
-        .first()
-    )
+    try:
+        # Find latest order for this customer
+        latest_order = (
+            db.query(Order)
+            .filter(Order.customer_id == customer_id)
+            .order_by(Order.timestamp.desc())
+            .first()
+        )
+    except Exception as e:
+        print(f"[order_service] Error querying latest order: {e}")
+        # If query fails, create a new order
+        latest_order = None
 
     if latest_order and _is_order_open(db, latest_order):
-        print(f"[order_service] DEBUG - Merging {len(list(items))} items into existing order {latest_order.id}")
-        print(f"[order_service] DEBUG - Order currently has {len(latest_order.items)} items")
+        print(f"[order_service] DEBUG - Processing order for customer {customer_id}")
+        print(f"[order_service] DEBUG - Latest order has {len(latest_order.items)} items")
         print(f"[order_service] DEBUG - is_modification: {is_modification}")
+        print(f"[order_service] DEBUG - modification_started_at: {latest_order.modification_started_at}")
         
-        # If this is a modification, mark the order as being modified
+        # If this is a modification and order was already in modification mode,
+        # replace the cart instead of adding to it
+        if is_modification and latest_order.modification_started_at:
+            print(f"[order_service] DEBUG - Replacing cart items (modification mode)")
+            # Delete all existing items from the order
+            for existing_item in latest_order.items:
+                db.delete(existing_item)
+            try:
+                db.commit()
+            except Exception as e:
+                print(f"[order_service] Error committing item deletions: {e}")
+                db.rollback()
+                raise
+            
+            # Add new items as original items (not modification additions)
+            for item in items:
+                print(f"[order_service] DEBUG - Adding replacement item: {item.product_retailer_id}")
+                db.add(
+                    OrderItem(
+                        order_id=latest_order.id,
+                        product_retailer_id=item.product_retailer_id,
+                        quantity=item.quantity,
+                        item_price=item.item_price,
+                        currency=item.currency,
+                        is_modification_addition=False,  # These are now the main items
+                        modification_timestamp=None,
+                    )
+                )
+            # Clear the modification flag since we've replaced the cart
+            latest_order.modification_started_at = None
+            latest_order.timestamp = timestamp or datetime.utcnow()
+            try:
+                db.commit()
+                db.refresh(latest_order)
+            except Exception as e:
+                print(f"[order_service] Error committing order update: {e}")
+                db.rollback()
+                raise
+            print(f"[order_service] DEBUG - After replacement, order has {len(latest_order.items)} items")
+            
+            # Mark as replaced for caller logic
+            try:
+                setattr(latest_order, "_merged", True)
+                setattr(latest_order, "_replaced", True)
+            except Exception:
+                pass
+            return latest_order
+        
+        # If this is the first modification, mark the order as being modified
         if is_modification and not latest_order.modification_started_at:
             latest_order.modification_started_at = timestamp or datetime.utcnow()
             print(f"[order_service] DEBUG - Set modification_started_at: {latest_order.modification_started_at}")
         
-        # Append items, update timestamp
+        # Regular merge: append items, update timestamp
+        print(f"[order_service] DEBUG - Appending {len(list(items))} items to existing order {latest_order.id}")
         for item in items:
             print(f"[order_service] DEBUG - Adding item: {item.product_retailer_id}, is_modification: {is_modification}")
             db.add(
@@ -106,8 +166,13 @@ def merge_or_create_order(
                 )
             )
         latest_order.timestamp = timestamp or datetime.utcnow()
-        db.commit()
-        db.refresh(latest_order)
+        try:
+            db.commit()
+            db.refresh(latest_order)
+        except Exception as e:
+            print(f"[order_service] Error committing order merge: {e}")
+            db.rollback()
+            raise
         print(f"[order_service] DEBUG - After merge, order has {len(latest_order.items)} items")
         
         # Mark as merged for caller logic (ephemeral attribute)

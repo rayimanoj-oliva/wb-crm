@@ -210,6 +210,10 @@ class Order(Base):
     # Shipping address associated with the order
     shipping_address_id = Column(UUID(as_uuid=True), ForeignKey("customer_addresses.id"), nullable=True)
     
+    # Order status and payment tracking
+    status = Column(String(20), default="pending")  # pending, paid, shipped, delivered, cancelled
+    payment_completed_at = Column(DateTime, nullable=True)
+    
     # Track modification state
     modification_started_at = Column(DateTime, nullable=True)
 

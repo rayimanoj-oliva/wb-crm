@@ -197,6 +197,9 @@ async def razorpay_webhook(request: Request, db: Session = Depends(get_db)):
         gateway_transaction_id = payload.get("payload", {}).get("payment", {}).get("entity", {}).get("id")
 
         payment_transaction = None
+        order_updated = False
+        customer_notified = False
+        
         if gateway_transaction_id:
             payment_transaction = (
                 db.query(PaymentTransaction)
@@ -207,6 +210,51 @@ async def razorpay_webhook(request: Request, db: Session = Depends(get_db)):
                 payment_transaction.status = "paid"
                 payment_transaction.gateway_response = payload
                 payment_transaction.updated_at = datetime.utcnow()
+                
+                # Update associated order status
+                try:
+                    from models.models import Order, Payment
+                    from utils.whatsapp import send_message_to_waid
+                    
+                    # Find the order associated with this payment
+                    payment_record = db.query(Payment).filter(Payment.razorpay_id == gateway_transaction_id).first()
+                    if payment_record and payment_record.order_id:
+                        order = db.query(Order).filter(Order.id == payment_record.order_id).first()
+                        if order:
+                            # Update order status
+                            order.status = "paid"
+                            order.payment_completed_at = datetime.utcnow()
+                            
+                            # Get customer info for notification
+                            customer = order.customer
+                            if customer and customer.wa_id:
+                                # Send payment confirmation to customer
+                                try:
+                                    from services.cart_checkout_service import CartCheckoutService
+                                    checkout_service = CartCheckoutService(db)
+                                    order_summary = checkout_service.get_order_summary_for_payment(str(order.id))
+                                    
+                                    confirmation_message = f"""✅ **Payment Successful!**
+
+Your order has been confirmed and payment received.
+
+Order ID: {order.id}
+Total Paid: {order_summary.get('formatted_total', 'N/A')}
+Items: {order_summary.get('items_count', 0)} items
+
+We'll process your order and send you updates. Thank you for your purchase! 🎉"""
+                                    
+                                    await send_message_to_waid(customer.wa_id, confirmation_message, db)
+                                    customer_notified = True
+                                    print(f"[payment_webhook] Payment confirmation sent to customer {customer.wa_id}")
+                                except Exception as e:
+                                    print(f"[payment_webhook] Failed to send customer notification: {e}")
+                            
+                            order_updated = True
+                            print(f"[payment_webhook] Order {order.id} status updated to paid")
+                except Exception as e:
+                    print(f"[payment_webhook] Failed to update order status: {e}")
+                
                 db.commit()
 
         # Mock Shopify order creation
@@ -217,6 +265,8 @@ async def razorpay_webhook(request: Request, db: Session = Depends(get_db)):
                 "shopify_status": shopify_status,
                 "shopify_response": shopify_response,
                 "payment_updated": payment_transaction is not None,
+                "order_updated": order_updated,
+                "customer_notified": customer_notified,
             }
         )
 

@@ -17,6 +17,90 @@ from utils.whatsapp import send_message_to_waid
 from utils.ws_manager import manager
 
 
+async def _send_payment_redirect_button(wa_id: str, payment_url: str, order_id: str, db: Session) -> None:
+    """Send an interactive message with a direct payment link button for better UX"""
+    try:
+        from services.whatsapp_service import get_latest_token
+        from config.constants import get_messages_url
+        import os
+        import requests
+        
+        token_entry = get_latest_token(db)
+        if not token_entry or not token_entry.token:
+            return
+
+        access_token = token_entry.token
+        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+        phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+
+        # Create interactive message with payment redirect button
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": wa_id,
+            "type": "interactive",
+            "interactive": {
+                "type": "button",
+                "header": {
+                    "type": "text",
+                    "text": "💳 Complete Payment"
+                },
+                "body": {
+                    "text": f"Order #{order_id}\n\nClick the button below to redirect to Razorpay's secure payment page:"
+                },
+                "footer": {
+                    "text": "Secure payment powered by Razorpay"
+                },
+                "action": {
+                    "buttons": [
+                        {
+                            "type": "reply",
+                            "reply": {
+                                "id": "redirect_to_payment",
+                                "title": "🔗 Pay Now"
+                            }
+                        },
+                        {
+                            "type": "reply",
+                            "reply": {
+                                "id": "payment_help",
+                                "title": "❓ Help"
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+
+        response = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
+        
+        if response.status_code == 200:
+            print(f"[payment_redirect_button] Payment redirect button sent successfully")
+            
+            # Store the payment URL for the redirect_to_payment button handler
+            # We'll handle this in the button reply processing
+            try:
+                from utils.ws_manager import manager
+                await manager.broadcast({
+                    "from": os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                    "to": wa_id,
+                    "type": "interactive",
+                    "message": "Complete Payment - Click the button below to redirect to Razorpay's secure payment page:",
+                    "timestamp": datetime.now().isoformat(),
+                    "meta": {
+                        "kind": "payment_redirect",
+                        "payment_url": payment_url,
+                        "order_id": order_id
+                    }
+                })
+            except Exception as e:
+                print(f"[payment_redirect_button] WebSocket broadcast failed: {e}")
+        else:
+            print(f"[payment_redirect_button] Failed to send payment redirect button: {response.text}")
+            
+    except Exception as e:
+        print(f"[payment_redirect_button] Error sending payment redirect button: {e}")
+
+
 async def run_interactive_type(
     db: Session,
     *,
@@ -479,28 +563,39 @@ async def run_interactive_type(
                     except Exception:
                         pass
 
-                    # Payment hint (existing logic sends link later)
+                    # Generate payment link using enhanced service
                     try:
+                        from services.cart_checkout_service import CartCheckoutService
+                        checkout_service = CartCheckoutService(db)
+                        
+                        # Get latest order for this customer
                         latest_order = (
                             db.query(order_service.Order)
                             .filter(order_service.Order.customer_id == customer.id)
                             .order_by(order_service.Order.timestamp.desc())
                             .first()
                         )
-                        total_amount = 0
+                        
                         if latest_order:
-                            for item in latest_order.items:
-                                qty = item.quantity or 1
-                                price = item.item_price or item.price or 0
-                                total_amount += float(price) * int(qty)
-                        if total_amount > 0:
-                            await send_message_to_waid(
-                                wa_id,
-                                f"💳 Please complete your payment of ₹{int(total_amount)} using the payment link that will be sent shortly.",
-                                db,
+                            # Generate payment link with comprehensive order details
+                            payment_result = await checkout_service.generate_payment_link_for_order(
+                                order_id=str(latest_order.id),
+                                customer_wa_id=wa_id,
+                                customer_name=getattr(customer, "name", None),
+                                customer_email=getattr(customer, "email", None),
+                                customer_phone=getattr(customer, "phone", None)
                             )
-                    except Exception:
-                        pass
+                            
+                            if payment_result.get("success"):
+                                print(f"[address_form] Payment link generated successfully for order {latest_order.id}")
+                            else:
+                                print(f"[address_form] Payment generation failed: {payment_result.get('error')}")
+                                await send_message_to_waid(wa_id, "❌ Unable to generate payment link. Please try again.", db)
+                        else:
+                            await send_message_to_waid(wa_id, "❌ No order found. Please add items to your cart first.", db)
+                    except Exception as e:
+                        print(f"[address_form] Payment flow error: {e}")
+                        await send_message_to_waid(wa_id, "❌ Payment processing failed. Please try again.", db)
 
                     return {"status": "address_saved", "message_id": message_id}
                 else:
@@ -639,6 +734,240 @@ async def run_interactive_type(
             except Exception:
                 pass
 
+            # Handle dummy payment button responses
+            try:
+                if reply_id == "test_payment_link":
+                    await send_message_to_waid(
+                        wa_id, 
+                        "🧪 Test payment link sent above! Click it to test the payment flow.", 
+                        db
+                    )
+                    return {"status": "test_payment_info_sent", "message_id": message_id}
+                
+                elif reply_id == "dummy_payment_info":
+                    info_message = """ℹ️ **Test Payment Information**
+
+This is a dummy payment system for testing:
+
+✅ **What it does:**
+• Generates test payment links
+• Simulates payment flow
+• No real money charged
+• Tests cart checkout process
+
+✅ **How to use:**
+• Click the test payment link
+• Complete the test payment flow
+• Verify order processing works
+
+✅ **Benefits:**
+• Safe testing environment
+• No financial risk
+• Full flow testing
+• Development friendly
+
+Happy testing! 🚀"""
+                    
+                    await send_message_to_waid(wa_id, info_message, db)
+                    return {"status": "dummy_info_sent", "message_id": message_id}
+            except Exception as e:
+                print(f"[dummy_payment_buttons] Error handling dummy payment buttons: {e}")
+                pass
+
+            # Handle payment link button responses
+            try:
+                if reply_id == "view_payment_link":
+                    # User wants to see payment link - retrieve and send the actual payment link
+                    try:
+                        # Get the latest order for this customer
+                        latest_order = (
+                            db.query(order_service.Order)
+                            .filter(order_service.Order.customer_id == customer.id)
+                            .order_by(order_service.Order.timestamp.desc())
+                            .first()
+                        )
+                        
+                        if latest_order:
+                            # Get the payment record for this order
+                            from models.models import Payment
+                            payment_record = (
+                                db.query(Payment)
+                                .filter(Payment.order_id == latest_order.id)
+                                .order_by(Payment.created_at.desc())
+                                .first()
+                            )
+                            
+                            if payment_record and payment_record.razorpay_short_url:
+                                # Send the actual payment link with instructions
+                                payment_message = f"""🔗 **Payment Link Ready!**
+
+Click the link below to complete your payment securely:
+
+{payment_record.razorpay_short_url}
+
+**Payment Details:**
+• Order ID: {latest_order.id}
+• Amount: ₹{payment_record.amount:.2f}
+• Status: {payment_record.status}
+
+This link will redirect you to Razorpay's secure payment page where you can complete your transaction using UPI, cards, or net banking.
+
+💡 **Tip:** The link is valid for 30 minutes. If it expires, please request a new payment link."""
+                                
+                                await send_message_to_waid(wa_id, payment_message, db)
+                                
+                                # Also send an interactive message with a direct link button for better UX
+                                await _send_payment_redirect_button(wa_id, payment_record.razorpay_short_url, latest_order.id, db)
+                                
+                                return {"status": "payment_link_sent", "message_id": message_id}
+                            else:
+                                # No payment link found, create a new one
+                                await send_message_to_waid(wa_id, "🔄 Creating a new payment link for you...", db)
+                                
+                                from services.cart_checkout_service import CartCheckoutService
+                                checkout_service = CartCheckoutService(db)
+                                
+                                result = await checkout_service.generate_payment_link_for_order(
+                                    order_id=str(latest_order.id),
+                                    customer_wa_id=wa_id,
+                                    customer_name=getattr(customer, "name", None),
+                                    customer_email=getattr(customer, "email", None),
+                                    customer_phone=getattr(customer, "phone", None)
+                                )
+                                
+                                if result.get("success"):
+                                    await send_message_to_waid(wa_id, "✅ New payment link created and sent above!", db)
+                                    return {"status": "new_payment_link_created", "message_id": message_id}
+                                else:
+                                    await send_message_to_waid(wa_id, "❌ Unable to create payment link. Please try again later.", db)
+                                    return {"status": "payment_link_creation_failed", "message_id": message_id}
+                        else:
+                            await send_message_to_waid(wa_id, "❌ No active order found. Please add items to your cart first.", db)
+                            return {"status": "no_order_found", "message_id": message_id}
+                            
+                    except Exception as e:
+                        print(f"[payment_link_handler] Error retrieving payment link: {e}")
+                        await send_message_to_waid(wa_id, "❌ Unable to retrieve payment link. Please try again later.", db)
+                        return {"status": "payment_link_error", "message_id": message_id}
+                
+                elif reply_id == "redirect_to_payment":
+                    # User clicked "Pay Now" button - send the payment link for immediate redirection
+                    try:
+                        # Get the latest order for this customer
+                        latest_order = (
+                            db.query(order_service.Order)
+                            .filter(order_service.Order.customer_id == customer.id)
+                            .order_by(order_service.Order.timestamp.desc())
+                            .first()
+                        )
+                        
+                        if latest_order:
+                            # Get the payment record for this order
+                            from models.models import Payment
+                            payment_record = (
+                                db.query(Payment)
+                                .filter(Payment.order_id == latest_order.id)
+                                .order_by(Payment.created_at.desc())
+                                .first()
+                            )
+                            
+                            if payment_record and payment_record.razorpay_short_url:
+                                # Send immediate payment redirection message
+                                redirect_message = f"""🚀 **Redirecting to Payment...**
+
+Click the link below to complete your payment:
+
+{payment_record.razorpay_short_url}
+
+**Quick Payment Info:**
+• Order: #{latest_order.id}
+• Amount: ₹{payment_record.amount:.2f}
+• Payment Gateway: Razorpay
+
+This will open Razorpay's secure payment page where you can pay using:
+• UPI (PhonePe, Google Pay, Paytm)
+• Credit/Debit Cards
+• Net Banking
+• Wallets
+
+✅ **Secure & Fast Payment** - Complete in under 2 minutes!"""
+                                
+                                await send_message_to_waid(wa_id, redirect_message, db)
+                                return {"status": "payment_redirect_sent", "message_id": message_id}
+                            else:
+                                await send_message_to_waid(wa_id, "❌ Payment link not found. Please request a new payment link.", db)
+                                return {"status": "payment_link_not_found", "message_id": message_id}
+                        else:
+                            await send_message_to_waid(wa_id, "❌ No active order found. Please add items to your cart first.", db)
+                            return {"status": "no_order_found", "message_id": message_id}
+                            
+                    except Exception as e:
+                        print(f"[payment_redirect_handler] Error handling payment redirect: {e}")
+                        await send_message_to_waid(wa_id, "❌ Unable to redirect to payment. Please try again.", db)
+                        return {"status": "payment_redirect_error", "message_id": message_id}
+                
+                elif reply_id == "order_details":
+                    # User wants to see order details
+                    try:
+                        latest_order = (
+                            db.query(order_service.Order)
+                            .filter(order_service.Order.customer_id == customer.id)
+                            .order_by(order_service.Order.timestamp.desc())
+                            .first()
+                        )
+                        
+                        if latest_order:
+                            from services.cart_checkout_service import CartCheckoutService
+                            checkout_service = CartCheckoutService(db)
+                            order_summary = checkout_service.get_order_summary_for_payment(str(latest_order.id))
+                            
+                            details_message = f"""📋 **Order Details**
+
+Order ID: {latest_order.id}
+Status: Pending Payment
+Items: {order_summary.get('items_count', 0)}
+Total: {order_summary.get('formatted_total', 'N/A')}
+Created: {latest_order.timestamp.strftime('%d %B %Y, %H:%M')}
+
+Please complete your payment to confirm this order."""
+                            
+                            await send_message_to_waid(wa_id, details_message, db)
+                        else:
+                            await send_message_to_waid(wa_id, "❌ No order found.", db)
+                    except Exception as e:
+                        print(f"[order_details] Error: {e}")
+                        await send_message_to_waid(wa_id, "❌ Unable to fetch order details.", db)
+                    
+                    return {"status": "order_details_sent", "message_id": message_id}
+                
+                elif reply_id == "help_payment":
+                    # User needs help with payment
+                    help_message = """❓ **Payment Help**
+
+🔗 **How to Pay:**
+1. Click the payment link sent above
+2. Complete payment on Razorpay
+3. You'll receive confirmation
+
+💳 **Payment Methods:**
+• UPI (Google Pay, PhonePe, Paytm)
+• Credit/Debit Cards
+• Net Banking
+• Wallets
+
+⏰ **Payment Validity:**
+• Link expires in 30 minutes
+• Complete payment to confirm order
+
+🆘 **Need More Help?**
+Contact us for assistance with your payment."""
+                    
+                    await send_message_to_waid(wa_id, help_message, db)
+                    return {"status": "payment_help_sent", "message_id": message_id}
+            except Exception as e:
+                print(f"[payment_buttons] Error handling payment buttons: {e}")
+                pass
+
             # Handle address selection (buttons or list) first
             try:
                 if reply_id in ["use_saved_address", "add_new_address"] or (reply_id or "").startswith("use_address_"):
@@ -664,35 +993,39 @@ async def run_interactive_type(
                                 f"📍 {selected.full_name}, {selected.house_street}, {selected.city} - {selected.pincode}",
                                 db,
                             )
-                            # Continue with payment flow
+                            # Continue with payment flow using enhanced service
                             try:
+                                from services.cart_checkout_service import CartCheckoutService
+                                checkout_service = CartCheckoutService(db)
+                                
+                                # Get latest order for this customer
                                 latest_order = (
                                     db.query(order_service.Order)
                                     .filter(order_service.Order.customer_id == customer.id)
                                     .order_by(order_service.Order.timestamp.desc())
                                     .first()
                                 )
-                                total_amount = 0
+                                
                                 if latest_order:
-                                    for item in latest_order.items:
-                                        qty = item.quantity or 1
-                                        price = item.item_price or item.price or 0
-                                        total_amount += float(price) * int(qty)
-                                if total_amount > 0:
-                                    from utils.razorpay_utils import create_razorpay_payment_link
-                                    try:
-                                        payment_resp = create_razorpay_payment_link(
-                                            amount=float(total_amount),
-                                            currency="INR",
-                                            description=f"WA Order {str(latest_order.id) if latest_order else ''}",
-                                        )
-                                        pay_link = payment_resp.get("short_url") if isinstance(payment_resp, dict) else None
-                                        if pay_link:
-                                            await send_message_to_waid(wa_id, f"💳 Please complete your payment using this link: {pay_link}", db)
-                                    except Exception:
-                                        pass
-                            except Exception:
-                                pass
+                                    # Generate payment link with comprehensive order details
+                                    payment_result = await checkout_service.generate_payment_link_for_order(
+                                        order_id=str(latest_order.id),
+                                        customer_wa_id=wa_id,
+                                        customer_name=getattr(customer, "name", None),
+                                        customer_email=getattr(customer, "email", None),
+                                        customer_phone=getattr(customer, "phone", None)
+                                    )
+                                    
+                                    if payment_result.get("success"):
+                                        print(f"[address_selection] Payment link generated successfully for order {latest_order.id}")
+                                    else:
+                                        print(f"[address_selection] Payment generation failed: {payment_result.get('error')}")
+                                        await send_message_to_waid(wa_id, "❌ Unable to generate payment link. Please try again.", db)
+                                else:
+                                    await send_message_to_waid(wa_id, "❌ No order found. Please add items to your cart first.", db)
+                            except Exception as e:
+                                print(f"[address_selection] Payment flow error: {e}")
+                                await send_message_to_waid(wa_id, "❌ Payment processing failed. Please try again.", db)
                             return {"status": "saved_address_used", "message_id": message_id}
                         else:
                             await send_message_to_waid(wa_id, "❌ Address not found. Please add a new address.", db)
@@ -710,35 +1043,39 @@ async def run_interactive_type(
                                 db,
                             )
                             
-                            # Continue with payment flow
+                            # Continue with payment flow using enhanced service
                             try:
+                                from services.cart_checkout_service import CartCheckoutService
+                                checkout_service = CartCheckoutService(db)
+                                
+                                # Get latest order for this customer
                                 latest_order = (
                                     db.query(order_service.Order)
                                     .filter(order_service.Order.customer_id == customer.id)
                                     .order_by(order_service.Order.timestamp.desc())
                                     .first()
                                 )
-                                total_amount = 0
+                                
                                 if latest_order:
-                                    for item in latest_order.items:
-                                        qty = item.quantity or 1
-                                        price = item.item_price or item.price or 0
-                                        total_amount += float(price) * int(qty)
-                                if total_amount > 0:
-                                    from utils.razorpay_utils import create_razorpay_payment_link
-                                    try:
-                                        payment_resp = create_razorpay_payment_link(
-                                            amount=float(total_amount),
-                                            currency="INR",
-                                            description=f"WA Order {str(latest_order.id) if latest_order else ''}",
-                                        )
-                                        pay_link = payment_resp.get("short_url") if isinstance(payment_resp, dict) else None
-                                        if pay_link:
-                                            await send_message_to_waid(wa_id, f"💳 Please complete your payment using this link: {pay_link}", db)
-                                    except Exception:
-                                        pass
-                            except Exception:
-                                pass
+                                    # Generate payment link with comprehensive order details
+                                    payment_result = await checkout_service.generate_payment_link_for_order(
+                                        order_id=str(latest_order.id),
+                                        customer_wa_id=wa_id,
+                                        customer_name=getattr(customer, "name", None),
+                                        customer_email=getattr(customer, "email", None),
+                                        customer_phone=getattr(customer, "phone", None)
+                                    )
+                                    
+                                    if payment_result.get("success"):
+                                        print(f"[address_selection] Payment link generated successfully for order {latest_order.id}")
+                                    else:
+                                        print(f"[address_selection] Payment generation failed: {payment_result.get('error')}")
+                                        await send_message_to_waid(wa_id, "❌ Unable to generate payment link. Please try again.", db)
+                                else:
+                                    await send_message_to_waid(wa_id, "❌ No order found. Please add items to your cart first.", db)
+                            except Exception as e:
+                                print(f"[address_selection] Payment flow error: {e}")
+                                await send_message_to_waid(wa_id, "❌ Payment processing failed. Please try again.", db)
                             
                             return {"status": "saved_address_used", "message_id": message_id}
                         else:

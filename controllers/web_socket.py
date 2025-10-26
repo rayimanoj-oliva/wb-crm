@@ -851,6 +851,32 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             except Exception:
                 pass
 
+        # Handle dummy payment request
+        if message_type == "text" and body_text:
+            text_lower = body_text.lower().strip()
+            if "dummy payment" in text_lower or "test payment" in text_lower:
+                try:
+                    from services.dummy_payment_service import DummyPaymentService
+                    dummy_service = DummyPaymentService(db)
+                    
+                    # Create dummy payment link
+                    result = await dummy_service.create_dummy_payment_link(
+                        wa_id=wa_id,
+                        customer_name=getattr(customer, "name", None)
+                    )
+                    
+                    if result.get("success"):
+                        print(f"[dummy_payment] Dummy payment link created: {result.get('payment_url')}")
+                    else:
+                        print(f"[dummy_payment] Failed to create dummy payment: {result.get('error')}")
+                        await send_message_to_waid(wa_id, "❌ Failed to create test payment link.", db)
+                    
+                    return {"status": "dummy_payment_sent", "message_id": message_id}
+                except Exception as e:
+                    print(f"[dummy_payment] Error: {e}")
+                    await send_message_to_waid(wa_id, "❌ Error creating test payment link.", db)
+                    return {"status": "dummy_payment_failed", "message_id": message_id}
+
         # 4️⃣ Regular text messages - ALWAYS save to database regardless of handling
         if message_type == "text":
             # Check if already saved to avoid duplicates
@@ -922,26 +948,40 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             # by checking if the latest order has modification_started_at set
             is_modification = False
             try:
-                latest_order = (
-                    db.query(order_service.Order)
-                    .filter(order_service.Order.customer_id == customer.id)
-                    .order_by(order_service.Order.timestamp.desc())
-                    .first()
-                )
-                if latest_order and latest_order.modification_started_at:
-                    is_modification = True
-            except Exception:
-                pass
+                # Use a separate session to avoid transaction conflicts
+                from database.db import SessionLocal
+                temp_db = SessionLocal()
+                try:
+                    latest_order = (
+                        temp_db.query(order_service.Order)
+                        .filter(order_service.Order.customer_id == customer.id)
+                        .order_by(order_service.Order.timestamp.desc())
+                        .first()
+                    )
+                    if latest_order and latest_order.modification_started_at:
+                        is_modification = True
+                finally:
+                    temp_db.close()
+            except Exception as e:
+                print(f"[webhook] Error checking modification status: {e}")
+                # Continue without modification flag if check fails
 
             # Merge into latest open order (if any); else create a new one
-            order_obj = order_service.merge_or_create_order(
-                db,
-                customer_id=customer.id,
-                catalog_id=order.get("catalog_id"),
-                timestamp=timestamp,
-                items=order_items,
-                is_modification=is_modification,
-            )
+            try:
+                order_obj = order_service.merge_or_create_order(
+                    db,
+                    customer_id=customer.id,
+                    catalog_id=order.get("catalog_id"),
+                    timestamp=timestamp,
+                    items=order_items,
+                    is_modification=is_modification,
+                )
+                print(f"[webhook] Order processed successfully: {order_obj.id}")
+            except Exception as e:
+                print(f"[webhook] Error processing order: {e}")
+                # Rollback and try to continue
+                db.rollback()
+                return {"status": "failed", "error": f"Order processing failed: {str(e)}"}
 
             await manager.broadcast({
                 "from": from_wa_id,
@@ -956,9 +996,14 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             try:
                 from controllers.components.products_flow import send_cart_next_actions  # type: ignore
                 await send_cart_next_actions(db, wa_id=wa_id)
-            except Exception:
+            except Exception as e:
+                print(f"[webhook] Error sending cart actions: {e}")
                 # As a fallback, keep legacy behavior of sending address flow directly
-                await _send_address_flow_directly(wa_id, db, customer_id=customer.id)
+                try:
+                    await _send_address_flow_directly(wa_id, db, customer_id=customer.id)
+                except Exception as fallback_error:
+                    print(f"[webhook] Fallback address flow also failed: {fallback_error}")
+                    await send_message_to_waid(wa_id, "✅ Items added to cart! Please proceed with checkout.", db)
         elif message_type == "location":
             location = message["location"]
             location_name = location.get("name", "")
