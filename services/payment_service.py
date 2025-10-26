@@ -14,6 +14,11 @@ from utils.notification_service import send_payment_notifications
 # Load env variables
 load_dotenv()
 
+# ---- Razorpay Direct API Config ----
+RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "rzp_test_123456789")
+RAZORPAY_SECRET = os.getenv("RAZORPAY_SECRET", "test_secret_123456789")
+RAZORPAY_BASE_URL = os.getenv("RAZORPAY_BASE_URL", "https://api.razorpay.com/v1")
+
 # ---- Oliva Razorpay Proxy Config (Fallback) ----
 RAZORPAY_TOKEN_URL = "https://payments.olivaclinic.com/api/token"
 RAZORPAY_PAYMENT_URL = "https://payments.olivaclinic.com/api/payment"
@@ -24,6 +29,12 @@ RAZORPAY_PASSWORD = os.getenv("RAZORPAY_PASSWORD", "123")
 SHOPIFY_STORE = os.getenv("SHOPIFY_STORE", "oliva-clinic")
 SHOPIFY_API_KEY = os.getenv("SHOPIFY_API_KEY", "your_api_key")
 SHOPIFY_PASSWORD = os.getenv("SHOPIFY_PASSWORD", "your_password")
+
+# Debug environment variables
+print(f"[PAYMENT_SERVICE] Environment check:")
+print(f"[PAYMENT_SERVICE] RAZORPAY_KEY_ID: {'SET' if RAZORPAY_KEY_ID and RAZORPAY_KEY_ID != 'rzp_test_123456789' else 'NOT SET'}")
+print(f"[PAYMENT_SERVICE] RAZORPAY_SECRET: {'SET' if RAZORPAY_SECRET and RAZORPAY_SECRET != 'test_secret_123456789' else 'NOT SET'}")
+print(f"[PAYMENT_SERVICE] RAZORPAY_BASE_URL: {RAZORPAY_BASE_URL}")
 
 
 # ---------------- Razorpay Helpers ---------------- #

@@ -4,7 +4,10 @@ import os
 import requests
 import base64
 from typing import Dict, Any
+from dotenv import load_dotenv
 
+# Load environment variables
+load_dotenv()
 
 # Razorpay Configuration
 RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "rzp_test_123456789")

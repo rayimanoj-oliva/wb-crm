@@ -1,6 +1,7 @@
-from pydantic import BaseModel, EmailStr
-from typing import Optional
+from pydantic import BaseModel, EmailStr, Field
+from typing import Optional, Union
 from uuid import UUID
+import uuid
 
 
 class CustomerInfo(BaseModel):
@@ -11,7 +12,7 @@ class CustomerInfo(BaseModel):
 
 
 class PaymentCreate(BaseModel):
-    order_id: Optional[UUID] = None  # can be None for standalone payments
+    order_id: Optional[Union[UUID, str]] = None  # can be None for standalone payments, accepts both UUID and string
     amount: float
     currency: str = "INR"
     payment_method: Optional[str] = "upi"
@@ -21,3 +22,13 @@ class PaymentCreate(BaseModel):
     customer_name: Optional[str] = None
     # Nested customer block (preferred)
     customer: Optional[CustomerInfo] = None
+    
+    def __init__(self, **data):
+        # Convert string order_id to UUID if it's a valid UUID string
+        if 'order_id' in data and isinstance(data['order_id'], str):
+            try:
+                data['order_id'] = uuid.UUID(data['order_id'])
+            except ValueError:
+                # If it's not a valid UUID, keep it as string
+                pass
+        super().__init__(**data)
