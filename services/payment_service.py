@@ -84,6 +84,8 @@ def create_payment_link(db: Session, payload: PaymentCreate, mock: bool = False)
         # Use direct Razorpay API
         try:
             description = f"Payment for order {payload.order_id}" if payload.order_id else "Payment"
+            print(f"[PAYMENT_SERVICE] Creating payment link for order {payload.order_id}, amount: {payload.amount}")
+            
             rzp_resp = create_razorpay_payment_link(
                 amount=payload.amount,
                 currency=payload.currency,
@@ -91,25 +93,49 @@ def create_payment_link(db: Session, payload: PaymentCreate, mock: bool = False)
             )
             
             if "error" in rzp_resp:
-                raise ValueError(f"Razorpay API error: {rzp_resp['error']}")
+                error_type = rzp_resp.get("error_type", "unknown")
+                error_msg = rzp_resp.get("error", "Unknown error")
+                print(f"[PAYMENT_SERVICE] Razorpay API error ({error_type}): {error_msg}")
+                
+                # If it's a configuration error, provide helpful message
+                if error_type == "configuration":
+                    raise ValueError(f"Razorpay configuration error: {error_msg}. Please check RAZORPAY_KEY_ID and RAZORPAY_SECRET environment variables.")
+                elif error_type == "validation":
+                    raise ValueError(f"Payment validation error: {error_msg}")
+                elif error_type == "api_error":
+                    status_code = rzp_resp.get("status_code", "unknown")
+                    raise ValueError(f"Razorpay API error ({status_code}): {error_msg}")
+                else:
+                    raise ValueError(f"Razorpay error: {error_msg}")
             
             razorpay_id = rzp_resp.get("id", f"fallback_rzp_{uuid4().hex[:12]}")
             short_url = rzp_resp.get("short_url", f"http://localhost:8000/payments/mock-pay/{razorpay_id}")
             status = rzp_resp.get("status", "created")
             
+            print(f"[PAYMENT_SERVICE] Payment link created successfully: {razorpay_id}")
+            
         except Exception as e:
-            print(f"Direct Razorpay API failed, falling back to proxy: {e}")
+            print(f"[PAYMENT_SERVICE] Direct Razorpay API failed: {e}")
+            print(f"[PAYMENT_SERVICE] Falling back to proxy method...")
+            
             # Fallback to proxy method
             order: Optional[Order] = db.query(Order).filter(Order.id == payload.order_id).first() if payload.order_id else None
             if not order and payload.order_id:
-                raise ValueError("Order not found")
+                raise ValueError(f"Order not found: {payload.order_id}")
             
-            token = _get_payment_token()
-            rzp_resp = _create_payment_link(token, payload, order)
-            
-            razorpay_id = rzp_resp.get("id", f"fallback_rzp_{uuid4().hex[:12]}")
-            short_url = rzp_resp.get("short_url", f"http://localhost:8000/payments/mock-pay/{razorpay_id}")
-            status = rzp_resp.get("status", "created")
+            try:
+                token = _get_payment_token()
+                rzp_resp = _create_payment_link(token, payload, order)
+                
+                razorpay_id = rzp_resp.get("id", f"fallback_rzp_{uuid4().hex[:12]}")
+                short_url = rzp_resp.get("short_url", f"http://localhost:8000/payments/mock-pay/{razorpay_id}")
+                status = rzp_resp.get("status", "created")
+                
+                print(f"[PAYMENT_SERVICE] Proxy payment link created successfully: {razorpay_id}")
+                
+            except Exception as proxy_error:
+                print(f"[PAYMENT_SERVICE] Proxy method also failed: {proxy_error}")
+                raise ValueError(f"Both direct and proxy payment methods failed. Direct error: {e}, Proxy error: {proxy_error}")
 
     payment = Payment(
         order_id=payload.order_id,

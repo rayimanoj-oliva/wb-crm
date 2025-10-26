@@ -87,8 +87,27 @@ def create_razorpay_payment_link(amount: float, currency: str = "INR", descripti
         Dict containing payment link details
     """
     try:
+        # Validate configuration
+        if not RAZORPAY_KEY_ID or RAZORPAY_KEY_ID == "rzp_test_123456789":
+            error_msg = "Razorpay Key ID not configured properly"
+            print(f"[RAZORPAY_ERROR] {error_msg}")
+            return {"error": error_msg, "error_type": "configuration"}
+        
+        if not RAZORPAY_SECRET or RAZORPAY_SECRET == "test_secret_123456789":
+            error_msg = "Razorpay Secret not configured properly"
+            print(f"[RAZORPAY_ERROR] {error_msg}")
+            return {"error": error_msg, "error_type": "configuration"}
+        
+        # Validate amount
+        if amount <= 0:
+            error_msg = f"Invalid amount: {amount}. Amount must be greater than 0"
+            print(f"[RAZORPAY_ERROR] {error_msg}")
+            return {"error": error_msg, "error_type": "validation"}
+        
         # Convert amount to paise (smallest currency unit)
         amount_paise = int(amount * 100)
+        
+        print(f"[RAZORPAY_DEBUG] Creating payment link - Amount: {amount} INR ({amount_paise} paise), Description: {description}")
         
         url = f"{RAZORPAY_BASE_URL}/payment_links"
         headers = {
@@ -107,17 +126,40 @@ def create_razorpay_payment_link(amount: float, currency: str = "INR", descripti
             }
         }
         
+        print(f"[RAZORPAY_DEBUG] Making API request to: {url}")
+        print(f"[RAZORPAY_DEBUG] Request data: {data}")
+        
         response = requests.post(url, json=data, headers=headers, timeout=30)
-        response.raise_for_status()
         
-        return response.json()
+        print(f"[RAZORPAY_DEBUG] Response status: {response.status_code}")
+        print(f"[RAZORPAY_DEBUG] Response headers: {dict(response.headers)}")
         
+        if response.status_code != 200:
+            error_msg = f"Razorpay API error: {response.status_code} - {response.text}"
+            print(f"[RAZORPAY_ERROR] {error_msg}")
+            return {"error": error_msg, "error_type": "api_error", "status_code": response.status_code}
+        
+        response_data = response.json()
+        print(f"[RAZORPAY_DEBUG] Success response: {response_data}")
+        
+        return response_data
+        
+    except requests.exceptions.Timeout as e:
+        error_msg = f"Razorpay API timeout: {str(e)}"
+        print(f"[RAZORPAY_ERROR] {error_msg}")
+        return {"error": error_msg, "error_type": "timeout"}
+    except requests.exceptions.ConnectionError as e:
+        error_msg = f"Razorpay API connection error: {str(e)}"
+        print(f"[RAZORPAY_ERROR] {error_msg}")
+        return {"error": error_msg, "error_type": "connection"}
     except requests.exceptions.RequestException as e:
-        print(f"Error creating Razorpay payment link: {e}")
-        return {"error": str(e)}
+        error_msg = f"Razorpay API request error: {str(e)}"
+        print(f"[RAZORPAY_ERROR] {error_msg}")
+        return {"error": error_msg, "error_type": "request"}
     except Exception as e:
-        print(f"Unexpected error creating payment link: {e}")
-        return {"error": str(e)}
+        error_msg = f"Unexpected error creating payment link: {str(e)}"
+        print(f"[RAZORPAY_ERROR] {error_msg}")
+        return {"error": error_msg, "error_type": "unexpected"}
 
 
 def get_razorpay_payment_details(payment_id: str) -> Dict[str, Any]:

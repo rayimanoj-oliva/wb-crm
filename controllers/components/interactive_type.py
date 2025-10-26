@@ -990,7 +990,7 @@ Contact us for assistance with your payment."""
                             await send_message_to_waid(wa_id, "✅ Using your selected address!", db)
                             await send_message_to_waid(
                                 wa_id,
-                                f"📍 {selected.full_name}, {selected.house_street}, {selected.city} - {selected.pincode}",
+                                f"📍 {selected.full_name}, {selected.phone}, {selected.house_street}, {selected.city}, {selected.state} - {selected.pincode}",
                                 db,
                             )
                             # Continue with payment flow using enhanced service

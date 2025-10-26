@@ -18,6 +18,60 @@ router = APIRouter(tags=["Payments"])
 RAZORPAY_WEBHOOK_SECRET = os.getenv("RAZORPAY_WEBHOOK_SECRET", "your_razorpay_webhook_secret")
 
 
+# ---------------- Payment Diagnostics ---------------- #
+@router.get("/diagnostics")
+async def payment_diagnostics():
+    """Diagnose payment system configuration and connectivity"""
+    try:
+        import os
+        from utils.razorpay_utils import RAZORPAY_KEY_ID, RAZORPAY_SECRET, RAZORPAY_BASE_URL
+        
+        diagnostics = {
+            "razorpay_config": {
+                "key_id_configured": bool(RAZORPAY_KEY_ID and RAZORPAY_KEY_ID != "rzp_test_123456789"),
+                "secret_configured": bool(RAZORPAY_SECRET and RAZORPAY_SECRET != "test_secret_123456789"),
+                "base_url": RAZORPAY_BASE_URL,
+                "key_id_prefix": RAZORPAY_KEY_ID[:8] + "..." if RAZORPAY_KEY_ID else "Not configured"
+            },
+            "environment": {
+                "razorpay_username": bool(os.getenv("RAZORPAY_USERNAME")),
+                "razorpay_password": bool(os.getenv("RAZORPAY_PASSWORD")),
+                "proxy_token_url": os.getenv("RAZORPAY_TOKEN_URL", "Not configured"),
+                "proxy_payment_url": os.getenv("RAZORPAY_PAYMENT_URL", "Not configured")
+            }
+        }
+        
+        # Test Razorpay API connectivity
+        try:
+            from utils.razorpay_utils import create_razorpay_payment_link
+            test_response = create_razorpay_payment_link(amount=1.0, description="Test payment")
+            
+            if "error" in test_response:
+                diagnostics["api_test"] = {
+                    "status": "failed",
+                    "error": test_response.get("error"),
+                    "error_type": test_response.get("error_type")
+                }
+            else:
+                diagnostics["api_test"] = {
+                    "status": "success",
+                    "payment_id": test_response.get("id", "Unknown")
+                }
+        except Exception as e:
+            diagnostics["api_test"] = {
+                "status": "exception",
+                "error": str(e)
+            }
+        
+        return JSONResponse(content=diagnostics)
+        
+    except Exception as e:
+        return JSONResponse(
+            content={"error": f"Diagnostics failed: {str(e)}"},
+            status_code=500
+        )
+
+
 # ---------------- Payment Creation ---------------- #
 @router.post("/create")
 async def create_payment(request: Request, db: Session = Depends(get_db)):

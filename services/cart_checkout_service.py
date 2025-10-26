@@ -107,7 +107,22 @@ class CartCheckoutService:
             }
             
         except Exception as e:
-            return {"error": str(e), "success": False}
+            error_msg = str(e)
+            print(f"[CART_CHECKOUT] Payment generation failed: {error_msg}")
+            
+            # Provide more specific error messages based on error type
+            if "configuration" in error_msg.lower():
+                return {"error": "Payment system configuration error. Please contact support.", "success": False, "error_type": "configuration"}
+            elif "validation" in error_msg.lower():
+                return {"error": "Invalid payment data. Please check your order details.", "success": False, "error_type": "validation"}
+            elif "api_error" in error_msg.lower():
+                return {"error": "Payment service temporarily unavailable. Please try again in a few minutes.", "success": False, "error_type": "api_error"}
+            elif "timeout" in error_msg.lower():
+                return {"error": "Payment service timeout. Please try again.", "success": False, "error_type": "timeout"}
+            elif "connection" in error_msg.lower():
+                return {"error": "Unable to connect to payment service. Please check your internet connection and try again.", "success": False, "error_type": "connection"}
+            else:
+                return {"error": f"Payment generation failed: {error_msg}", "success": False, "error_type": "unknown"}
 
     async def _send_payment_message_to_customer(
         self, 
