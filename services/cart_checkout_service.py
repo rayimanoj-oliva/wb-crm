@@ -23,20 +23,36 @@ class CartCheckoutService:
             if not order:
                 return {"error": "Order not found", "total": 0.0}
             
+            # Group items by product_retailer_id to handle duplicates
+            items_dict = {}
             total_amount = 0.0
-            items_summary = []
             
+            # Process all items and group by product_retailer_id
             for item in order.items:
-                item_total = float(item.item_price) * item.quantity
-                total_amount += item_total
+                if not item.product_retailer_id:
+                    continue
+                    
+                product_id = item.product_retailer_id
                 
-                items_summary.append({
-                    "product_retailer_id": item.product_retailer_id,
-                    "quantity": item.quantity,
-                    "unit_price": float(item.item_price),
-                    "total_price": item_total,
-                    "currency": item.currency
-                })
+                if product_id in items_dict:
+                    # Add to existing item
+                    items_dict[product_id]["quantity"] += item.quantity
+                    items_dict[product_id]["total_price"] += float(item.item_price) * item.quantity
+                else:
+                    # Create new item entry
+                    item_total = float(item.item_price) * item.quantity
+                    items_dict[product_id] = {
+                        "product_retailer_id": product_id,
+                        "quantity": item.quantity,
+                        "unit_price": float(item.item_price),
+                        "total_price": item_total,
+                        "currency": item.currency or "INR"
+                    }
+                
+                total_amount += float(item.item_price) * item.quantity
+            
+            # Convert grouped items to list
+            items_summary = list(items_dict.values())
             
             # Apply any discounts (you can extend this logic)
             discount_amount = 0.0
@@ -45,18 +61,78 @@ class CartCheckoutService:
             
             final_amount = total_amount - discount_amount
             
+            print(f"[CART_CHECKOUT] Order {order_id} calculation:")
+            print(f"  - Total items in DB: {len(order.items)}")
+            print(f"  - Unique products: {len(items_summary)}")
+            print(f"  - Total amount: ₹{final_amount:.2f}")
+            
             return {
                 "order_id": str(order.id),
                 "subtotal": total_amount,
                 "discount_amount": discount_amount,
                 "total_amount": final_amount,
                 "currency": "INR",
-                "items_count": len(order.items),
+                "items_count": len(items_summary),
                 "items_summary": items_summary
             }
             
         except Exception as e:
+            print(f"[CART_CHECKOUT] Error calculating order total: {e}")
             return {"error": str(e), "total": 0.0}
+
+    def cleanup_duplicate_items(self, order_id: str) -> Dict[str, Any]:
+        """Clean up duplicate items in an order by merging them"""
+        try:
+            order = get_order(self.db, order_id)
+            if not order:
+                return {"error": "Order not found", "success": False}
+            
+            # Group items by product_retailer_id
+            items_dict = {}
+            items_to_delete = []
+            
+            for item in order.items:
+                if not item.product_retailer_id:
+                    continue
+                    
+                product_id = item.product_retailer_id
+                
+                if product_id in items_dict:
+                    # Merge with existing item
+                    existing_item = items_dict[product_id]
+                    existing_item.quantity += item.quantity
+                    existing_item.total_price = float(existing_item.item_price) * existing_item.quantity
+                    
+                    # Mark this item for deletion
+                    items_to_delete.append(item)
+                else:
+                    # Keep this item
+                    items_dict[product_id] = item
+            
+            # Delete duplicate items
+            for item in items_to_delete:
+                self.db.delete(item)
+            
+            if items_to_delete:
+                self.db.commit()
+                print(f"[CART_CHECKOUT] Cleaned up {len(items_to_delete)} duplicate items from order {order_id}")
+                return {
+                    "success": True,
+                    "duplicates_removed": len(items_to_delete),
+                    "remaining_items": len(items_dict)
+                }
+            else:
+                print(f"[CART_CHECKOUT] No duplicates found in order {order_id}")
+                return {
+                    "success": True,
+                    "duplicates_removed": 0,
+                    "remaining_items": len(items_dict)
+                }
+                
+        except Exception as e:
+            print(f"[CART_CHECKOUT] Error cleaning up duplicates: {e}")
+            self.db.rollback()
+            return {"error": str(e), "success": False}
 
     async def generate_payment_link_for_order(
         self, 
@@ -68,7 +144,12 @@ class CartCheckoutService:
     ) -> Dict[str, Any]:
         """Generate Razorpay payment link for an order and send to customer"""
         try:
-            # Calculate order total
+            # First, clean up any duplicate items in the order
+            cleanup_result = self.cleanup_duplicate_items(order_id)
+            if cleanup_result.get("success") and cleanup_result.get("duplicates_removed", 0) > 0:
+                print(f"[CART_CHECKOUT] Cleaned up {cleanup_result['duplicates_removed']} duplicate items before payment generation")
+            
+            # Calculate order total (now with cleaned up items)
             order_calculation = self.calculate_order_total(order_id)
             if "error" in order_calculation:
                 return order_calculation
@@ -103,7 +184,9 @@ class CartCheckoutService:
                 "payment_id": payment.razorpay_id,
                 "payment_url": payment.razorpay_short_url,
                 "order_total": total_amount,
-                "currency": currency
+                "currency": currency,
+                "items_count": order_calculation["items_count"],
+                "duplicates_cleaned": cleanup_result.get("duplicates_removed", 0)
             }
             
         except Exception as e:
