@@ -1,188 +1,237 @@
-# WhatsApp Lead-to-Appointment Booking Flow (Oliva Clinics)
+# Zoho Lead Creation Integration Guide
 
 ## Overview
+This integration provides comprehensive Zoho CRM lead creation functionality for the WhatsApp Lead-to-Appointment booking flow. It handles Q5 triggers for auto-dial events and termination events for follow-up/remarketing.
 
-This module implements a complete automated WhatsApp flow for converting Meta ad clicks into appointment bookings. The flow is designed to handle users who click "Inquire" or "Book now" buttons on Meta (Facebook/Instagram) ads and are redirected to the WhatsApp chatbot.
+## Key Features
 
-## Flow Architecture
+### 1. Q5 Auto-Dial Trigger
+- **When**: User responds "Yes" to callback confirmation (Q5)
+- **Action**: Creates lead with `CALL_INITIATED` status + triggers auto-dial event
+- **Purpose**: Immediate callback for appointment confirmation
 
-The flow consists of several interconnected components:
+### 2. Termination Event Handling
+- **When**: User drops off before Q5 OR responds "No" to Q5
+- **Action**: Creates lead with `NO_CALLBACK` status for follow-up/remarketing
+- **Purpose**: Lead nurturing and remarketing campaigns
+
+### 3. Enhanced Lead Data Structure
+- Uses your provided curl structure with proper field mapping
+- Includes appointment details (city, clinic, date, time)
+- Supports custom descriptions and preferences
+
+## File Structure
 
 ```
-Meta Ad Click → WhatsApp Chat → Auto-Welcome → City Selection → Clinic Location → Time Slot → Callback Confirmation → Zoho CRM Integration
+controllers/components/lead_appointment_flow/
+├── zoho_lead_service.py          # New enhanced service
+├── zoho_integration.py           # Legacy integration (kept for compatibility)
+├── callback_confirmation.py      # Updated to use Q5 trigger
+├── flow_controller.py           # Updated to use new service
+└── README.md                    # This file
 ```
 
-## Components
+## API Integration Details
 
-### 1. Auto Welcome (`auto_welcome.py`)
-- **Trigger**: Text messages containing keywords like "hi", "hello", "book", "appointment", "inquire"
-- **Action**: Sends welcome message with Yes/No buttons
-- **Buttons**: 
-  - ✅ Yes, I'd like to book
-  - ❌ Not now
+### Lead Creation Endpoint
+- **URL**: `https://www.zohoapis.in/crm/v2.1/Leads`
+- **Method**: POST
+- **Headers**: 
+  - `Authorization: Zoho-oauthtoken {access_token}`
+  - `Content-Type: application/json`
+  - `Cookie: _zcsr_tmp=724cc9cf-75aa-4b3e-96dd-57ce0f42c37c; crmcsr=724cc9cf-75aa-4b3e-96dd-57ce0f42c37c; zalb_941ef25d4b=64bf0502158f6e506399625cae2049e9`
 
-### 2. City Selection (`city_selection.py`)
-- **Trigger**: User selects "Yes, I'd like to book"
-- **Action**: Shows list of available cities
-- **Options**: Hyderabad, Bengaluru, Chennai, Pune, Kochi, Other
-
-### 3. Clinic Location (`clinic_location.py`)
-- **Trigger**: User selects a city
-- **Action**: Shows clinic locations for the selected city
-- **Dynamic**: Clinic list changes based on selected city
-
-### 4. Time Slot Selection (`time_slot_selection.py`)
-- **Trigger**: User selects a clinic
-- **Action**: Shows time slot options
-- **Options**: 
-  - This week
-  - Next week
-  - Custom date (with text input)
-
-### 5. Callback Confirmation (`callback_confirmation.py`)
-- **Trigger**: User completes time slot selection
-- **Action**: Asks for callback preference
-- **Buttons**:
-  - 📞 Yes, please call me (triggers Zoho Auto-Dial)
-  - 💬 No, just keep my details (creates lead only)
-
-### 6. Zoho Integration (`zoho_integration.py`)
-- **Auto-Dial**: Triggers Zoho CRM auto-dial for callback requests
-- **Lead Creation**: Creates leads in Zoho CRM with appropriate status
-- **Status Types**:
-  - `CALL_INITIATED`: User wants callback
-  - `PENDING`: User doesn't want callback
-  - `NO_CALLBACK`: User dropped off or said "not now"
-
-### 7. Flow Controller (`flow_controller.py`)
-- **Main Orchestrator**: Coordinates the entire flow
-- **State Management**: Tracks user progress through the flow
-- **Integration**: Handles both text and interactive responses
-
-## Session State Management
-
-The flow uses `lead_appointment_state` dictionary in `web_socket.py` to track user progress:
-
-```python
-lead_appointment_state = {
-    "wa_id": {
-        "selected_city": "Hyderabad",
-        "selected_clinic": "Banjara Hills",
-        "custom_date": "2024-12-25",
-        "waiting_for_custom_date": False,
-        "clinic_id": "clinic_hyderabad_banjara"
-    }
+### Lead Data Structure
+```json
+{
+    "data": [
+        {
+            "First_Name": "Customer Name",
+            "Last_Name": "",
+            "Email": "customer@email.com",
+            "Phone": "919876543210",
+            "Mobile": "919876543210",
+            "City": "Delhi",
+            "Lead_Source": "WhatsApp Lead-to-Appointment Flow",
+            "Lead_Status": "CALL_INITIATED|PENDING|NO_CALLBACK",
+            "Company": "Oliva Skin & Hair Clinic",
+            "Description": "Lead from WhatsApp Lead-to-Appointment Flow | City: Delhi | Clinic: Main Branch | Preferred Date: 2024-01-15 | Preferred Time: 10:00 AM | Status: CALL_INITIATED"
+        }
+    ],
+    "trigger": [
+        "approval",
+        "workflow",
+        "blueprint"
+    ]
 }
+```
+
+## Usage Examples
+
+### 1. Q5 Auto-Dial Event (User says "Yes" to callback)
+```python
+from controllers.components.lead_appointment_flow.zoho_lead_service import trigger_q5_auto_dial_event
+
+result = await trigger_q5_auto_dial_event(
+    db=db,
+    wa_id="+919876543210",
+    customer=customer_object,
+    appointment_details={
+        "selected_city": "Delhi",
+        "selected_clinic": "Main Branch",
+        "custom_date": "2024-01-15",
+        "selected_time": "10:00 AM"
+    }
+)
+```
+
+### 2. Termination Event (User drops off or says "No")
+```python
+from controllers.components.lead_appointment_flow.zoho_lead_service import handle_termination_event
+
+result = await handle_termination_event(
+    db=db,
+    wa_id="+919876543210",
+    customer=customer_object,
+    termination_reason="negative_q5_response",  # or "dropped_off_at_city_selection"
+    appointment_details=appointment_details
+)
+```
+
+### 3. Direct Lead Creation
+```python
+from controllers.components.lead_appointment_flow.zoho_lead_service import create_lead_for_appointment
+
+result = await create_lead_for_appointment(
+    db=db,
+    wa_id="+919876543210",
+    customer=customer_object,
+    appointment_details=appointment_details,
+    lead_status="PENDING",
+    appointment_preference="Custom preference text"
+)
+```
+
+## Lead Status Mapping
+
+| Status | Description | Use Case |
+|--------|-------------|----------|
+| `CALL_INITIATED` | User requested callback (Q5 Yes) | Auto-dial triggered |
+| `PENDING` | User completed flow but no callback | Manual follow-up |
+| `NO_CALLBACK` | User dropped off or declined callback | Follow-up/remarketing |
+
+## Configuration
+
+### Environment Variables Required
+```bash
+ZOHO_CLIENT_ID=your_client_id
+ZOHO_CLIENT_SECRET=your_client_secret
+ZOHO_REFRESH_TOKEN=your_refresh_token
+```
+
+### Authentication
+The service uses the existing `utils/zoho_auth.py` for token management. Make sure your refresh token is valid and has the necessary CRM permissions.
+
+## Error Handling
+
+The service includes comprehensive error handling:
+- Token validation
+- API response validation
+- Exception logging with traceback
+- Graceful fallbacks
+
+## Testing
+
+### Test Lead Creation
+```bash
+curl --location 'https://www.zohoapis.in/crm/v2.1/Leads' \
+--header 'Authorization: Zoho-oauthtoken YOUR_ACCESS_TOKEN' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+    "data": [
+        {
+            "First_Name": "Test",
+            "Last_Name": "User",
+            "Email": "test@example.com",
+            "Phone": "919876543210",
+            "Mobile": "919876543210",
+            "City": "Delhi",
+            "Lead_Source": "WhatsApp Lead-to-Appointment Flow",
+            "Lead_Status": "PENDING",
+            "Company": "Oliva Skin & Hair Clinic",
+            "Description": "Test lead creation"
+        }
+    ],
+    "trigger": [
+        "approval",
+        "workflow",
+        "blueprint"
+    ]
+}'
 ```
 
 ## Integration Points
 
-### Webhook Integration
-The flow is integrated into the main webhook controller (`web_socket.py`) and runs after the treatment flow:
+### 1. Callback Confirmation Flow
+- **File**: `callback_confirmation.py`
+- **Q5 Yes**: Triggers `trigger_q5_auto_dial_event()`
+- **Q5 No**: Triggers `handle_termination_event()`
 
-```python
-# Lead-to-Appointment Flow runs after treatment flow
-if not handled_text:
-    lead_result = await run_lead_appointment_flow(...)
+### 2. Flow Controller
+- **File**: `flow_controller.py`
+- **Time Selection**: Creates lead with `PENDING` status
+- **Dropoff Handling**: Creates lead with `NO_CALLBACK` status
+
+### 3. WebSocket Integration
+- All lead creation events are logged
+- WebSocket broadcasts include lead creation status
+- Real-time updates for admin dashboard
+
+## Monitoring and Logging
+
+### Debug Logs
+All operations include detailed debug logging:
+```
+[zoho_lead_service] DEBUG - Starting lead creation for +919876543210
+[zoho_lead_service] DEBUG - Lead status: CALL_INITIATED
+[zoho_lead_service] DEBUG - User details from session: John Doe, 9876543210
+[zoho_lead_service] DEBUG - Appointment details from session: Delhi, Main Branch, 2024-01-15, 10:00 AM
+[zoho_lead_service] DEBUG - Lead created successfully: +919876543210, Name: John Doe, Lead ID: 123456789
 ```
 
-### Existing Flow Compatibility
-- Uses existing slot selection system from `interactive_type.py`
-- Leverages existing time slot categories and time lists
-- Maintains compatibility with existing appointment booking flow
-
-## Termination Rules
-
-The flow handles various termination scenarios:
-
-1. **User drops off before Q5**: Creates lead with `NO_CALLBACK` status
-2. **User selects "Not now"**: Creates lead with `NO_CALLBACK` status
-3. **User selects "No callback"**: Creates lead with `PENDING` status
-4. **User selects "Yes callback"**: Creates lead with `CALL_INITIATED` status and triggers auto-dial
-
-## Zoho CRM Integration
-
-### Lead Creation
-Creates leads with the following structure:
-- **First_Name**: Customer name
-- **Phone**: WhatsApp ID (formatted as Indian phone number)
-- **Email**: Customer email (if available)
-- **Lead_Source**: "WhatsApp Lead-to-Appointment Flow"
-- **Lead_Status**: Based on user choice (CALL_INITIATED, PENDING, NO_CALLBACK)
-- **Description**: Includes appointment details and preferences
-- **City**: Selected city
-- **Custom Fields**: Clinic, appointment date, WhatsApp ID
-
-### Auto-Dial Trigger
-Triggers Zoho auto-dial with:
-- Customer phone number
-- Appointment details
-- Callback reason
-- Priority level
-
-## Usage
-
-### Triggering the Flow
-The flow can be triggered by:
-1. **Meta Ad Click**: Users clicking "Inquire" or "Book now" buttons
-2. **Text Messages**: Keywords like "hi", "hello", "book", "appointment"
-3. **Manual Trigger**: Direct function calls
-
-### Flow Progression
-```python
-# Auto-welcome
-await send_auto_welcome_message(db, wa_id=wa_id)
-
-# City selection
-await send_city_selection(db, wa_id=wa_id)
-
-# Clinic location
-await send_clinic_location(db, wa_id=wa_id, city="Hyderabad")
-
-# Time slot selection
-await send_time_slot_selection(db, wa_id=wa_id)
-
-# Callback confirmation
-await send_callback_confirmation(db, wa_id=wa_id)
+### Error Logs
 ```
-
-## Error Handling
-
-The flow includes comprehensive error handling:
-- **Token Issues**: Falls back to text messages
-- **API Failures**: Graceful degradation
-- **Invalid Inputs**: User-friendly error messages
-- **Session Management**: Automatic cleanup
-
-## Testing
-
-To test the flow:
-
-1. **Start Flow**: Send "hi" or "book appointment" to trigger auto-welcome
-2. **Follow Steps**: Select city, clinic, time slot, callback preference
-3. **Check Zoho**: Verify lead creation and auto-dial trigger
-4. **Session State**: Monitor `lead_appointment_state` for progress tracking
-
-## Configuration
-
-### Environment Variables
-- `ZOHO_CLIENT_ID`: Zoho CRM client ID
-- `ZOHO_CLIENT_SECRET`: Zoho CRM client secret
-- `ZOHO_REFRESH_TOKEN`: Zoho CRM refresh token
-- `WHATSAPP_PHONE_ID`: WhatsApp Business phone ID
-- `WHATSAPP_DISPLAY_NUMBER`: WhatsApp display number
-
-### Customization
-- **Cities**: Modify `get_clinics_for_city()` in `clinic_location.py`
-- **Clinics**: Update clinic mapping in `clinic_location.py`
-- **Time Slots**: Leverage existing slot system in `interactive_type.py`
-- **Zoho Fields**: Modify lead creation payload in `zoho_integration.py`
+[zoho_lead_service] ERROR - Lead creation failed: +919876543210, Error: API Error 401: Invalid token
+[zoho_lead_service] ERROR - Q5 auto-dial event failed: Exception: Connection timeout
+```
 
 ## Future Enhancements
 
-Potential improvements:
-1. **Database Storage**: Move session state to database
-2. **Analytics**: Track conversion rates and drop-off points
-3. **A/B Testing**: Test different flow variations
-4. **Multi-language**: Support for multiple languages
-5. **Integration**: Connect with calendar systems for real-time availability
+1. **Auto-Dial API Integration**: Connect to actual auto-dial service
+2. **Lead Scoring**: Implement lead scoring based on engagement
+3. **Follow-up Automation**: Automated follow-up sequences
+4. **Analytics Dashboard**: Lead conversion tracking
+5. **A/B Testing**: Test different lead creation strategies
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Token Expired**
+   - Check refresh token validity
+   - Verify client credentials
+
+2. **API Rate Limits**
+   - Implement retry logic
+   - Add rate limiting
+
+3. **Field Validation Errors**
+   - Check required field mapping
+   - Validate data types
+
+4. **Session Data Missing**
+   - Ensure proper session state management
+   - Add fallback data sources
+
+### Support
+For issues or questions, check the debug logs first and ensure all environment variables are properly configured.

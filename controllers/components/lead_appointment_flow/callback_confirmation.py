@@ -130,21 +130,12 @@ async def handle_callback_confirmation(
         print(f"[lead_appointment_flow] WARNING - Could not get appointment details: {e}")
     
     if normalized_reply == "yes_callback":
-        # User wants callback - trigger Zoho Auto-Dial and Lead creation
+        # User wants callback - trigger Q5 auto-dial event
         try:
-            from .zoho_integration import trigger_zoho_auto_dial, trigger_zoho_lead_creation
+            from .zoho_lead_service import trigger_q5_auto_dial_event
             
-            # Create lead with CALL_INITIATED status
-            lead_result = await trigger_zoho_lead_creation(
-                db=db,
-                wa_id=wa_id,
-                customer=customer,
-                lead_status="CALL_INITIATED",
-                appointment_details=appointment_details
-            )
-            
-            # Trigger auto-dial
-            dial_result = await trigger_zoho_auto_dial(
+            # Trigger Q5 auto-dial event (creates lead + triggers auto-dial)
+            q5_result = await trigger_q5_auto_dial_event(
                 db=db,
                 wa_id=wa_id,
                 customer=customer,
@@ -168,8 +159,7 @@ async def handle_callback_confirmation(
             
             return {
                 "status": "callback_initiated", 
-                "lead_result": lead_result,
-                "dial_result": dial_result
+                "q5_result": q5_result
             }
             
         except Exception as e:
@@ -182,15 +172,15 @@ async def handle_callback_confirmation(
             return {"status": "callback_fallback"}
     
     elif normalized_reply == "no_callback":
-        # User doesn't want callback - just create lead with PENDING status
+        # User doesn't want callback - create lead for follow-up/remarketing
         try:
-            from .zoho_integration import trigger_zoho_lead_creation
+            from .zoho_lead_service import handle_termination_event
             
-            lead_result = await trigger_zoho_lead_creation(
+            termination_result = await handle_termination_event(
                 db=db,
                 wa_id=wa_id,
                 customer=customer,
-                lead_status="PENDING",
+                termination_reason="negative_q5_response",
                 appointment_details=appointment_details
             )
             
@@ -209,7 +199,7 @@ async def handle_callback_confirmation(
             except Exception as e:
                 print(f"[lead_appointment_flow] WARNING - Could not clear session data: {e}")
             
-            return {"status": "lead_created_no_callback", "lead_result": lead_result}
+            return {"status": "lead_created_no_callback", "termination_result": termination_result}
             
         except Exception as e:
             print(f"[lead_appointment_flow] ERROR - Failed to create lead: {e}")

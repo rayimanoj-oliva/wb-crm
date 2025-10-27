@@ -287,12 +287,13 @@ async def handle_interactive_response(
                     
                     # Create lead in Zoho (if integration is available)
                     try:
-                        from .zoho_integration import create_lead_for_appointment
+                        from .zoho_lead_service import create_lead_for_appointment
                         lead_result = await create_lead_for_appointment(
                             db=db,
                             wa_id=wa_id,
                             customer=customer,
-                            appointment_details=appointment_details
+                            appointment_details=appointment_details,
+                            lead_status="PENDING"
                         )
                         print(f"[lead_appointment_flow] DEBUG - Lead created: {lead_result}")
                     except Exception as e:
@@ -361,12 +362,13 @@ async def handle_flow_dropoff(
     """
     
     try:
-        from .zoho_integration import create_lead_for_dropoff
-        result = await create_lead_for_dropoff(
+        from .zoho_lead_service import handle_termination_event
+        result = await handle_termination_event(
             db=db,
             wa_id=wa_id,
             customer=customer,
-            dropoff_point=dropoff_point
+            termination_reason=dropoff_point,
+            appointment_details={}
         )
         
         print(f"[lead_appointment_flow] DEBUG - Created dropoff lead for {wa_id} at {dropoff_point}")
