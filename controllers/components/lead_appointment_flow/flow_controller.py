@@ -213,41 +213,149 @@ async def handle_interactive_response(
         # Only handle time selections if user is explicitly in lead appointment flow
         if is_in_lead_flow:
             if reply_id.startswith("week_"):
-                # Week selection - use LEAD APPOINTMENT specific functions
-                from controllers.components.interactive_type import _send_lead_day_list_for_week
-                # Extract week range from reply_id (format: week_YYYY-MM-DD_YYYY-MM-DD)
-                parts = reply_id.split("_")
-                if len(parts) >= 3:
-                    start_iso = f"{parts[1]}-{parts[2]}-{parts[3]}"
-                    end_iso = f"{parts[4]}-{parts[5]}-{parts[6]}"
-                    result = await _send_lead_day_list_for_week(db=db, wa_id=wa_id, start_iso=start_iso, end_iso=end_iso)
-                    return {"status": "day_list_sent", "result": result}
-                else:
-                    return {"status": "invalid_week_format"}
-            
-            elif reply_id.startswith("date_"):
-                # Date selection - send time slot categories
-                # First, sync the selected date to lead_appointment_state
+                # Week selection - go directly to time slot categories (skip date selection)
+                from controllers.components.interactive_type import _send_lead_time_slot_categories
+                
+                # Store selected week in session for lead creation
                 try:
-                    date_iso = reply_id[5:]  # Extract date from "date_YYYY-MM-DD"
                     from controllers.web_socket import lead_appointment_state
                     if wa_id not in lead_appointment_state:
                         lead_appointment_state[wa_id] = {}
-                    lead_appointment_state[wa_id]["selected_date"] = date_iso
-                    print(f"[lead_appointment_flow] DEBUG - Synced selected date to lead_appointment_state: {date_iso}")
+                    
+                    # Extract week range from reply_id (format: week_YYYY-MM-DD_YYYY-MM-DD)
+                    parts = reply_id.split("_")
+                    if len(parts) >= 3:
+                        start_iso = f"{parts[1]}-{parts[2]}-{parts[3]}"
+                        end_iso = f"{parts[4]}-{parts[5]}-{parts[6]}"
+                        lead_appointment_state[wa_id]["selected_week"] = f"{start_iso} to {end_iso}"
+                        print(f"[lead_appointment_flow] DEBUG - Stored selected week: {start_iso} to {end_iso}")
+                    else:
+                        lead_appointment_state[wa_id]["selected_week"] = "Selected week"
+                        print(f"[lead_appointment_flow] DEBUG - Stored generic week selection")
                 except Exception as e:
-                    print(f"[lead_appointment_flow] WARNING - Could not sync date to lead_appointment_state: {e}")
+                    print(f"[lead_appointment_flow] WARNING - Could not store week selection: {e}")
                 
-                # Use LEAD APPOINTMENT specific time slot categories function
-                from controllers.components.interactive_type import _send_lead_time_slot_categories
+                # Go directly to time slot categories
                 result = await _send_lead_time_slot_categories(db=db, wa_id=wa_id)
                 return {"status": "time_slots_sent", "result": result}
             
+            # elif reply_id.startswith("date_"):
+            #     # Date selection - COMMENTED OUT - now going directly from week to time slots
+            #     # First, sync the selected date to lead_appointment_state
+            #     try:
+            #         date_iso = reply_id[5:]  # Extract date from "date_YYYY-MM-DD"
+            #         from controllers.web_socket import lead_appointment_state
+            #         if wa_id not in lead_appointment_state:
+            #             lead_appointment_state[wa_id] = {}
+            #         lead_appointment_state[wa_id]["selected_date"] = date_iso
+            #         print(f"[lead_appointment_flow] DEBUG - Synced selected date to lead_appointment_state: {date_iso}")
+            #     except Exception as e:
+            #         print(f"[lead_appointment_flow] WARNING - Could not sync date to lead_appointment_state: {e}")
+            #     
+            #     # Use LEAD APPOINTMENT specific time slot categories function
+            #     from controllers.components.interactive_type import _send_lead_time_slot_categories
+            #     result = await _send_lead_time_slot_categories(db=db, wa_id=wa_id)
+            #     return {"status": "time_slots_sent", "result": result}
+            
             elif reply_id.startswith("slot_"):
-                # Time slot category selection - use LEAD APPOINTMENT specific function
-                from controllers.components.interactive_type import _send_lead_times_for_slot
-                result = await _send_lead_times_for_slot(db=db, wa_id=wa_id, slot_id=reply_id)
-                return {"status": "times_sent", "result": result}
+                # Time slot category selection - send thank you directly (skip specific time selection)
+                print(f"[lead_appointment_flow] DEBUG - Handling slot selection: {reply_id}")
+                
+                # Store the selected slot for lead creation
+                try:
+                    from controllers.web_socket import lead_appointment_state
+                    if wa_id not in lead_appointment_state:
+                        lead_appointment_state[wa_id] = {}
+                    
+                    # Map slot_id to human-readable name
+                    slot_names = {
+                        "slot_morning": "Morning (9-11 AM)",
+                        "slot_afternoon": "Afternoon (12-4 PM)",
+                        "slot_evening": "Evening (5-7 PM)"
+                    }
+                    slot_name = slot_names.get(reply_id, reply_id)
+                    lead_appointment_state[wa_id]["selected_time"] = slot_name
+                    print(f"[lead_appointment_flow] DEBUG - Stored selected time slot: {slot_name}")
+                except Exception as e:
+                    print(f"[lead_appointment_flow] WARNING - Could not store slot selection: {e}")
+                
+                # Send thank you message and create lead
+                try:
+                    # Get appointment details from session for logging
+                    appointment_details = {}
+                    try:
+                        from controllers.web_socket import lead_appointment_state
+                        appointment_details = lead_appointment_state.get(wa_id, {})
+                        print(f"[lead_appointment_flow] DEBUG - Appointment details: {appointment_details}")
+                    except Exception as e:
+                        print(f"[lead_appointment_flow] WARNING - Could not get appointment details: {e}")
+                    
+                    # Send thank you message
+                    thank_you_message = "✅ Thank you! We've noted your appointment details and our team will get back to you shortly to confirm your appointment. 😊"
+                    await send_message_to_waid(wa_id, thank_you_message, db)
+                    
+                    # Broadcast to WebSocket
+                    try:
+                        await manager.broadcast({
+                            "from": "system",
+                            "to": wa_id,
+                            "type": "text",
+                            "message": thank_you_message,
+                            "timestamp": datetime.now().isoformat(),
+                            "meta": {"flow": "lead_appointment", "action": "thank_you_sent"}
+                        })
+                        print(f"[lead_appointment_flow] DEBUG - Thank you message broadcasted to WebSocket")
+                    except Exception as e:
+                        print(f"[lead_appointment_flow] WARNING - WebSocket broadcast failed: {e}")
+                    
+                    # Create lead in Zoho (if integration is available)
+                    try:
+                        from .zoho_lead_service import create_lead_for_appointment
+                        lead_result = await create_lead_for_appointment(
+                            db=db,
+                            wa_id=wa_id,
+                            customer=customer,
+                            appointment_details=appointment_details,
+                            lead_status="PENDING"
+                        )
+                        print(f"[lead_appointment_flow] DEBUG - Lead created: {lead_result}")
+                    except Exception as e:
+                        print(f"[lead_appointment_flow] WARNING - Could not create lead: {e}")
+                    
+                    # Clear session data
+                    try:
+                        from controllers.web_socket import lead_appointment_state
+                        if wa_id in lead_appointment_state:
+                            del lead_appointment_state[wa_id]
+                        print(f"[lead_appointment_flow] DEBUG - Cleared appointment session data")
+                    except Exception as e:
+                        print(f"[lead_appointment_flow] WARNING - Could not clear session data: {e}")
+                    
+                    return {
+                        "status": "thank_you_sent", 
+                        "appointment_details": appointment_details
+                    }
+                    
+                except Exception as e:
+                    print(f"[lead_appointment_flow] ERROR - Failed to send thank you message: {e}")
+                    fallback_message = "✅ Thank you! We've noted your appointment details and our team will get back to you shortly. 😊"
+                    await send_message_to_waid(wa_id, fallback_message, db)
+                    
+                    # Broadcast fallback message to WebSocket
+                    try:
+                        await manager.broadcast({
+                            "from": "system",
+                            "to": wa_id,
+                            "type": "text",
+                            "message": fallback_message,
+                            "timestamp": datetime.now().isoformat(),
+                            "meta": {"flow": "lead_appointment", "action": "thank_you_fallback"}
+                        })
+                        print(f"[lead_appointment_flow] DEBUG - Fallback thank you message broadcasted to WebSocket")
+                    except Exception as ws_e:
+                        print(f"[lead_appointment_flow] WARNING - WebSocket broadcast failed: {ws_e}")
+                    
+                    return {"status": "thank_you_fallback"}
             
             elif reply_id.startswith("time_") and (
                 # Handle specific time formats: time_1630, time_10_00, time_14_00, etc.

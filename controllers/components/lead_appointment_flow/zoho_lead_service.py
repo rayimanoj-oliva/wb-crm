@@ -261,8 +261,9 @@ async def create_lead_for_appointment(
             city = session_data.get("selected_city", "Unknown")
             clinic = session_data.get("selected_clinic", "Unknown")
             
-            # Try multiple date fields
+            # Try multiple date fields - prioritize selected_week over specific dates
             appointment_date = (
+                session_data.get("selected_week") or  # New: preferred week selection
                 session_data.get("custom_date") or 
                 session_data.get("selected_date") or 
                 session_data.get("appointment_date") or 
@@ -341,6 +342,7 @@ async def create_lead_for_appointment(
             appointment_details={
                 "selected_city": city,
                 "selected_clinic": clinic,
+                "selected_week": session_data.get("selected_week", "Not specified"),
                 "custom_date": appointment_date,
                 "selected_time": appointment_time
             }

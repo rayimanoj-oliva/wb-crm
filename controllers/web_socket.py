@@ -1720,34 +1720,35 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                     pass
                                 return {"status": "treatment_appointment_confirmed", "message_id": message_id}
                             elif date_iso and time_label:
+                                
                                 # Regular appointment flow with date/time
                                 thank_you = (
-                                    f"✅ Thank you! Your preferred appointment is on {date_iso} at {time_label} with {display_name} ({display_phone}). "
-                                    f"Your appointment is booked, and our team will call to confirm shortly."
+                                f"✅ Thank you! Your preferred appointment is on {date_iso} at {time_label} with {display_name} ({display_phone}). "
+                                f"Your appointment is booked, and our team will call to confirm shortly."
+                            )
+                            # Persist appointment details to DB (create additional record for same wa_id)
+                            try:
+                                from services.referrer_service import referrer_service
+                                existing_ref = referrer_service.get_referrer_by_wa_id(db, wa_id)
+                                existing_treat = getattr(existing_ref, 'treatment_type', None) if existing_ref else ''
+                                # Create a new appointment row (allow multiple per wa_id)
+                                referrer_service.create_appointment_booking(
+                                    db,
+                                    wa_id,
+                                    date_iso,
+                                    time_label,
+                                    existing_treat or ''
                                 )
-                                # Persist appointment details to DB (create additional record for same wa_id)
-                                try:
-                                    from services.referrer_service import referrer_service
-                                    existing_ref = referrer_service.get_referrer_by_wa_id(db, wa_id)
-                                    existing_treat = getattr(existing_ref, 'treatment_type', None) if existing_ref else ''
-                                    # Create a new appointment row (allow multiple per wa_id)
-                                    referrer_service.create_appointment_booking(
-                                        db,
-                                        wa_id,
-                                        date_iso,
-                                        time_label,
-                                        existing_treat or ''
-                                    )
-                                except Exception:
-                                    pass
-                                await send_message_to_waid(wa_id, thank_you, db)
-                                # Now clear state
-                                try:
-                                    if wa_id in appointment_state:
-                                        appointment_state.pop(wa_id, None)
-                                except Exception:
-                                    pass
-                                return {"status": "appointment_confirmed", "message_id": message_id}
+                            except Exception:
+                                pass
+                            await send_message_to_waid(wa_id, thank_you, db)
+                            # Now clear state
+                            try:
+                                if wa_id in appointment_state:
+                                    appointment_state.pop(wa_id, None)
+                            except Exception:
+                                pass
+                            return {"status": "appointment_confirmed", "message_id": message_id}
                         elif (norm_btn_id in no_ids or norm_btn_title in no_ids):
                             # Ask for full name or first name and set awaiting_name flag
                             try:
