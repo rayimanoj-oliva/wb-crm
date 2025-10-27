@@ -525,10 +525,75 @@ async def run_appointment_buttons_flow(
             or normalized_payload in {"book an appointment", "book appointment"}
         ):
             try:
-                # Use TREATMENT FLOW specific week list (original function)
-                from controllers.components.interactive_type import send_week_list  # type: ignore
-                await send_week_list(db, wa_id)
-                return {"status": "week_list_sent"}
+                # Use the existing confirmation flow pattern
+                from controllers.web_socket import appointment_state
+                from services.whatsapp_service import get_latest_token
+                from config.constants import get_messages_url
+                import requests
+                import os
+                
+                # Get customer details for confirmation
+                from services.customer_service import get_customer_record_by_wa_id
+                customer = get_customer_record_by_wa_id(db, wa_id)
+                display_name = (customer.name.strip() if customer and isinstance(customer.name, str) else None) or "there"
+                
+                # Derive phone from wa_id as +91XXXXXXXXXX if applicable
+                try:
+                    import re as _re
+                    digits = _re.sub(r"\D", "", wa_id)
+                    last10 = digits[-10:] if len(digits) >= 10 else None
+                    display_phone = f"+91{last10}" if last10 and len(last10) == 10 else wa_id
+                except Exception:
+                    display_phone = wa_id
+
+                # Send confirmation message
+                confirm_msg = (
+                    f"Could you please confirm your name and contact number {display_name} and {display_phone} ?"
+                )
+                await send_message_to_waid(wa_id, confirm_msg, db)
+                
+                # Set up state for treatment flow
+                st = appointment_state.get(wa_id) or {}
+                st["from_treatment_flow"] = True
+                appointment_state[wa_id] = st
+                
+                # Send Yes/No confirmation buttons
+                token_entry_btn = get_latest_token(db)
+                if token_entry_btn and token_entry_btn.token:
+                    access_token_btn = token_entry_btn.token
+                    phone_id_btn = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+                    headers_btn = {"Authorization": f"Bearer {access_token_btn}", "Content-Type": "application/json"}
+                    payload_btn = {
+                        "messaging_product": "whatsapp",
+                        "to": wa_id,
+                        "type": "interactive",
+                        "interactive": {
+                            "type": "button",
+                            "body": {"text": "Is this name and number correct?"},
+                            "action": {
+                                "buttons": [
+                                    {"type": "reply", "reply": {"id": "confirm_yes", "title": "Yes"}},
+                                    {"type": "reply", "reply": {"id": "confirm_no", "title": "No"}},
+                                ]
+                            },
+                        },
+                    }
+                    requests.post(get_messages_url(phone_id_btn), headers=headers_btn, json=payload_btn)
+                    
+                    # Broadcast to WebSocket
+                    try:
+                        await manager.broadcast({
+                            "from": "system",
+                            "to": wa_id,
+                            "type": "interactive",
+                            "message": "Is this name and number correct?",
+                            "timestamp": datetime.now().isoformat(),
+                            "meta": {"kind": "buttons", "options": ["Yes", "No"]},
+                        })
+                    except Exception:
+                        pass
+                
+                return {"status": "awaiting_confirmation"}
             except Exception as e:
                 return {"status": "failed", "error": str(e)[:200]}
 
@@ -544,6 +609,33 @@ async def run_appointment_buttons_flow(
                     "📌 Thank you for your interest! One of our team members will contact you shortly to assist further.",
                     db,
                 )
+                
+                # Create lead in Zoho for callback request
+                try:
+                    from controllers.components.lead_appointment_flow.zoho_lead_service import create_lead_for_appointment
+                    from services.customer_service import get_customer_record_by_wa_id
+                    customer = get_customer_record_by_wa_id(db, wa_id)
+                    
+                    # Prepare appointment details for callback request
+                    appointment_details = {
+                        "flow_type": "treatment_flow",
+                        "treatment_selected": True,
+                        "callback_requested": True,
+                        "no_scheduling_required": True
+                    }
+                    
+                    lead_result = await create_lead_for_appointment(
+                        db=db,
+                        wa_id=wa_id,
+                        customer=customer,
+                        appointment_details=appointment_details,
+                        lead_status="PENDING",
+                        appointment_preference="Treatment consultation - callback requested"
+                    )
+                    print(f"[treatment_flow] DEBUG - Lead creation result (callback): {lead_result}")
+                except Exception as e:
+                    print(f"[treatment_flow] WARNING - Could not create lead (callback): {e}")
+                    
             except Exception:
                 pass
             return {"status": "callback_ack"}
