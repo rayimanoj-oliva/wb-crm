@@ -159,8 +159,8 @@ async def handle_interactive_response(
         print(f"[lead_appointment_flow] DEBUG - Reply ID analysis: starts_with_time={reply_id.startswith('time_')}, count_underscores={reply_id.count('_')}, split_length={len(reply_id.split('_'))}")
         
         # Route to appropriate handler based on reply_id
-        if reply_id.startswith("yes_book_appointment") or reply_id.startswith("not_now"):
-            # Auto-welcome response
+        if reply_id.startswith("yes_book_appointment") or reply_id.startswith("not_now") or reply_id.startswith("book_appointment"):
+            # Auto-welcome response (including "Book Appointment" from Not Now flow)
             from .auto_welcome import handle_welcome_response
             return await handle_welcome_response(
                 db=db,
@@ -190,15 +190,13 @@ async def handle_interactive_response(
             )
         
         
-        elif reply_id.startswith("yes_callback") or reply_id.startswith("no_callback"):
-            # Callback confirmation response
-            from .callback_confirmation import handle_callback_confirmation
-            return await handle_callback_confirmation(
-                db=db,
-                wa_id=wa_id,
-                reply_id=reply_id,
-                customer=customer
-            )
+        elif reply_id.startswith("yes_callback"):
+            # User wants callback - trigger auto dial
+            return await handle_yes_callback(db, wa_id=wa_id, customer=customer)
+        
+        elif reply_id.startswith("no_callback_not_now"):
+            # User doesn't want callback right now - send follow-up message
+            return await handle_no_callback_not_now(db, wa_id=wa_id, customer=customer)
         
         # Handle week/date/time selections ONLY if user is in lead appointment flow
         # Check if user is in lead appointment flow before handling time selections
@@ -279,168 +277,34 @@ async def handle_interactive_response(
                 except Exception as e:
                     print(f"[lead_appointment_flow] WARNING - Could not store slot selection: {e}")
                 
-                # Send thank you message and create lead
-                try:
-                    # Get appointment details from session for logging
-                    appointment_details = {}
-                    try:
-                        from controllers.web_socket import lead_appointment_state
-                        appointment_details = lead_appointment_state.get(wa_id, {})
-                        print(f"[lead_appointment_flow] DEBUG - Appointment details: {appointment_details}")
-                    except Exception as e:
-                        print(f"[lead_appointment_flow] WARNING - Could not get appointment details: {e}")
-                    
-                    # Send thank you message
-                    thank_you_message = "✅ Thank you! We've noted your appointment details and our team will get back to you shortly to confirm your appointment. 😊"
-                    await send_message_to_waid(wa_id, thank_you_message, db)
-                    
-                    # Broadcast to WebSocket
-                    try:
-                        await manager.broadcast({
-                            "from": "system",
-                            "to": wa_id,
-                            "type": "text",
-                            "message": thank_you_message,
-                            "timestamp": datetime.now().isoformat(),
-                            "meta": {"flow": "lead_appointment", "action": "thank_you_sent"}
-                        })
-                        print(f"[lead_appointment_flow] DEBUG - Thank you message broadcasted to WebSocket")
-                    except Exception as e:
-                        print(f"[lead_appointment_flow] WARNING - WebSocket broadcast failed: {e}")
-                    
-                    # Create lead in Zoho (if integration is available)
-                    try:
-                        from .zoho_lead_service import create_lead_for_appointment
-                        lead_result = await create_lead_for_appointment(
-                            db=db,
-                            wa_id=wa_id,
-                            customer=customer,
-                            appointment_details=appointment_details,
-                            lead_status="PENDING"
-                        )
-                        print(f"[lead_appointment_flow] DEBUG - Lead created: {lead_result}")
-                    except Exception as e:
-                        print(f"[lead_appointment_flow] WARNING - Could not create lead: {e}")
-                    
-                    # Clear session data
-                    try:
-                        from controllers.web_socket import lead_appointment_state
-                        if wa_id in lead_appointment_state:
-                            del lead_appointment_state[wa_id]
-                        print(f"[lead_appointment_flow] DEBUG - Cleared appointment session data")
-                    except Exception as e:
-                        print(f"[lead_appointment_flow] WARNING - Could not clear session data: {e}")
-                    
-                    return {
-                        "status": "thank_you_sent", 
-                        "appointment_details": appointment_details
-                    }
-                    
-                except Exception as e:
-                    print(f"[lead_appointment_flow] ERROR - Failed to send thank you message: {e}")
-                    fallback_message = "✅ Thank you! We've noted your appointment details and our team will get back to you shortly. 😊"
-                    await send_message_to_waid(wa_id, fallback_message, db)
-                    
-                    # Broadcast fallback message to WebSocket
-                    try:
-                        await manager.broadcast({
-                            "from": "system",
-                            "to": wa_id,
-                            "type": "text",
-                            "message": fallback_message,
-                            "timestamp": datetime.now().isoformat(),
-                            "meta": {"flow": "lead_appointment", "action": "thank_you_fallback"}
-                        })
-                        print(f"[lead_appointment_flow] DEBUG - Fallback thank you message broadcasted to WebSocket")
-                    except Exception as ws_e:
-                        print(f"[lead_appointment_flow] WARNING - WebSocket broadcast failed: {ws_e}")
-                    
-                    return {"status": "thank_you_fallback"}
+                # Send callback confirmation message
+                result = await send_callback_confirmation_interactive(db, wa_id=wa_id, customer=customer)
+                return {"status": "callback_confirmation_sent", "result": result}
             
             elif reply_id.startswith("time_") and (
                 # Handle specific time formats: time_1630, time_10_00, time_14_00, etc.
                 (len(reply_id) >= 8 and reply_id[5:].isdigit()) or  # time_1630 format
                 (reply_id.count("_") >= 2 and reply_id.split("_")[2].isdigit())  # time_10_00 format
             ):
-                # Specific time selection - send thank you message and create lead
+                # Specific time selection - send callback confirmation
                 print(f"[lead_appointment_flow] DEBUG - Handling time selection: {reply_id}")
                 
+                # Store the selected time
                 try:
-                    # Get appointment details from session for logging
-                    appointment_details = {}
-                    try:
-                        from controllers.web_socket import lead_appointment_state
-                        appointment_details = lead_appointment_state.get(wa_id, {})
-                        print(f"[lead_appointment_flow] DEBUG - Appointment details: {appointment_details}")
-                    except Exception as e:
-                        print(f"[lead_appointment_flow] WARNING - Could not get appointment details: {e}")
+                    from controllers.web_socket import lead_appointment_state
+                    if wa_id not in lead_appointment_state:
+                        lead_appointment_state[wa_id] = {}
                     
-                    # Send thank you message
-                    thank_you_message = "✅ Thank you! We've noted your appointment details and our team will get back to you shortly to confirm your appointment. 😊"
-                    await send_message_to_waid(wa_id, thank_you_message, db)
-                    
-                    # Broadcast to WebSocket
-                    try:
-                        await manager.broadcast({
-                            "from": "system",
-                            "to": wa_id,
-                            "type": "text",
-                            "message": thank_you_message,
-                            "timestamp": datetime.now().isoformat(),
-                            "meta": {"flow": "lead_appointment", "action": "thank_you_sent"}
-                        })
-                        print(f"[lead_appointment_flow] DEBUG - Thank you message broadcasted to WebSocket")
-                    except Exception as e:
-                        print(f"[lead_appointment_flow] WARNING - WebSocket broadcast failed: {e}")
-                    
-                    # Create lead in Zoho (if integration is available)
-                    try:
-                        from .zoho_lead_service import create_lead_for_appointment
-                        lead_result = await create_lead_for_appointment(
-                            db=db,
-                            wa_id=wa_id,
-                            customer=customer,
-                            appointment_details=appointment_details,
-                            lead_status="PENDING"
-                        )
-                        print(f"[lead_appointment_flow] DEBUG - Lead created: {lead_result}")
-                    except Exception as e:
-                        print(f"[lead_appointment_flow] WARNING - Could not create lead: {e}")
-                    
-                    # Clear session data
-                    try:
-                        from controllers.web_socket import lead_appointment_state
-                        if wa_id in lead_appointment_state:
-                            del lead_appointment_state[wa_id]
-                        print(f"[lead_appointment_flow] DEBUG - Cleared appointment session data")
-                    except Exception as e:
-                        print(f"[lead_appointment_flow] WARNING - Could not clear session data: {e}")
-                    
-                    return {
-                        "status": "thank_you_sent", 
-                        "appointment_details": appointment_details
-                    }
-                    
+                    # Extract time from reply_id (time_1630 or time_10_00 format)
+                    time_value = reply_id.replace("time_", "").replace("_", ":")
+                    lead_appointment_state[wa_id]["selected_time"] = time_value
+                    print(f"[lead_appointment_flow] DEBUG - Stored selected time: {time_value}")
                 except Exception as e:
-                    print(f"[lead_appointment_flow] ERROR - Failed to send thank you message: {e}")
-                    fallback_message = "✅ Thank you! We've noted your appointment details and our team will get back to you shortly. 😊"
-                    await send_message_to_waid(wa_id, fallback_message, db)
-                    
-                    # Broadcast fallback message to WebSocket
-                    try:
-                        await manager.broadcast({
-                            "from": "system",
-                            "to": wa_id,
-                            "type": "text",
-                            "message": fallback_message,
-                            "timestamp": datetime.now().isoformat(),
-                            "meta": {"flow": "lead_appointment", "action": "thank_you_fallback"}
-                        })
-                        print(f"[lead_appointment_flow] DEBUG - Fallback thank you message broadcasted to WebSocket")
-                    except Exception as ws_e:
-                        print(f"[lead_appointment_flow] WARNING - WebSocket broadcast failed: {ws_e}")
-                    
-                    return {"status": "thank_you_fallback"}
+                    print(f"[lead_appointment_flow] WARNING - Could not store time selection: {e}")
+                
+                # Send callback confirmation message
+                result = await send_callback_confirmation_interactive(db, wa_id=wa_id, customer=customer)
+                return {"status": "callback_confirmation_sent", "result": result}
         else:
             # User is NOT in lead appointment flow - skip time selections to let treatment flow handle them
             if (reply_id.startswith("week_") or 
@@ -524,3 +388,234 @@ def get_flow_progress(wa_id: str) -> Dict[str, Any]:
     except Exception as e:
         print(f"[lead_appointment_flow] ERROR - Could not get flow progress: {str(e)}")
         return {"is_active": False, "error": str(e)}
+
+
+async def send_callback_confirmation_interactive(
+    db: Session,
+    *,
+    wa_id: str,
+    customer: Any
+) -> Dict[str, Any]:
+    """Send interactive message asking if user wants a callback.
+    
+    Returns a status dict.
+    """
+    
+    try:
+        from services.whatsapp_service import get_latest_token
+        from config.constants import get_messages_url
+        import os
+        import requests
+        
+        token_entry = get_latest_token(db)
+        if not token_entry or not token_entry.token:
+            await send_message_to_waid(wa_id, "❌ Unable to send message right now.", db)
+            return {"success": False, "error": "no_token"}
+
+        access_token = token_entry.token
+        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+        phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+
+        # Send interactive message with buttons
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": wa_id,
+            "type": "interactive",
+            "interactive": {
+                "type": "button",
+                "body": {
+                    "text": "Thank you for sharing your preferred location & time.\nWould you like our agent to call you to confirm your appointment?"
+                },
+                "action": {
+                    "buttons": [
+                        {"type": "reply", "reply": {"id": "yes_callback", "title": "Yes"}},
+                        {"type": "reply", "reply": {"id": "no_callback_not_now", "title": "Not right now"}}
+                    ]
+                }
+            }
+        }
+
+        resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
+        
+        if resp.status_code == 200:
+            try:
+                # Get message ID from response
+                response_data = resp.json()
+                message_id = response_data.get("messages", [{}])[0].get("id", f"outbound_{datetime.now().timestamp()}")
+                
+                # Save outbound message to database
+                from services.message_service import create_message
+                from schemas.message_schema import MessageCreate
+                
+                outbound_message = MessageCreate(
+                    message_id=message_id,
+                    from_wa_id=os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                    to_wa_id=wa_id,
+                    type="interactive",
+                    body="Thank you for sharing your preferred location & time.\nWould you like our agent to call you to confirm your appointment?",
+                    timestamp=datetime.now(),
+                    customer_id=customer.id,
+                )
+                create_message(db, outbound_message)
+                print(f"[lead_appointment_flow] DEBUG - Callback confirmation message saved to database: {message_id}")
+                
+                # Broadcast to WebSocket
+                await manager.broadcast({
+                    "from": os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                    "to": wa_id,
+                    "type": "interactive",
+                    "message": "Thank you for sharing your preferred location & time.\nWould you like our agent to call you to confirm your appointment?",
+                    "timestamp": datetime.now().isoformat(),
+                    "meta": {
+                        "kind": "buttons",
+                        "options": ["Yes", "Not right now"]
+                    }
+                })
+            except Exception as e:
+                print(f"[lead_appointment_flow] WARNING - Database save or WebSocket broadcast failed: {e}")
+            
+            return {"success": True, "message_id": message_id}
+        else:
+            await send_message_to_waid(wa_id, "❌ Could not send message. Please try again.", db)
+            return {"success": False, "error": resp.text}
+            
+    except Exception as e:
+        await send_message_to_waid(wa_id, f"❌ Error sending message: {str(e)}", db)
+        return {"success": False, "error": str(e)}
+
+
+async def handle_yes_callback(
+    db: Session,
+    *,
+    wa_id: str,
+    customer: Any
+) -> Dict[str, Any]:
+    """Handle yes callback - trigger auto dial.
+    
+    Returns a status dict.
+    """
+    
+    try:
+        print(f"[lead_appointment_flow] DEBUG - User requested callback (Yes)")
+        
+        # Get appointment details from session state
+        appointment_details = {}
+        try:
+            from controllers.web_socket import lead_appointment_state
+            appointment_details = lead_appointment_state.get(wa_id, {})
+            print(f"[lead_appointment_flow] DEBUG - Appointment details: {appointment_details}")
+        except Exception as e:
+            print(f"[lead_appointment_flow] WARNING - Could not get appointment details: {e}")
+        
+        # Trigger Q5 auto dial event
+        from .zoho_lead_service import trigger_q5_auto_dial_event
+        result = await trigger_q5_auto_dial_event(
+            db=db,
+            wa_id=wa_id,
+            customer=customer,
+            appointment_details=appointment_details
+        )
+        
+        if result["success"]:
+            # Send confirmation message
+            await send_message_to_waid(
+                wa_id, 
+                "✅ Perfect! We've noted your appointment details and one of our agents will call you shortly to confirm your appointment. Thank you! 😊", 
+                db
+            )
+            
+            # Clear session data
+            try:
+                from controllers.web_socket import lead_appointment_state
+                if wa_id in lead_appointment_state:
+                    del lead_appointment_state[wa_id]
+                print(f"[lead_appointment_flow] DEBUG - Cleared appointment session data")
+            except Exception as e:
+                print(f"[lead_appointment_flow] WARNING - Could not clear session data: {e}")
+        
+        return {"status": "callback_triggered", "result": result}
+        
+    except Exception as e:
+        print(f"[lead_appointment_flow] ERROR - Failed to trigger callback: {e}")
+        await send_message_to_waid(
+            wa_id, 
+            "✅ Perfect! We've noted your appointment details and one of our agents will call you shortly. Thank you! 😊", 
+            db
+        )
+        return {"status": "error", "error": str(e)}
+
+
+async def handle_no_callback_not_now(
+    db: Session,
+    *,
+    wa_id: str,
+    customer: Any
+) -> Dict[str, Any]:
+    """Handle no callback not now - send text message and create lead.
+    
+    Returns a status dict.
+    """
+    
+    try:
+        import os
+        
+        # Get appointment details from session state
+        appointment_details = {}
+        try:
+            from controllers.web_socket import lead_appointment_state
+            appointment_details = lead_appointment_state.get(wa_id, {})
+            print(f"[lead_appointment_flow] DEBUG - Appointment details: {appointment_details}")
+        except Exception as e:
+            print(f"[lead_appointment_flow] WARNING - Could not get appointment details: {e}")
+        
+        # Send plain text message
+        message = "No problem! You can reach out anytime to schedule your appointment.\n\n✅ 8 lakh+ clients have trusted Oliva & experienced visible transformation\n\nWe'll be right here whenever you're ready to start your journey. 🌿"
+        await send_message_to_waid(wa_id, message, db)
+        
+        # Broadcast to WebSocket
+        try:
+            await manager.broadcast({
+                "from": os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                "to": wa_id,
+                "type": "text",
+                "message": message,
+                "timestamp": datetime.now().isoformat(),
+                "meta": {"flow": "lead_appointment", "action": "not_right_now_sent"}
+            })
+            print(f"[lead_appointment_flow] DEBUG - Not right now message broadcasted to WebSocket")
+        except Exception as e:
+            print(f"[lead_appointment_flow] WARNING - WebSocket broadcast failed: {e}")
+        
+        # Create lead in Zoho with NO_CALLBACK status
+        try:
+            from .zoho_lead_service import handle_termination_event
+            termination_result = await handle_termination_event(
+                db=db,
+                wa_id=wa_id,
+                customer=customer,
+                termination_reason="not_right_now",
+                appointment_details=appointment_details
+            )
+            print(f"[lead_appointment_flow] DEBUG - Lead created with not right now status")
+        except Exception as e:
+            print(f"[lead_appointment_flow] WARNING - Could not create lead: {e}")
+        
+        # Clear session data
+        try:
+            from controllers.web_socket import lead_appointment_state
+            if wa_id in lead_appointment_state:
+                del lead_appointment_state[wa_id]
+            print(f"[lead_appointment_flow] DEBUG - Cleared appointment session data")
+        except Exception as e:
+            print(f"[lead_appointment_flow] WARNING - Could not clear session data: {e}")
+        
+        return {"status": "not_right_now_sent"}
+        
+    except Exception as e:
+        print(f"[lead_appointment_flow] ERROR - Failed to send not right now message: {e}")
+        await send_message_to_waid(
+            wa_id, 
+            "Thank you for your interest! We'll be here when you're ready. 😊", 
+            db
+        )
+        return {"status": "error", "error": str(e)}

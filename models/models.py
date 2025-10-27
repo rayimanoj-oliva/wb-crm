@@ -592,3 +592,18 @@ class Cost(Base):
 
     def __repr__(self):
         return f"<Cost(type='{self.type}', price={self.price})>"
+
+
+class ZohoMapping(Base):
+    __tablename__ = "zoho_mappings"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    treatment_name = Column(String(255), nullable=False, unique=True, index=True)
+    zoho_name = Column(String(255), nullable=False, index=True)
+    zoho_sub_concern = Column(String(500), nullable=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<ZohoMapping(id={self.id}, treatment_name='{self.treatment_name}', zoho_name='{self.zoho_name}')>"

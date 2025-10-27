@@ -1,6 +1,6 @@
 """
 Auto Welcome Message for Lead-to-Appointment Booking Flow
-Sends the initial welcome message with Yes/No buttons
+Sends the initial welcome template message (oliva_meta_ad)
 """
 
 from datetime import datetime
@@ -16,7 +16,7 @@ from utils.ws_manager import manager
 
 
 async def send_auto_welcome_message(db: Session, *, wa_id: str) -> Dict[str, Any]:
-    """Send the auto-welcome message with Yes/No buttons for appointment booking.
+    """Send the auto-welcome template message for appointment booking.
     
     Returns a status dict.
     """
@@ -31,22 +31,15 @@ async def send_auto_welcome_message(db: Session, *, wa_id: str) -> Dict[str, Any
         headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
         phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
 
+        # Send template message instead of interactive
         payload = {
             "messaging_product": "whatsapp",
             "to": wa_id,
-            "type": "interactive",
-            "interactive": {
-                "type": "button",
-                "body": {
-                    "text": "Thank you for your interest in Oliva Skin & Hair Clinic — India's most trusted dermatology chain. 🌿\n\nWe're happy to assist you! Would you like to book an appointment with us today?"
-                },
-                "action": {
-                    "buttons": [
-                        {"type": "reply", "reply": {"id": "yes_book_appointment", "title": "Yes, Book Now"}},
-                        {"type": "reply", "reply": {"id": "not_now", "title": "Not Now"}},
-                    ]
-                },
-            },
+            "type": "template",
+            "template": {
+                "name": "oliva_meta_ad",
+                "language": {"code": "en_US"}
+            }
         }
 
         resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
@@ -70,24 +63,23 @@ async def send_auto_welcome_message(db: Session, *, wa_id: str) -> Dict[str, Any
                     message_id=message_id,
                     from_wa_id=os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
                     to_wa_id=wa_id,
-                    type="interactive",
-                    body="Thank you for your interest in Oliva Skin & Hair Clinic — India's most trusted dermatology chain. 🌿\n\nWe're happy to assist you! Would you like to book an appointment with us today?",
+                    type="template",
+                    body="Template: oliva_meta_ad",
                     timestamp=datetime.now(),
                     customer_id=customer.id,
                 )
                 create_message(db, outbound_message)
-                print(f"[lead_appointment_flow] DEBUG - Auto welcome message saved to database: {message_id}")
+                print(f"[lead_appointment_flow] DEBUG - Auto welcome template message saved to database: {message_id}")
                 
                 # Broadcast to WebSocket
                 await manager.broadcast({
                     "from": os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
                     "to": wa_id,
-                    "type": "interactive",
-                    "message": "Thank you for your interest in Oliva Skin & Hair Clinic — India's most trusted dermatology chain. 🌿\n\nWe're happy to assist you! Would you like to book an appointment with us today?",
+                    "type": "template",
+                    "message": "Template: oliva_meta_ad",
                     "timestamp": datetime.now().isoformat(),
                     "meta": {
-                        "kind": "buttons",
-                        "options": ["✅ Yes, I'd like to book", "❌ Not now"]
+                        "template_name": "oliva_meta_ad"
                     }
                 })
             except Exception as e:
@@ -113,7 +105,7 @@ async def handle_welcome_response(
     """Handle the response to the auto-welcome message.
     
     Args:
-        reply_id: Either "yes_book_appointment" or "not_now"
+        reply_id: "yes_book_appointment", "not_now", or "book_appointment"
         
     Returns a status dict.
     """
@@ -135,29 +127,104 @@ async def handle_welcome_response(
         return {"status": "proceed_to_city_selection", "result": result}
     
     elif normalized_reply == "not_now":
-        # User doesn't want to book now - still create a lead but mark as no callback
-        from .zoho_integration import trigger_zoho_lead_creation
+        # User doesn't want to book now - send follow-up message with button
+        return await send_not_now_followup(db, wa_id=wa_id, customer=customer)
+    
+    elif normalized_reply == "book_appointment":
+        # User wants to book after "Not Now" - initialize flow state and proceed to city selection
         try:
-            await trigger_zoho_lead_creation(
-                db=db,
-                wa_id=wa_id,
-                customer=customer,
-                lead_status="NO_CALLBACK",
-                appointment_preference="Not interested now"
-            )
-            await send_message_to_waid(
-                wa_id, 
-                "No problem! We've saved your details. Feel free to reach out anytime when you're ready to book an appointment. 😊", 
-                db
-            )
-            return {"status": "lead_created_no_callback"}
+            from controllers.web_socket import lead_appointment_state
+            if wa_id not in lead_appointment_state:
+                lead_appointment_state[wa_id] = {}
+            print(f"[lead_appointment_flow] DEBUG - Initialized lead appointment state for {wa_id}")
         except Exception as e:
-            print(f"[lead_appointment_flow] ERROR - Failed to create lead for 'not now': {e}")
-            await send_message_to_waid(
-                wa_id, 
-                "Thank you for your interest! Feel free to reach out anytime. 😊", 
-                db
-            )
-            return {"status": "acknowledged"}
+            print(f"[lead_appointment_flow] WARNING - Could not initialize lead appointment state: {e}")
+        
+        from .city_selection import send_city_selection
+        result = await send_city_selection(db, wa_id=wa_id)
+        return {"status": "proceed_to_city_selection", "result": result}
     
     return {"status": "skipped"}
+
+
+async def send_not_now_followup(db: Session, *, wa_id: str, customer: Any) -> Dict[str, Any]:
+    """Send follow-up message with button when user clicks 'Not Now'.
+    
+    Returns a status dict.
+    """
+    
+    try:
+        token_entry = get_latest_token(db)
+        if not token_entry or not token_entry.token:
+            await send_message_to_waid(wa_id, "❌ Unable to send message right now.", db)
+            return {"success": False, "error": "no_token"}
+
+        access_token = token_entry.token
+        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+        phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+
+        # Send interactive message with button
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": wa_id,
+            "type": "interactive",
+            "interactive": {
+                "type": "button",
+                "body": {
+                    "text": "No problem! You can reach out anytime to schedule your appointment.\n\n✅ 8 lakh+ clients have trusted Oliva & experienced visible transformation\n\nWe'll be right here whenever you're ready to start your journey. 🌿"
+                },
+                "action": {
+                    "buttons": [
+                        {"type": "reply", "reply": {"id": "book_appointment", "title": "Book Appointment"}}
+                    ]
+                }
+            }
+        }
+
+        resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
+        
+        if resp.status_code == 200:
+            try:
+                # Get message ID from response
+                response_data = resp.json()
+                message_id = response_data.get("messages", [{}])[0].get("id", f"outbound_{datetime.now().timestamp()}")
+                
+                # Save outbound message to database
+                from services.message_service import create_message
+                from schemas.message_schema import MessageCreate
+                
+                outbound_message = MessageCreate(
+                    message_id=message_id,
+                    from_wa_id=os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                    to_wa_id=wa_id,
+                    type="interactive",
+                    body="No problem! You can reach out anytime to schedule your appointment.\n\n✅ 8 lakh+ clients have trusted Oliva & experienced visible transformation\n\nWe'll be right here whenever you're ready to start your journey. 🌿",
+                    timestamp=datetime.now(),
+                    customer_id=customer.id,
+                )
+                create_message(db, outbound_message)
+                print(f"[lead_appointment_flow] DEBUG - Not Now followup message saved to database: {message_id}")
+                
+                # Broadcast to WebSocket
+                await manager.broadcast({
+                    "from": os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                    "to": wa_id,
+                    "type": "interactive",
+                    "message": "No problem! You can reach out anytime to schedule your appointment.\n\n✅ 8 lakh+ clients have trusted Oliva & experienced visible transformation\n\nWe'll be right here whenever you're ready to start your journey. 🌿",
+                    "timestamp": datetime.now().isoformat(),
+                    "meta": {
+                        "kind": "buttons",
+                        "options": ["Book Appointment"]
+                    }
+                })
+            except Exception as e:
+                print(f"[lead_appointment_flow] WARNING - Database save or WebSocket broadcast failed: {e}")
+            
+            return {"success": True, "message_id": message_id, "status": "followup_sent"}
+        else:
+            await send_message_to_waid(wa_id, "❌ Could not send message. Please try again.", db)
+            return {"success": False, "error": resp.text}
+            
+    except Exception as e:
+        await send_message_to_waid(wa_id, f"❌ Error sending message: {str(e)}", db)
+        return {"success": False, "error": str(e)}

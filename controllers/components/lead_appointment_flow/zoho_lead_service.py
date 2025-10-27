@@ -254,9 +254,17 @@ async def create_lead_for_appointment(
                 phone_number = f"91{phone_number}"
             print(f"📞 [LEAD APPOINTMENT FLOW] Using WA ID as phone: {phone_number}")
         
+        # Initialize variables for concern tracking
+        selected_concern = None
+        zoho_mapped_concern = None
+        city = "Unknown"
+        clinic = "Unknown"
+        appointment_date = "Not specified"
+        appointment_time = "Not specified"
+        
         # Get appointment details from session state
         try:
-            from controllers.web_socket import lead_appointment_state
+            from controllers.web_socket import lead_appointment_state, appointment_state
             session_data = lead_appointment_state.get(wa_id, {})
             city = session_data.get("selected_city", "Unknown")
             clinic = session_data.get("selected_clinic", "Unknown")
@@ -277,6 +285,20 @@ async def create_lead_for_appointment(
                 session_data.get("appointment_time") or 
                 "Not specified"
             )
+            
+            # Get selected concern from appointment state and map to Zoho name
+            try:
+                # Try to get from appointment_state (treatment flow)
+                concern_data = appointment_state.get(wa_id, {})
+                selected_concern = concern_data.get("selected_concern")
+                
+                # If found, look up Zoho mapping
+                if selected_concern:
+                    from services.zoho_mapping_service import get_zoho_name
+                    zoho_mapped_concern = get_zoho_name(db, selected_concern)
+                    print(f"🎯 [LEAD APPOINTMENT FLOW] Selected concern: {selected_concern}, Mapped to Zoho: {zoho_mapped_concern}")
+            except Exception as e:
+                print(f"⚠️ [LEAD APPOINTMENT FLOW] Could not get/parse selected concern from state: {e}")
             
             print(f"🏙️ [LEAD APPOINTMENT FLOW] Appointment details from session: {city}, {clinic}, {appointment_date}, {appointment_time}")
         except Exception as e:
@@ -300,6 +322,18 @@ async def create_lead_for_appointment(
                 "Not specified"
             ) if appointment_details else "Not specified"
         
+        # Try to get selected concern from appointment_details if not found in state
+        if not selected_concern and appointment_details:
+            selected_concern = appointment_details.get("selected_concern")
+            if selected_concern:
+                print(f"🎯 [LEAD APPOINTMENT FLOW] Got concern from appointment_details: {selected_concern}")
+                try:
+                    from services.zoho_mapping_service import get_zoho_name
+                    zoho_mapped_concern = get_zoho_name(db, selected_concern)
+                    print(f"🎯 [LEAD APPOINTMENT FLOW] Mapped to Zoho: {zoho_mapped_concern}")
+                except Exception as map_e:
+                    print(f"⚠️ [LEAD APPOINTMENT FLOW] Could not map concern: {map_e}")
+        
         # Create description
         description_parts = [
             f"Lead from WhatsApp Lead-to-Appointment Flow",
@@ -308,6 +342,12 @@ async def create_lead_for_appointment(
             f"Preferred Date: {appointment_date}",
             f"Preferred Time: {appointment_time}",
         ]
+        
+        # Add Zoho mapped concern if available
+        if zoho_mapped_concern:
+            description_parts.append(f"Treatment/Zoho Concern: {zoho_mapped_concern}")
+        elif selected_concern:
+            description_parts.append(f"Treatment: {selected_concern}")
         
         if appointment_preference:
             description_parts.append(f"Preference: {appointment_preference}")
@@ -344,7 +384,9 @@ async def create_lead_for_appointment(
                 "selected_clinic": clinic,
                 "selected_week": session_data.get("selected_week", "Not specified"),
                 "custom_date": appointment_date,
-                "selected_time": appointment_time
+                "selected_time": appointment_time,
+                "selected_concern": selected_concern,
+                "zoho_mapped_concern": zoho_mapped_concern
             }
         )
         

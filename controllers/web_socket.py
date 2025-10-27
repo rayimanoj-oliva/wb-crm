@@ -1827,6 +1827,17 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             # Step 3 → 6: After a list selection, save+broadcast reply, then present next-step action buttons
             try:
                 if i_type == "list_reply" and (reply_id or title):
+                    # Store selected concern/treatment for later mapping to Zoho
+                    selected_concern = title or reply_id or ""
+                    if selected_concern:
+                        try:
+                            if wa_id not in appointment_state:
+                                appointment_state[wa_id] = {}
+                            appointment_state[wa_id]["selected_concern"] = selected_concern
+                            print(f"[treatment_flow] DEBUG - Stored selected concern: {selected_concern}")
+                        except Exception as e:
+                            print(f"[treatment_flow] WARNING - Could not store selected concern: {e}")
+                    
                     # Do NOT rebroadcast here; unified early broadcast already did it.
                     # Trigger booking_appoint template right after treatment selection
                     try:
@@ -2014,14 +2025,20 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                 from services.customer_service import get_customer_record_by_wa_id
                                 customer = get_customer_record_by_wa_id(db, wa_id)
                                 
+                                # Get selected concern from appointment_state
+                                selected_concern = (st or {}).get("selected_concern")
+                                print(f"[treatment_flow] DEBUG - Selected concern from state: {selected_concern}")
+                                
                                 # Prepare appointment details for treatment flow
                                 appointment_details = {
                                     "flow_type": "treatment_flow",
                                     "treatment_selected": True,
                                     "no_scheduling_required": True,
                                     "corrected_name": name_final,
-                                    "corrected_phone": phone_final
+                                    "corrected_phone": phone_final,
+                                    "selected_concern": selected_concern
                                 }
+                                print(f"[treatment_flow] DEBUG - Appointment details with concern: {appointment_details}")
                                 
                                 lead_result = await create_lead_for_appointment(
                                     db=db,
@@ -2032,6 +2049,41 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                     appointment_preference="Treatment consultation - no specific appointment time requested"
                                 )
                                 print(f"[treatment_flow] DEBUG - Lead creation result (name/phone verification): {lead_result}")
+                                
+                                # Save to referrer table with treatment type
+                                if selected_concern:
+                                    try:
+                                        from services.zoho_mapping_service import get_zoho_name
+                                        from services.referrer_service import referrer_service
+                                        
+                                        # Get the Zoho mapped name for the treatment
+                                        zoho_treatment_name = get_zoho_name(db, selected_concern)
+                                        
+                                        # Get or create referrer record
+                                        existing_ref = referrer_service.get_referrer_by_wa_id(db, wa_id)
+                                        if existing_ref:
+                                            # Update existing record
+                                            existing_ref.treatment_type = zoho_treatment_name
+                                            db.commit()
+                                            print(f"[treatment_flow] Updated referrer table with treatment: {zoho_treatment_name}")
+                                        else:
+                                            # Create new referrer record
+                                            from schemas.referrer_schema import ReferrerTrackingCreate
+                                            referrer_data = ReferrerTrackingCreate(
+                                                wa_id=wa_id,
+                                                center_name="Oliva Skin & Hair Clinic",
+                                                location="Multiple Locations",
+                                                customer_id=customer.id,
+                                                appointment_date=None,
+                                                appointment_time=None,
+                                                treatment_type=zoho_treatment_name,
+                                                is_appointment_booked=False
+                                            )
+                                            referrer_service.create_referrer_tracking(db, referrer_data)
+                                            print(f"[treatment_flow] Created referrer record with treatment: {zoho_treatment_name}")
+                                    except Exception as ref_e:
+                                        print(f"[treatment_flow] WARNING - Could not save to referrer table: {ref_e}")
+                                
                             except Exception as e:
                                 print(f"[treatment_flow] WARNING - Could not create lead (name/phone verification): {e}")
                             
