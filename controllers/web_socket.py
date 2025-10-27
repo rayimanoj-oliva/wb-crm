@@ -1242,6 +1242,61 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             if (flow_result or {}).get("status") in {"list_sent", "hair_template_sent", "body_template_sent", "next_actions_sent"}:
                 return flow_result
 
+            # Handle template button clicks from oliva_meta_ad template
+            # Map template button payloads to lead appointment flow IDs
+            template_btn_mapping = {
+                "yes, book now": "yes_book_appointment",
+                "yes book now": "yes_book_appointment",
+                "not now": "not_now",
+                "not now,": "not_now",
+            }
+            
+            # Check if this is a template button from oliva_meta_ad
+            normalized_payload = (btn_text or "").strip().lower()
+            mapped_id = template_btn_mapping.get(normalized_payload)
+            
+            if mapped_id:
+                print(f"[ws_webhook] DEBUG - Template button detected: '{btn_text}' → mapped to '{mapped_id}'")
+                
+                # Process as lead appointment flow interactive response
+                mock_interactive = {
+                    "button_reply": {
+                        "id": mapped_id,
+                        "title": btn_text
+                    }
+                }
+                
+                # Check if user is in lead appointment flow
+                from controllers.components.lead_appointment_flow.flow_controller import run_lead_appointment_flow
+                try:
+                    from controllers.web_socket import lead_appointment_state
+                    is_in_lead_flow = wa_id in lead_appointment_state and bool(lead_appointment_state[wa_id])
+                    
+                    # Also check if template button (first interaction)
+                    if mapped_id in {"yes_book_appointment", "not_now"}:
+                        is_in_lead_flow = True
+                    
+                    if is_in_lead_flow or mapped_id in {"yes_book_appointment", "not_now"}:
+                        print(f"[ws_webhook] DEBUG - Routing to lead appointment flow for '{mapped_id}'")
+                        lead_result = await run_lead_appointment_flow(
+                            db=db,
+                            wa_id=wa_id,
+                            message_type="interactive",
+                            message_id=message_id,
+                            from_wa_id=from_wa_id,
+                            to_wa_id=to_wa_id,
+                            body_text=None,
+                            timestamp=timestamp,
+                            customer=customer,
+                            interactive=mock_interactive,
+                            i_type="button_reply",
+                        )
+                        if lead_result.get("status") not in {"skipped", "error"}:
+                            print(f"[ws_webhook] DEBUG - Lead appointment flow handled: {lead_result.get('status')}")
+                            return lead_result
+                except Exception as e:
+                    print(f"[ws_webhook] WARNING - Failed to process template button in lead flow: {e}")
+
             # Delegate appointment button flows (book, callback, time)
             from controllers.components.treament_flow import run_appointment_buttons_flow  # local import to avoid cycles
             appt_result_ctrl = await run_appointment_buttons_flow(
