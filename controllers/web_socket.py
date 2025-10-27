@@ -1267,7 +1267,6 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 }
                 
                 # Check if user is in lead appointment flow
-                from controllers.components.lead_appointment_flow.flow_controller import run_lead_appointment_flow
                 try:
                     from controllers.web_socket import lead_appointment_state
                     is_in_lead_flow = wa_id in lead_appointment_state and bool(lead_appointment_state[wa_id])
