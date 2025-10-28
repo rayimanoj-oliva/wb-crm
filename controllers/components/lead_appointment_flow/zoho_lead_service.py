@@ -62,6 +62,25 @@ class ZohoLeadService:
                 desc_parts.append(f"Preferred Time: {appointment_details['selected_time']}")
         
         full_description = " | ".join(desc_parts) if desc_parts else "Lead from WhatsApp"
+
+        # Map local names to Zoho API field names
+        concerns_value = None
+        clinic_branch_region = None
+        try:
+            if appointment_details:
+                concerns_value = (
+                    appointment_details.get("zoho_mapped_concern")
+                    or appointment_details.get("selected_concern")
+                )
+                # Region should reflect the parsed location (e.g., Jubilee Hills) only
+                clinic_branch_region = appointment_details.get("selected_location")
+                # Treat placeholder/unknown values as absent to avoid sending "Unknown"
+                if isinstance(clinic_branch_region, str) and clinic_branch_region.strip().lower() in {
+                    "unknown", "not specified", "na", "n/a", "-", "none", "null", ""
+                }:
+                    clinic_branch_region = None
+        except Exception:
+            pass
         
         lead_data = {
             "data": [
@@ -75,6 +94,9 @@ class ZohoLeadService:
                     "Lead_Source": lead_source,
                     "Company": company,
                     "Description": full_description,
+                    # Business fields expected by Zoho
+                    **({"Concerns": concerns_value} if concerns_value else {}),
+                    **({"Clinic_Branch": clinic_branch_region} if clinic_branch_region else {}),
                     # Custom fields / standard fields expected in Zoho
                     "Sub_Source": sub_source,
                     "Unsubscribed_Mode": unsubscribed_mode,
@@ -408,6 +430,7 @@ async def create_lead_for_appointment(
             appointment_details={
                 "selected_city": city,
                 "selected_clinic": clinic,
+                **({"selected_location": location} if 'location' in locals() and location else {}),
                 "selected_week": session_data.get("selected_week", "Not specified"),
                 "custom_date": appointment_date,
                 "selected_time": appointment_time,

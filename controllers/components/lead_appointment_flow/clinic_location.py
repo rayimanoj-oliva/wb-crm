@@ -184,13 +184,19 @@ async def handle_clinic_location(
     except Exception:
         clinic_name = reply_id or "Unknown Clinic"
     
-    # Store selected clinic in session
+    # Store selected clinic in session (also mirror to selected_location for Zoho Clinic_Branch)
     try:
-        from controllers.web_socket import lead_appointment_state
+        from controllers.web_socket import lead_appointment_state, appointment_state
         if wa_id not in lead_appointment_state:
             lead_appointment_state[wa_id] = {}
         lead_appointment_state[wa_id]["selected_clinic"] = clinic_name
         lead_appointment_state[wa_id]["clinic_id"] = reply_id
+        # For Zoho picklist mapping
+        lead_appointment_state[wa_id]["selected_location"] = clinic_name
+        # Also persist in appointment_state as a fallback source
+        st = appointment_state.get(wa_id) or {}
+        st["selected_location"] = clinic_name
+        appointment_state[wa_id] = st
         print(f"[lead_appointment_flow] DEBUG - Stored clinic selection: {clinic_name}")
     except Exception as e:
         print(f"[lead_appointment_flow] WARNING - Could not store clinic selection: {e}")
