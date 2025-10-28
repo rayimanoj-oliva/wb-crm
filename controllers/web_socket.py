@@ -953,8 +953,8 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             # no early return needed; this is an optional greeting handler
 
         # Send onboarding prompt on very first message from this WA ID
-        if len(prior_messages) == 0:
-            await send_message_to_waid(wa_id, 'Type "Hi" or "Hello"', db)
+        # if len(prior_messages) == 0:
+        #     await send_message_to_waid(wa_id, 'Type "Hi" or "Hello"', db)
       
 
 
@@ -2106,6 +2106,95 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
 
             return {"status": "success", "message_id": message_id}
         
+        # Handle free-form text in treatment flow to capture name/phone even if user skips buttons
+        try:
+            if message_type == "text":
+                st = appointment_state.get(wa_id) or {}
+                if bool(st.get("from_treatment_flow")) and not bool(st.get("awaiting_name")) and not bool(st.get("awaiting_phone")):
+                    name_res = validate_human_name(body_text)
+                    phone_res = validate_indian_phone(body_text)
+                    name_ok = bool(name_res.get("valid")) and bool(name_res.get("name"))
+                    phone_ok = bool(phone_res.get("valid")) and bool(phone_res.get("phone"))
+                    if name_ok and phone_ok:
+                        st["corrected_name"] = name_res.get("name").strip()
+                        st["corrected_phone"] = phone_res.get("phone")
+                        st["awaiting_name"] = False
+                        st["awaiting_phone"] = False
+                        appointment_state[wa_id] = st
+                        # Update local customer record with corrected details
+                        try:
+                            from services.customer_service import get_customer_record_by_wa_id, update_customer
+                            from schemas.customer_schema import CustomerUpdate
+                            cust = get_customer_record_by_wa_id(db, wa_id)
+                            if cust:
+                                # Normalize WA number to +91XXXXXXXXXX
+                                import re as _re
+                                wa_digits = _re.sub(r"\D", "", wa_id)
+                                wa_last10 = wa_digits[-10:] if len(wa_digits) >= 10 else wa_digits
+                                wa_norm = ("+91" + wa_last10) if len(wa_last10) == 10 else wa_id
+                            update_customer(db, cust.id, CustomerUpdate(
+                                name=name_res.get("name").strip(),
+                                phone_2=phone_res.get("phone"),
+                            ))
+                        except Exception:
+                            pass
+                        # Proceed as in awaiting_phone success for treatment flow
+                        name_final = (st.get("corrected_name") or "there").strip()
+                        phone_final = st.get("corrected_phone")
+                        msg = (
+                            f"✅ Thank you! Our team will call and confirm your appointment shortly."
+                        )
+                        await send_message_to_waid(wa_id, msg, db)
+                        try:
+                            from controllers.components.lead_appointment_flow.zoho_lead_service import create_lead_for_appointment
+                            from services.customer_service import get_customer_record_by_wa_id
+                            customer = get_customer_record_by_wa_id(db, wa_id)
+                            try:
+                                selected_concern = appointment_state.get(wa_id, {}).get("selected_concern")
+                            except Exception:
+                                selected_concern = (st or {}).get("selected_concern")
+                            # Compute WA phone for Phone_2
+                            import re as _re
+                            wa_digits = _re.sub(r"\D", "", wa_id)
+                            wa_last10 = wa_digits[-10:] if len(wa_digits) >= 10 else wa_digits
+                            wa_phone_norm = ("+91" + wa_last10) if len(wa_last10) == 10 else wa_id
+                            appointment_details = {
+                                "flow_type": "treatment_flow",
+                                "treatment_selected": True,
+                                "no_scheduling_required": True,
+                                "corrected_name": name_final,
+                                "corrected_phone": phone_final,
+                                "wa_phone": wa_phone_norm,
+                                "selected_concern": selected_concern,
+                            }
+                            await create_lead_for_appointment(
+                                db=db,
+                                wa_id=wa_id,
+                                customer=customer,
+                                appointment_details=appointment_details,
+                                lead_status="PENDING",
+                                appointment_preference="Treatment consultation - no specific appointment time requested",
+                            )
+                        except Exception:
+                            pass
+                        return {"status": "treatment_name_phone_captured", "message_id": message_id}
+                    elif name_ok and not phone_ok:
+                        st["corrected_name"] = name_res.get("name").strip()
+                        st["awaiting_name"] = False
+                        st["awaiting_phone"] = True
+                        appointment_state[wa_id] = st
+                        await send_message_to_waid(wa_id, f"Thanks {st['corrected_name']}! Now please share your number.", db)
+                        return {"status": "name_captured_awaiting_phone", "message_id": message_id}
+                    elif phone_ok and not name_ok:
+                        st["corrected_phone"] = phone_res.get("phone")
+                        st["awaiting_name"] = True
+                        st["awaiting_phone"] = False
+                        appointment_state[wa_id] = st
+                        await send_message_to_waid(wa_id, "Got your number. Please share your name (full name or first name).", db)
+                        return {"status": "phone_captured_awaiting_name", "message_id": message_id}
+        except Exception:
+            pass
+        
         # Handle text while awaiting_name using OpenAI-backed validator
         try:
             if message_type == "text":
@@ -2144,6 +2233,19 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         from_treatment_flow = st.get("from_treatment_flow", False)
                         
                         if from_treatment_flow and name_final and phone_final:
+                            # Update local customer record with corrected details
+                            try:
+                                from services.customer_service import get_customer_record_by_wa_id, update_customer
+                                from schemas.customer_schema import CustomerUpdate
+                                import re as _re
+                                cust = get_customer_record_by_wa_id(db, wa_id)
+                                if cust:
+                                    wa_digits = _re.sub(r"\D", "", wa_id)
+                                    wa_last10 = wa_digits[-10:] if len(wa_digits) >= 10 else wa_digits
+                                    wa_norm = ("+91" + wa_last10) if len(wa_last10) == 10 else wa_id
+                                    update_customer(db, cust.id, CustomerUpdate(name=name_final, phone_2=phone_final))
+                            except Exception:
+                                pass
                             # Treatment flow confirmation - no date/time details
                             msg = (
                                 f"✅ Thank you! Our team will call and confirm your appointment shortly."

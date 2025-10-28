@@ -35,7 +35,7 @@ class ZohoLeadService:
         phone: str = "",
         mobile: str = "",
         city: str = "",
-        lead_source: str = "WhatsApp",
+        lead_source: str = "Business Listing",
         company: str = "Oliva Skin & Hair Clinic",
         description: str = "",
         appointment_details: Optional[Dict[str, Any]] = None,
@@ -66,6 +66,8 @@ class ZohoLeadService:
         # Map local names to Zoho API field names
         concerns_value = None
         clinic_branch_region = None
+        phone_1 = None
+        phone_2 = None
         try:
             if appointment_details:
                 concerns_value = (
@@ -74,6 +76,23 @@ class ZohoLeadService:
                 )
                 # Region should reflect the parsed location (e.g., Jubilee Hills) only
                 clinic_branch_region = appointment_details.get("selected_location")
+                # Primary and secondary phones
+                corrected_phone = appointment_details.get("corrected_phone")
+                wa_phone = appointment_details.get("wa_phone")
+                print(f"🔍 [ZOHO LEAD PREP] corrected_phone: {corrected_phone}")
+                print(f"🔍 [ZOHO LEAD PREP] wa_phone: {wa_phone}")
+                # If user provided a corrected phone (after saying No), make it Phone_1 but keep WA as primary Phone/Mobile
+                if isinstance(corrected_phone, str) and corrected_phone.strip():
+                    phone_1 = corrected_phone.strip()  # User provided number goes to Phone_1
+                    # Phone_2 should be the actual WA ID (contact_number), not wa_phone from customer table
+                    phone_2 = contact_number  # WA ID goes to Phone_2
+                    print(f"🔍 [ZOHO LEAD PREP] Set phone_1 (user provided): {phone_1}")
+                    print(f"🔍 [ZOHO LEAD PREP] Set phone_2 (WA ID): {phone_2}")
+                else:
+                    # Default: WA number is primary
+                    if isinstance(wa_phone, str) and wa_phone.strip():
+                        phone_1 = wa_phone.strip()
+                        print(f"🔍 [ZOHO LEAD PREP] Set phone_1 (WA default): {phone_1}")
                 # Treat placeholder/unknown values as absent to avoid sending "Unknown"
                 if isinstance(clinic_branch_region, str) and clinic_branch_region.strip().lower() in {
                     "unknown", "not specified", "na", "n/a", "-", "none", "null", ""
@@ -88,8 +107,11 @@ class ZohoLeadService:
                     "First_Name": first_name,
                     "Last_Name": last_name,
                     "Email": email,
-                    "Phone": contact_number,
-                    "Mobile": contact_number,
+                    # Use WA number for Phone/Mobile, Phone_1/Phone_2 for additional numbers
+                    "Phone": contact_number,  # Always WA number
+                    "Mobile": contact_number,  # Always WA number
+                    **({"Phone_1": phone_1} if phone_1 else {}),
+                    **({"Phone_2": phone_2} if phone_2 else {}),
                     "City": city,
                     "Lead_Source": lead_source,
                     "Company": company,
@@ -121,7 +143,7 @@ class ZohoLeadService:
         phone: str = "",
         mobile: str = "",
         city: str = "",
-        lead_source: str = "WhatsApp",
+        lead_source: str = "Business Listing",
         company: str = "Oliva Skin & Hair Clinic",
         description: str = "",
         appointment_details: Optional[Dict[str, Any]] = None,
@@ -172,6 +194,8 @@ class ZohoLeadService:
             print(f"   - Email: {lead_data['data'][0]['Email']}")
             print(f"   - Phone: {lead_data['data'][0]['Phone']}")
             print(f"   - Mobile: {lead_data['data'][0]['Mobile']}")
+            print(f"   - Phone_1: {lead_data['data'][0].get('Phone_1', 'NOT_SET')}")
+            print(f"   - Phone_2: {lead_data['data'][0].get('Phone_2', 'NOT_SET')}")
             print(f"   - City: {lead_data['data'][0]['City']}")
             print(f"   - Lead Source: {lead_data['data'][0]['Lead_Source']}")
             print(f"   - Sub Source: {lead_data['data'][0].get('Sub_Source')}")
@@ -180,6 +204,7 @@ class ZohoLeadService:
             print(f"   - Company: {lead_data['data'][0]['Company']}")
             print(f"   - Description: {lead_data['data'][0]['Description']}")
             print(f"   - Triggers: {lead_data['trigger']}")
+            print(f"🔍 [ZOHO LEAD CREATION] Appointment details: {appointment_details}")
             
             # Prepare headers
             headers = {
@@ -276,7 +301,7 @@ async def create_lead_for_appointment(
             user_name = getattr(customer, 'name', 'Customer') or 'Customer'
             user_phone = ""
         
-        # Prepare phone number - use user provided phone if available, otherwise use WA ID
+        # Prepare phone number for legacy fields (Phone/Mobile) while we also send Phone_1/Phone_2
         if user_phone and len(user_phone) == 10:
             phone_number = f"91{user_phone}"
             print(f"📞 [LEAD APPOINTMENT FLOW] Using user provided phone: {phone_number}")
@@ -285,6 +310,35 @@ async def create_lead_for_appointment(
             if not phone_number.startswith("91"):
                 phone_number = f"91{phone_number}"
             print(f"📞 [LEAD APPOINTMENT FLOW] Using WA ID as phone: {phone_number}")
+
+        # Normalize helper
+        def _normalize_plus91(text: str | None) -> str | None:
+            try:
+                import re as _re
+                digits = _re.sub(r"\D", "", text or "")
+                last10 = digits[-10:] if len(digits) >= 10 else None
+                return ("+91" + last10) if last10 and len(last10) == 10 else None
+            except Exception:
+                return None
+
+        # Source Phone_1/Phone_2 from Customer table when available
+        try:
+            cust_p1 = _normalize_plus91(getattr(customer, "phone_1", None))
+            cust_p2 = _normalize_plus91(getattr(customer, "phone_2", None))
+        except Exception:
+            cust_p1 = None
+            cust_p2 = None
+
+        # Ensure appointment_details exists and carry normalized phones for downstream mapping
+        if appointment_details is None:
+            appointment_details = {}
+        # WA number is primary (Phone_1), user-provided becomes Phone_2
+        if cust_p1:
+            appointment_details["wa_phone"] = cust_p1
+        if cust_p2:
+            appointment_details["corrected_phone"] = cust_p2
+        print(f"📞 [LEAD APPOINTMENT FLOW] customer.phone_1 => wa_phone: {appointment_details.get('wa_phone')}")
+        print(f"📞 [LEAD APPOINTMENT FLOW] customer.phone_2 => corrected_phone: {appointment_details.get('corrected_phone')}")
         
         # Initialize variables for concern tracking
         selected_concern = None
@@ -424,7 +478,7 @@ async def create_lead_for_appointment(
             phone=phone_number,
             mobile=phone_number,
             city=city,
-            lead_source="WhatsApp",
+            lead_source="Business Listing",
             company="Oliva Skin & Hair Clinic",
             description="Lead from WhatsApp",
             appointment_details={
@@ -435,7 +489,10 @@ async def create_lead_for_appointment(
                 "custom_date": appointment_date,
                 "selected_time": appointment_time,
                 "selected_concern": selected_concern,
-                "zoho_mapped_concern": zoho_mapped_concern
+                "zoho_mapped_concern": zoho_mapped_concern,
+                # Preserve phone numbers from customer table
+                **({"wa_phone": appointment_details.get("wa_phone")} if appointment_details.get("wa_phone") else {}),
+                **({"corrected_phone": appointment_details.get("corrected_phone")} if appointment_details.get("corrected_phone") else {}),
             },
             sub_source="Chats",
             
@@ -479,7 +536,7 @@ async def create_lead_for_appointment(
                         mobile=phone_number,
                         city=city,
             location=(location if 'location' in locals() else None),
-                        lead_source="WhatsApp",
+                        lead_source="Business Listing",
                         company="Oliva Skin & Hair Clinic",
                         wa_id=wa_id,
                         customer_id=getattr(customer, 'id', None),

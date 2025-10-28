@@ -12,6 +12,8 @@ from models.models import CustomerStatusEnum
 class CustomerCreate(BaseModel):
     wa_id: str
     name: Optional[str] = None
+    phone_1: Optional[str] = None
+    phone_2: Optional[str] = None
     address: Optional[str] = None
     email: Optional[EmailStr] = None
 
@@ -20,6 +22,8 @@ class CustomerOut(BaseModel):
     id: UUID
     wa_id: str
     name: Optional[str] = None
+    phone_1: Optional[str] = None
+    phone_2: Optional[str] = None
     address: Optional[str] = None
     email: Optional[EmailStr] = None
     unread_count: int = 0
@@ -33,6 +37,8 @@ class CustomerOut(BaseModel):
 # Schema for updating name/address (but NOT email)
 class CustomerUpdate(BaseModel):
     name: Optional[str] = None
+    phone_1: Optional[str] = None
+    phone_2: Optional[str] = None
     address: Optional[str] = None
 
 # ✅ Separate schema for updating ONLY email

@@ -13,8 +13,32 @@ from uuid import UUID
 def get_or_create_customer(db: Session, customer_data: CustomerCreate) -> Customer:
     customer = db.query(Customer).filter(Customer.wa_id == customer_data.wa_id).first()
     if customer:
+        # Ensure default phone_1 is set from wa_id if missing
+        if not getattr(customer, "phone_1", None):
+            try:
+                import re as _re
+                wa_digits = _re.sub(r"\D", "", customer_data.wa_id or "")
+                wa_last10 = wa_digits[-10:] if len(wa_digits) >= 10 else wa_digits
+                customer.phone_1 = ("+91" + wa_last10) if len(wa_last10) == 10 else (customer_data.wa_id or None)
+                db.commit()
+                db.refresh(customer)
+            except Exception:
+                pass
         return customer
-    new_customer = Customer(wa_id=customer_data.wa_id, name=customer_data.name)
+    # Derive phone_1 from wa_id by default if not provided
+    try:
+        import re as _re
+        wa_digits_new = _re.sub(r"\D", "", customer_data.wa_id or "")
+        wa_last10_new = wa_digits_new[-10:] if len(wa_digits_new) >= 10 else wa_digits_new
+        default_phone_1 = ("+91" + wa_last10_new) if len(wa_last10_new) == 10 else (customer_data.wa_id or None)
+    except Exception:
+        default_phone_1 = customer_data.wa_id
+    new_customer = Customer(
+        wa_id=customer_data.wa_id,
+        name=customer_data.name,
+        phone_1=customer_data.phone_1 or default_phone_1,
+        phone_2=customer_data.phone_2,
+    )
     db.add(new_customer)
     db.commit()
     db.refresh(new_customer)
@@ -38,12 +62,19 @@ def get_all_customers(db: Session):
     return customers
 
 
-def update_customer_name(db: Session, customer_id: UUID, update_data: CustomerUpdate):
+def update_customer(db: Session, customer_id: UUID, update_data: CustomerUpdate):
     customer = db.query(Customer).filter(Customer.id == customer_id).first()
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
 
-    customer.name = update_data.name
+    if update_data.name is not None:
+        customer.name = update_data.name
+    if hasattr(update_data, "phone_1") and update_data.phone_1 is not None:
+        customer.phone_1 = update_data.phone_1
+    if hasattr(update_data, "phone_2") and update_data.phone_2 is not None:
+        customer.phone_2 = update_data.phone_2
+    if hasattr(update_data, "address") and update_data.address is not None:
+        customer.address = update_data.address
     db.commit()
     db.refresh(customer)
     return customer

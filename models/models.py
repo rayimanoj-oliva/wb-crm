@@ -90,6 +90,9 @@ class Customer(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     wa_id = Column(String, unique=True, nullable=False)
     name = Column(String)
+    # Primary and secondary phone numbers
+    phone_1 = Column(String(20), nullable=True)
+    phone_2 = Column(String(20), nullable=True)
     email = Column(String, nullable=True)
 
     # Optional default address shortcut
