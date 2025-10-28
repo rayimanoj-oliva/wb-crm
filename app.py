@@ -25,8 +25,10 @@ from controllers.payment_controller import router as payment_router
 from controllers.address_controller import router as address_router
 from controllers.catalog import router as catalog_router
 from controllers.catalog import seed_categories, seed_subcategories
+from seed_zoho_mappings import seed_zoho_mappings
 from flow_integration import router as flow_router
 from controllers.components.lead_appointment_flow.zoho_lead_api import router as zoho_leads_router
+from controllers.components.zoho_mapping_controller import router as zoho_mapping_router
 from database.db import SessionLocal, engine, get_db
 from models import models
 from schemas.token_schema import Token
@@ -86,6 +88,7 @@ app.include_router(payment_router, prefix="/payments")
 app.include_router(catalog_router)
 app.include_router(flow_router, prefix="/flow")
 app.include_router(zoho_leads_router)
+app.include_router(zoho_mapping_router)
 
 
 
@@ -95,6 +98,7 @@ def seed_catalog_on_startup():
     try:
         seed_categories(db)
         seed_subcategories(db)
+        seed_zoho_mappings()
     finally:
         db.close()
 

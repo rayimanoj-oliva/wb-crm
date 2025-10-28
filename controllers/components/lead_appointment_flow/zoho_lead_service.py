@@ -288,12 +288,39 @@ async def create_lead_for_appointment(
             
             # Get selected concern from appointment state and map to Zoho name
             try:
-                # Try to get from appointment_state (treatment flow)
+                # Try to get from appointment_state (treatment flow) or lead_appointment_state
                 concern_data = appointment_state.get(wa_id, {})
                 selected_concern = concern_data.get("selected_concern")
+                if not selected_concern:
+                    from controllers.web_socket import lead_appointment_state  # type: ignore
+                    selected_concern = (lead_appointment_state.get(wa_id) or {}).get("selected_concern")
                 
-                # If found, look up Zoho mapping
+                # If found, normalize to canonical label then look up Zoho mapping
                 if selected_concern:
+                    try:
+                        def _canon(txt: str) -> str:
+                            import re as _re
+                            return _re.sub(r"[^a-z0-9]+", " ", (txt or "").lower()).strip()
+                        norm = _canon(selected_concern)
+                        canon_map = {
+                            "acne": "Acne / Acne Scars",
+                            "acne acne scars": "Acne / Acne Scars",
+                            "pigmentation": "Pigmentation & Uneven Skin Tone",
+                            "uneven skin tone": "Pigmentation & Uneven Skin Tone",
+                            "anti aging": "Anti-Aging & Skin Rejuvenation",
+                            "skin rejuvenation": "Anti-Aging & Skin Rejuvenation",
+                            "dandruff": "Dandruff & Scalp Care",
+                            "dandruff scalp care": "Dandruff & Scalp Care",
+                            "laser hair removal": "Laser Hair Removal",
+                            "hair loss hair fall": "Hair Loss / Hair Fall",
+                            "hair transplant": "Hair Transplant",
+                            "weight management": "Weight Management",
+                            "body contouring": "Body Contouring",
+                            "weight loss": "Weight Loss",
+                        }
+                        selected_concern = canon_map.get(norm, selected_concern)
+                    except Exception:
+                        pass
                     from services.zoho_mapping_service import get_zoho_name
                     zoho_mapped_concern = get_zoho_name(db, selected_concern)
                     print(f"🎯 [LEAD APPOINTMENT FLOW] Selected concern: {selected_concern}, Mapped to Zoho: {zoho_mapped_concern}")
@@ -334,13 +361,17 @@ async def create_lead_for_appointment(
                 except Exception as map_e:
                     print(f"⚠️ [LEAD APPOINTMENT FLOW] Could not map concern: {map_e}")
         
+        # Debug: Print what we found
+        print(f"🔍 [LEAD APPOINTMENT FLOW] Final concern values:")
+        print(f"   - selected_concern: {selected_concern}")
+        print(f"   - zoho_mapped_concern: {zoho_mapped_concern}")
+        print(f"   - appointment_details: {appointment_details}")
+        
         # Create description
         description_parts = [
             f"Lead from WhatsApp Lead-to-Appointment Flow",
             f"City: {city}",
             f"Clinic: {clinic}",
-            f"Preferred Date: {appointment_date}",
-            f"Preferred Time: {appointment_time}",
         ]
         
         # Add Zoho mapped concern if available
@@ -396,6 +427,61 @@ async def create_lead_for_appointment(
             print(f"👤 [LEAD APPOINTMENT FLOW] Customer: {user_name}")
             print(f"📱 [LEAD APPOINTMENT FLOW] WhatsApp ID: {wa_id}")
             print(f"🔗 [LEAD APPOINTMENT FLOW] Check Zoho CRM for lead ID: {result.get('lead_id')}")
+            
+            # Save lead to local database
+            try:
+                from models.models import Lead
+                from services.zoho_mapping_service import get_zoho_name
+                
+                # Check if lead already exists
+                existing_lead = db.query(Lead).filter(Lead.zoho_lead_id == result.get('lead_id')).first()
+                
+                if not existing_lead:
+                    # Resolve concern values robustly
+                    final_selected_concern = selected_concern or (appointment_details or {}).get("selected_concern")
+                    final_mapped_concern = (
+                        zoho_mapped_concern
+                        or (appointment_details or {}).get("zoho_mapped_concern")
+                        or (get_zoho_name(db, final_selected_concern) if final_selected_concern else None)
+                    )
+                    print(
+                        f"💡 [LEAD APPOINTMENT FLOW] Using concern values for DB save: "
+                        f"selected='{final_selected_concern}', mapped='{final_mapped_concern}'"
+                    )
+                    
+                    # Create new lead record
+                    new_lead = Lead(
+                        zoho_lead_id=result.get('lead_id'),
+                        first_name=first_name,
+                        last_name=last_name,
+                        email=getattr(customer, 'email', '') or '',
+                        phone=phone_number,
+                        mobile=phone_number,
+                        city=city,
+                        lead_source="WhatsApp Lead-to-Appointment Flow",
+                        lead_status=lead_status,
+                        company="Oliva Skin & Hair Clinic",
+                        description=final_description,
+                        wa_id=wa_id,
+                        customer_id=getattr(customer, 'id', None),
+                        appointment_details={
+                            "selected_city": city,
+                            "selected_clinic": clinic,
+                            "selected_concern": final_selected_concern,
+                            "zoho_mapped_concern": final_mapped_concern
+                        },
+                        treatment_name=final_selected_concern,
+                        zoho_mapped_concern=final_mapped_concern
+                    )
+                    db.add(new_lead)
+                    db.commit()
+                    db.refresh(new_lead)
+                    print(f"💾 [LEAD APPOINTMENT FLOW] Lead saved to local database with ID: {new_lead.id}")
+                else:
+                    print(f"⚠️ [LEAD APPOINTMENT FLOW] Lead already exists in database")
+            except Exception as db_e:
+                print(f"⚠️ [LEAD APPOINTMENT FLOW] Could not save lead to local database: {db_e}")
+                db.rollback()
         else:
             print(f"❌ [LEAD APPOINTMENT FLOW] FAILED! Lead creation failed!")
             print(f"🚨 [LEAD APPOINTMENT FLOW] Error: {result.get('error')}")

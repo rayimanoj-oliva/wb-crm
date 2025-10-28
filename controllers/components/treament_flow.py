@@ -263,6 +263,8 @@ async def run_treatment_buttons_flow(
     # Topic buttons: Skin / Hair / Body
     topic = (btn_id or btn_text or "").strip().lower()
     if topic in {"skin", "hair", "body"}:
+        # NOTE: Do NOT set any fallback concern here.
+        # We should only persist the precise list selection the user makes next.
         try:
             token_entry2 = get_latest_token(db)
             if token_entry2 and token_entry2.token:
@@ -301,7 +303,7 @@ async def run_treatment_buttons_flow(
                                             {"id": "acne", "title": "Acne / Acne Scars"},
                                             {"id": "pigmentation", "title": "Pigmentation & Uneven Skin Tone"},
                                             {"id": "antiaging", "title": "Anti-Aging & Skin Rejuvenation"},
-                                            {"id": "laser", "title": "Laser Hair Removal"},
+                                            {"id": "dandruff", "title": "Dandruff & Scalp Care"},
                                             {"id": "other_skin", "title": "Other Skin Concerns"},
                                         ],
                                     }
@@ -408,6 +410,48 @@ async def run_treatment_buttons_flow(
     }
 
     if canon_btn in skin_concerns or canon_btn in hair_concerns or canon_btn in body_concerns:
+        # Persist the user's selected concern so lead creation can map it later
+        try:
+            # Map canonical keys to display labels used in DB mappings
+            synonyms_to_canonical = {
+                # Skin
+                "acne acne scars": "Acne / Acne Scars",
+                "pigmentation": "Pigmentation & Uneven Skin Tone",
+                "uneven skin tone": "Pigmentation & Uneven Skin Tone",
+                "anti aging": "Anti-Aging & Skin Rejuvenation",
+                "skin rejuvenation": "Anti-Aging & Skin Rejuvenation",
+                "laser hair removal": "Laser Hair Removal",
+                "other skin concerns": "Other Skin Concerns",
+                # Hair
+                "hair loss hair fall": "Hair Loss / Hair Fall",
+                "hair transplant": "Hair Transplant",
+                "dandruff scalp care": "Dandruff & Scalp Care",
+                "other hair concerns": "Other Hair Concerns",
+                # Body
+                "weight management": "Weight Management",
+                "body contouring": "Body Contouring",
+                "weight loss": "Weight Loss",
+                "other body concerns": "Other Body Concerns",
+            }
+
+            selected_concern_label = synonyms_to_canonical.get(canon_btn, (btn_text or btn_payload or btn_id or "").strip())
+
+            # Save to in-memory state used across flows
+            from controllers.web_socket import appointment_state, lead_appointment_state  # type: ignore
+            try:
+                if wa_id not in appointment_state:
+                    appointment_state[wa_id] = {}
+                appointment_state[wa_id]["selected_concern"] = selected_concern_label
+            except Exception:
+                pass
+            try:
+                if wa_id not in lead_appointment_state:
+                    lead_appointment_state[wa_id] = {}
+                lead_appointment_state[wa_id]["selected_concern"] = selected_concern_label
+            except Exception:
+                pass
+        except Exception:
+            pass
         try:
             token_entry_book = get_latest_token(db)
             if token_entry_book and token_entry_book.token:

@@ -1747,12 +1747,18 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                     from services.customer_service import get_customer_record_by_wa_id
                                     customer = get_customer_record_by_wa_id(db, wa_id)
                                     
+                                    # Get selected concern from appointment_state
+                                    selected_concern = appointment_state.get(wa_id, {}).get("selected_concern")
+                                    print(f"[treatment_flow] DEBUG - Selected concern from state: {selected_concern}")
+                                    
                                     # Prepare appointment details for treatment flow
                                     appointment_details = {
                                         "flow_type": "treatment_flow",
                                         "treatment_selected": True,
-                                        "no_scheduling_required": True
+                                        "no_scheduling_required": True,
+                                        "selected_concern": selected_concern
                                     }
+                                    print(f"[treatment_flow] DEBUG - Appointment details with concern: {appointment_details}")
                                     
                                     lead_result = await create_lead_for_appointment(
                                         db=db,
@@ -1880,15 +1886,86 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
 
             # Step 3 → 6: After a list selection, save+broadcast reply, then present next-step action buttons
             try:
-                if i_type == "list_reply" and (reply_id or title):
+                if (i_type in {"list_reply", "button_reply"}) and (reply_id or title):
                     # Store selected concern/treatment for later mapping to Zoho
+                    # Prefer visible title; if only an ID is present, map to canonical title
                     selected_concern = title or reply_id or ""
+                    # Normalize a few known IDs to display titles when Meta sends only IDs
+                    # Normalize: prefer the exact title text when present
+                    # If only an ID comes, translate to a canonical title once.
+                    id_to_title_map = {
+                        "acne": "Acne / Acne Scars",
+                        "pigmentation": "Pigmentation & Uneven Skin Tone",
+                        "antiaging": "Anti-Aging & Skin Rejuvenation",
+                        "dandruff": "Dandruff & Scalp Care",
+                        "other_skin": "Other Skin Concerns",
+                        "hair_loss": "Hair Loss / Hair Fall",
+                        "hair_transplant": "Hair Transplant",
+                        "other_hair": "Other Hair Concerns",
+                        "weight_mgmt": "Weight Management",
+                        "body_contouring": "Body Contouring",
+                        "other_body": "Other Body Concerns",
+                    }
+                    if (not title) and (reply_id or "").lower() in id_to_title_map:
+                        selected_concern = id_to_title_map[(reply_id or "").lower()]
+                    # Fallback for button payload structure
+                    if not selected_concern:
+                        try:
+                            btn = (interactive or {}).get("button", {})
+                            btn_text = btn.get("text") or btn.get("payload")
+                            if btn_text:
+                                selected_concern = btn_text
+                        except Exception:
+                            pass
+                    # Canonicalize common variants (e.g., 'Skin: Acne' -> 'Acne / Acne Scars')
+                    try:
+                        def _canon(txt: str) -> str:
+                            import re as _re
+                            return _re.sub(r"[^a-z0-9]+", " ", (txt or "").lower()).strip()
+                        raw = (selected_concern or "").strip()
+                        # Remove optional category prefixes like "Skin: ", "Hair: ", "Body: "
+                        for cat_prefix in ["skin:", "hair:", "body:"]:
+                            if raw.lower().startswith(cat_prefix):
+                                raw = raw[len(cat_prefix):].strip()
+                        canon = _canon(raw)
+                        synonyms_to_canonical = {
+                            "acne": "Acne / Acne Scars",
+                            "acne acne scars": "Acne / Acne Scars",
+                            "pigmentation": "Pigmentation & Uneven Skin Tone",
+                            "uneven skin tone": "Pigmentation & Uneven Skin Tone",
+                            "anti aging": "Anti-Aging & Skin Rejuvenation",
+                            "skin rejuvenation": "Anti-Aging & Skin Rejuvenation",
+                            "dandruff": "Dandruff & Scalp Care",
+                            "dandruff scalp care": "Dandruff & Scalp Care",
+                            "laser hair removal": "Laser Hair Removal",
+                            "hair loss hair fall": "Hair Loss / Hair Fall",
+                            "hair transplant": "Hair Transplant",
+                            "weight management": "Weight Management",
+                            "body contouring": "Body Contouring",
+                            "weight loss": "Weight Loss",
+                            "other skin concerns": "Other Skin Concerns",
+                            "other hair concerns": "Other Hair Concerns",
+                            "other body concerns": "Other Body Concerns",
+                        }
+                        if canon in synonyms_to_canonical:
+                            selected_concern = synonyms_to_canonical[canon]
+                    except Exception:
+                        pass
+
                     if selected_concern:
                         try:
                             if wa_id not in appointment_state:
                                 appointment_state[wa_id] = {}
                             appointment_state[wa_id]["selected_concern"] = selected_concern
-                            print(f"[treatment_flow] DEBUG - Stored selected concern: {selected_concern}")
+                            print(f"[treatment_flow] DEBUG - Stored selected concern: {selected_concern} (reply_id={reply_id}, title={title})")
+                            # Also mirror into lead_appointment_state as fallback source
+                            try:
+                                if wa_id not in lead_appointment_state:
+                                    lead_appointment_state[wa_id] = {}
+                                lead_appointment_state[wa_id]["selected_concern"] = selected_concern
+                                print(f"[lead_appointment_flow] DEBUG - Mirrored selected concern to lead_appointment_state: {selected_concern}")
+                            except Exception as e:
+                                print(f"[lead_appointment_flow] WARNING - Could not mirror selected concern: {e}")
                         except Exception as e:
                             print(f"[treatment_flow] WARNING - Could not store selected concern: {e}")
                     
@@ -2079,8 +2156,11 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                 from services.customer_service import get_customer_record_by_wa_id
                                 customer = get_customer_record_by_wa_id(db, wa_id)
                                 
-                                # Get selected concern from appointment_state
-                                selected_concern = (st or {}).get("selected_concern")
+                                # Get selected concern from appointment_state (fresh read, not cached 'st')
+                                try:
+                                    selected_concern = appointment_state.get(wa_id, {}).get("selected_concern")
+                                except Exception:
+                                    selected_concern = (st or {}).get("selected_concern")
                                 print(f"[treatment_flow] DEBUG - Selected concern from state: {selected_concern}")
                                 
                                 # Prepare appointment details for treatment flow
