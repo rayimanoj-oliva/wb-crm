@@ -624,10 +624,9 @@ class Lead(Base):
     
     # Lead details
     city = Column(String(100), nullable=True)
+    location = Column(String(100), nullable=True)
     lead_source = Column(String(100), nullable=True)
-    lead_status = Column(String(50), nullable=True)
     company = Column(String(100), nullable=True)
-    description = Column(Text, nullable=True)
     
     # WhatsApp information
     wa_id = Column(String, nullable=False, index=True)
@@ -639,6 +638,8 @@ class Lead(Base):
     # Treatment/Concern information
     treatment_name = Column(String(255), nullable=True)
     zoho_mapped_concern = Column(String(255), nullable=True)
+    primary_concern = Column(String(255), nullable=True)
+    sub_source = Column(String(50), nullable=True, default="Chats")
     
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)

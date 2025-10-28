@@ -35,11 +35,13 @@ class ZohoLeadService:
         phone: str = "",
         mobile: str = "",
         city: str = "",
-        lead_source: str = "WhatsApp Lead-to-Appointment Flow",
-        lead_status: str = "PENDING",
+        lead_source: str = "WhatsApp",
         company: str = "Oliva Skin & Hair Clinic",
         description: str = "",
-        appointment_details: Optional[Dict[str, Any]] = None
+        appointment_details: Optional[Dict[str, Any]] = None,
+        sub_source: str = "Chats",
+        unsubscribed_mode: Optional[str] = None,
+        converted: bool = False
     ) -> Dict[str, Any]:
         """Prepare lead data according to Zoho CRM API structure"""
         
@@ -59,7 +61,7 @@ class ZohoLeadService:
             if appointment_details.get("selected_time"):
                 desc_parts.append(f"Preferred Time: {appointment_details['selected_time']}")
         
-        full_description = " | ".join(desc_parts) if desc_parts else "Lead from WhatsApp Lead-to-Appointment Flow"
+        full_description = " | ".join(desc_parts) if desc_parts else "Lead from WhatsApp"
         
         lead_data = {
             "data": [
@@ -71,9 +73,12 @@ class ZohoLeadService:
                     "Mobile": contact_number,
                     "City": city,
                     "Lead_Source": lead_source,
-                    "Lead_Status": lead_status,
                     "Company": company,
-                    "Description": full_description
+                    "Description": full_description,
+                    # Custom fields / standard fields expected in Zoho
+                    "Sub_Source": sub_source,
+                    "Unsubscribed_Mode": unsubscribed_mode,
+                    "$converted": converted
                 }
             ],
             "trigger": [
@@ -94,11 +99,13 @@ class ZohoLeadService:
         phone: str = "",
         mobile: str = "",
         city: str = "",
-        lead_source: str = "WhatsApp Lead-to-Appointment Flow",
-        lead_status: str = "PENDING",
+        lead_source: str = "WhatsApp",
         company: str = "Oliva Skin & Hair Clinic",
         description: str = "",
-        appointment_details: Optional[Dict[str, Any]] = None
+        appointment_details: Optional[Dict[str, Any]] = None,
+        sub_source: str = "Chats",
+        unsubscribed_mode: Optional[str] = None,
+        converted: bool = False
     ) -> Dict[str, Any]:
         """Create a lead in Zoho CRM"""
         
@@ -110,7 +117,6 @@ class ZohoLeadService:
             print(f"📞 [ZOHO LEAD CREATION] Phone: {phone}")
             print(f"📧 [ZOHO LEAD CREATION] Email: {email}")
             print(f"🏙️ [ZOHO LEAD CREATION] City: {city}")
-            print(f"📊 [ZOHO LEAD CREATION] Status: {lead_status}")
             print(f"🏢 [ZOHO LEAD CREATION] Company: {company}")
             print(f"📝 [ZOHO LEAD CREATION] Description: {description}")
             
@@ -130,10 +136,12 @@ class ZohoLeadService:
                 mobile=mobile,
                 city=city,
                 lead_source=lead_source,
-                lead_status=lead_status,
                 company=company,
                 description=description,
-                appointment_details=appointment_details
+                appointment_details=appointment_details,
+                sub_source=sub_source,
+                unsubscribed_mode=unsubscribed_mode,
+                converted=converted
             )
             
             print(f"📦 [ZOHO LEAD CREATION] Prepared lead data:")
@@ -144,7 +152,9 @@ class ZohoLeadService:
             print(f"   - Mobile: {lead_data['data'][0]['Mobile']}")
             print(f"   - City: {lead_data['data'][0]['City']}")
             print(f"   - Lead Source: {lead_data['data'][0]['Lead_Source']}")
-            print(f"   - Lead Status: {lead_data['data'][0]['Lead_Status']}")
+            print(f"   - Sub Source: {lead_data['data'][0].get('Sub_Source')}")
+            print(f"   - Unsubscribed_Mode: {lead_data['data'][0].get('Unsubscribed_Mode')}")
+            print(f"   - $converted: {lead_data['data'][0].get('$converted')}")
             print(f"   - Company: {lead_data['data'][0]['Company']}")
             print(f"   - Description: {lead_data['data'][0]['Description']}")
             print(f"   - Triggers: {lead_data['trigger']}")
@@ -268,6 +278,11 @@ async def create_lead_for_appointment(
             session_data = lead_appointment_state.get(wa_id, {})
             city = session_data.get("selected_city", "Unknown")
             clinic = session_data.get("selected_clinic", "Unknown")
+            # Optional: location captured from prefilled deep link (e.g., "Jubilee Hills")
+            location = session_data.get("selected_location") or (appointment_state.get(wa_id, {}) if 'appointment_state' in globals() else {}).get("selected_location")
+            # In lead appointment flow, take selected clinic as the location if not explicitly provided
+            if not location and clinic and isinstance(clinic, str) and clinic.strip():
+                location = clinic
             
             # Try multiple date fields - prioritize selected_week over specific dates
             appointment_date = (
@@ -367,27 +382,8 @@ async def create_lead_for_appointment(
         print(f"   - zoho_mapped_concern: {zoho_mapped_concern}")
         print(f"   - appointment_details: {appointment_details}")
         
-        # Create description
-        description_parts = [
-            f"Lead from WhatsApp Lead-to-Appointment Flow",
-            f"City: {city}",
-            f"Clinic: {clinic}",
-        ]
-        
-        # Add Zoho mapped concern if available
-        if zoho_mapped_concern:
-            description_parts.append(f"Treatment/Zoho Concern: {zoho_mapped_concern}")
-        elif selected_concern:
-            description_parts.append(f"Treatment: {selected_concern}")
-        
-        if appointment_preference:
-            description_parts.append(f"Preference: {appointment_preference}")
-        
-        description_parts.append(f"Status: {lead_status}")
-        
-        # Create final description
-        final_description = " | ".join(description_parts)
-        print(f"📝 [LEAD APPOINTMENT FLOW] Creating description: {final_description}")
+        # Stop persisting description/lead_status to DB; retain for external Zoho payload only
+        final_description = None
         
         # Create lead using the service
         print(f"🚀 [LEAD APPOINTMENT FLOW] Calling Zoho lead service...")
@@ -406,10 +402,9 @@ async def create_lead_for_appointment(
             phone=phone_number,
             mobile=phone_number,
             city=city,
-            lead_source="WhatsApp Lead-to-Appointment Flow",
-            lead_status=lead_status,
+            lead_source="WhatsApp",
             company="Oliva Skin & Hair Clinic",
-            description=final_description,
+            description="Lead from WhatsApp",
             appointment_details={
                 "selected_city": city,
                 "selected_clinic": clinic,
@@ -418,7 +413,9 @@ async def create_lead_for_appointment(
                 "selected_time": appointment_time,
                 "selected_concern": selected_concern,
                 "zoho_mapped_concern": zoho_mapped_concern
-            }
+            },
+            sub_source="Chats",
+            
         )
         
         if result["success"]:
@@ -449,7 +446,7 @@ async def create_lead_for_appointment(
                         f"selected='{final_selected_concern}', mapped='{final_mapped_concern}'"
                     )
                     
-                    # Create new lead record
+        # Create new lead record
                     new_lead = Lead(
                         zoho_lead_id=result.get('lead_id'),
                         first_name=first_name,
@@ -458,20 +455,22 @@ async def create_lead_for_appointment(
                         phone=phone_number,
                         mobile=phone_number,
                         city=city,
-                        lead_source="WhatsApp Lead-to-Appointment Flow",
-                        lead_status=lead_status,
+            location=(location if 'location' in locals() else None),
+                        lead_source="WhatsApp",
                         company="Oliva Skin & Hair Clinic",
-                        description=final_description,
                         wa_id=wa_id,
                         customer_id=getattr(customer, 'id', None),
                         appointment_details={
                             "selected_city": city,
                             "selected_clinic": clinic,
+                **({"selected_location": location} if 'location' in locals() and location else {}),
                             "selected_concern": final_selected_concern,
                             "zoho_mapped_concern": final_mapped_concern
                         },
                         treatment_name=final_selected_concern,
-                        zoho_mapped_concern=final_mapped_concern
+                        zoho_mapped_concern=final_mapped_concern,
+                        primary_concern=final_mapped_concern or final_selected_concern,
+                        sub_source="Chats"
                     )
                     db.add(new_lead)
                     db.commit()

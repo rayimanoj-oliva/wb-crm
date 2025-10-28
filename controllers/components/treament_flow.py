@@ -66,6 +66,40 @@ async def run_treament_flow(
         prefill_detected = any(re.match(rx, normalized_body, flags=re.IGNORECASE) for rx in prefill_regexes)
         if prefill_detected:
             try:
+                # Extract location and city from the incoming prefill text if present
+                # Expected: "hi oliva i want to know more about services in <location>, <city> clinic"
+                extracted_location = None
+                extracted_city = None
+                try:
+                    _m = re.search(r"services\s+in\s+([a-z\s]+),\s*([a-z\s]+)\s+clinic$", normalized_body, flags=re.IGNORECASE)
+                    if _m:
+                        extracted_location = (_m.group(1) or "").strip().title()
+                        extracted_city = (_m.group(2) or "").strip().title()
+                except Exception:
+                    pass
+
+                # Persist into state for later lead creation
+                try:
+                    from controllers.web_socket import appointment_state, lead_appointment_state  # type: ignore
+                    st_prefill = appointment_state.get(wa_id) or {}
+                    if extracted_city:
+                        st_prefill["selected_city"] = extracted_city
+                    if extracted_location:
+                        st_prefill["selected_location"] = extracted_location
+                    appointment_state[wa_id] = st_prefill
+                    # Mirror minimal info into lead_appointment_state
+                    try:
+                        lst_prefill = lead_appointment_state.get(wa_id) or {}
+                        if extracted_city:
+                            lst_prefill["selected_city"] = extracted_city
+                        if extracted_location:
+                            lst_prefill["selected_location"] = extracted_location
+                        lead_appointment_state[wa_id] = lst_prefill
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
                 token_entry_prefill = get_latest_token(db)
                 try:
                     incoming_phone_id = (value or {}).get("metadata", {}).get("phone_number_id")
