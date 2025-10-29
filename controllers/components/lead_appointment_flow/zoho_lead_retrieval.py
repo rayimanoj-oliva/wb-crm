@@ -118,6 +118,30 @@ class ZohoLeadRetrievalService:
             print(f"📊 [ZOHO LEAD RETRIEVAL] API Response Status: {response.status_code}")
             print(f"📄 [ZOHO LEAD RETRIEVAL] API Response Body: {response.text}")
             
+            # If token invalid/expired, refresh and retry once
+            if response.status_code == 401:
+                try:
+                    body_lower = (response.text or "").lower()
+                except Exception:
+                    body_lower = ""
+                if "invalid_token" in body_lower or "invalid oauth token" in body_lower or "invalid_oauth_token" in body_lower:
+                    print("⚠️  [ZOHO LEAD RETRIEVAL] Detected INVALID_TOKEN (401). Refreshing token and retrying once...")
+                    self.access_token = get_valid_access_token()
+                    refreshed = self.access_token
+                    print(f"✅ [ZOHO LEAD RETRIEVAL] New access token obtained: {refreshed[:20]}...")
+                    headers_retry = {
+                        **headers,
+                        "Authorization": f"Zoho-oauthtoken {refreshed}"
+                    }
+                    response = requests.get(
+                        self.base_url,
+                        headers=headers_retry,
+                        params=params,
+                        timeout=30
+                    )
+                    print(f"🔁 [ZOHO LEAD RETRIEVAL] Retry Response Status: {response.status_code}")
+                    print(f"🧾 [ZOHO LEAD RETRIEVAL] Retry Response Body: {response.text}")
+            
             if response.status_code == 200:
                 response_data = response.json()
                 leads = response_data.get("data", [])
@@ -255,6 +279,25 @@ class ZohoLeadRetrievalService:
             response = requests.get(url, headers=headers, timeout=30)
             
             print(f"📊 [ZOHO LEAD BY ID] API Response Status: {response.status_code}")
+            
+            # If token invalid/expired, refresh and retry once
+            if response.status_code == 401:
+                try:
+                    body_lower = (response.text or "").lower()
+                except Exception:
+                    body_lower = ""
+                if "invalid_token" in body_lower or "invalid oauth token" in body_lower or "invalid_oauth_token" in body_lower:
+                    print("⚠️  [ZOHO LEAD BY ID] Detected INVALID_TOKEN (401). Refreshing token and retrying once...")
+                    self.access_token = get_valid_access_token()
+                    refreshed = self.access_token
+                    print(f"✅ [ZOHO LEAD BY ID] New access token obtained: {refreshed[:20]}...")
+                    headers_retry = {
+                        **headers,
+                        "Authorization": f"Zoho-oauthtoken {refreshed}"
+                    }
+                    response = requests.get(url, headers=headers_retry, timeout=30)
+                    print(f"🔁 [ZOHO LEAD BY ID] Retry Response Status: {response.status_code}")
+                    print(f"🧾 [ZOHO LEAD BY ID] Retry Response Body: {response.text}")
             
             if response.status_code == 200:
                 response_data = response.json()
