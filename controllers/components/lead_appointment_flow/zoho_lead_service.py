@@ -227,6 +227,34 @@ class ZohoLeadService:
             print(f"📊 [ZOHO LEAD CREATION] API Response Status: {response.status_code}")
             print(f"📄 [ZOHO LEAD CREATION] API Response Body: {response.text}")
             
+            # If token is invalid/expired, refresh and retry once
+            if response.status_code == 401:
+                try:
+                    body_lower = (response.text or "").lower()
+                except Exception:
+                    body_lower = ""
+                if "invalid_token" in body_lower or "invalid oauth token" in body_lower or "invalid_oauth_token" in body_lower:
+                    print("⚠️  [ZOHO LEAD CREATION] Detected INVALID_TOKEN (401).")
+                    print("🛠️  [ZOHO LEAD CREATION] This often caused leads to be created only after a server restart due to a stale cached token.")
+                    print("🔄 [ZOHO LEAD CREATION] Refreshing Zoho access token and retrying once...")
+                    # Force refresh access token
+                    self.access_token = get_valid_access_token()
+                    refreshed_token = self.access_token
+                    print(f"✅ [ZOHO LEAD CREATION] New access token obtained: {refreshed_token[:20]}...")
+                    # Retry with new token
+                    headers_retry = {
+                        **headers,
+                        "Authorization": f"Zoho-oauthtoken {refreshed_token}"
+                    }
+                    response = requests.post(
+                        self.base_url,
+                        headers=headers_retry,
+                        json=lead_data,
+                        timeout=30
+                    )
+                    print(f"🔁 [ZOHO LEAD CREATION] Retry Response Status: {response.status_code}")
+                    print(f"🧾 [ZOHO LEAD CREATION] Retry Response Body: {response.text}")
+            
             if response.status_code in [200, 201]:
                 response_data = response.json()
                 lead_id = response_data.get("data", [{}])[0].get("details", {}).get("id")
@@ -321,24 +349,25 @@ async def create_lead_for_appointment(
             except Exception:
                 return None
 
-        # Source Phone_1/Phone_2 from Customer table when available
-        try:
-            cust_p1 = _normalize_plus91(getattr(customer, "phone_1", None))
-            cust_p2 = _normalize_plus91(getattr(customer, "phone_2", None))
-        except Exception:
-            cust_p1 = None
-            cust_p2 = None
-
-        # Ensure appointment_details exists and carry normalized phones for downstream mapping
+        # Ensure appointment_details exists and carry normalized phones based on session/user confirmation
         if appointment_details is None:
             appointment_details = {}
-        # WA number is primary (Phone_1), user-provided becomes Phone_2
-        if cust_p1:
-            appointment_details["wa_phone"] = cust_p1
-        if cust_p2:
-            appointment_details["corrected_phone"] = cust_p2
-        print(f"📞 [LEAD APPOINTMENT FLOW] customer.phone_1 => wa_phone: {appointment_details.get('wa_phone')}")
-        print(f"📞 [LEAD APPOINTMENT FLOW] customer.phone_2 => corrected_phone: {appointment_details.get('corrected_phone')}")
+        # Prefer the user's confirmed phone (from session) as Phone_1, WA ID as Phone_2
+        try:
+            wa_plus = _normalize_plus91(wa_id)
+        except Exception:
+            wa_plus = None
+        if wa_plus:
+            appointment_details["wa_phone"] = wa_plus
+        # If user confirmed a phone in session, set it as corrected_phone to map to Phone_1
+        if user_phone:
+            confirmed_plus = _normalize_plus91(user_phone)
+            if confirmed_plus:
+                appointment_details["corrected_phone"] = confirmed_plus
+        print(
+            f"📞 [LEAD APPOINTMENT FLOW] session.wa_id => wa_phone: {appointment_details.get('wa_phone')} | "
+            f"user_confirmed => corrected_phone: {appointment_details.get('corrected_phone')}"
+        )
         
         # Initialize variables for concern tracking
         selected_concern = None
