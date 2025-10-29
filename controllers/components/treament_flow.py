@@ -626,7 +626,7 @@ async def run_appointment_buttons_flow(
 
                 # Send confirmation message
                 confirm_msg = (
-                    f"Could you please confirm your name and contact number {display_name} and {display_phone} ?"
+                    f"Please confirm your name and contact number:\n*{display_name}*\n*{display_phone}*"
                 )
                 await send_message_to_waid(wa_id, confirm_msg, db)
                 
