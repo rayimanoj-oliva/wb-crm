@@ -288,11 +288,13 @@ async def run_treatment_buttons_flow(
     btn_text: str | None = None,
     btn_payload: str | None = None,
 ) -> Dict[str, Any]:
-    """Handle Skin/Hair/Body treatment topic buttons and list selections.
-
-    Mirrors the behavior previously inline in the webhook controller.
-    Returns a status dict and performs necessary broadcasts.
-    """
+    """Handle Skin/Hair/Body treatment topic buttons and list selections."""
+    # Strongest possible check: don't process any treatment action if this is a catalog/buy flow.
+    catalog_triggers = {"buy_products", "buy product", "buy products", "show catalogue", "catalogue", "catalog", "browse products"}
+    for val in (btn_id, btn_text, btn_payload):
+        if val and any(kw in val.lower() for kw in catalog_triggers):
+            print(f"[treatment_flow] DEBUG - Skipping treatment logic for catalog trigger: {val}")
+            return {"status": "skipped"}
 
     # Topic buttons: Skin / Hair / Body
     topic = (btn_id or btn_text or "").strip().lower()
@@ -603,75 +605,16 @@ async def run_appointment_buttons_flow(
             or normalized_payload in {"book an appointment", "book appointment"}
         ):
             try:
-                # Use the existing confirmation flow pattern
-                from controllers.web_socket import appointment_state
-                from services.whatsapp_service import get_latest_token
-                from config.constants import get_messages_url
-                import requests
-                import os
-                
-                # Get customer details for confirmation
-                from services.customer_service import get_customer_record_by_wa_id
-                customer = get_customer_record_by_wa_id(db, wa_id)
-                display_name = (customer.name.strip() if customer and isinstance(customer.name, str) else None) or "there"
-                
-                # Derive phone from wa_id as +91XXXXXXXXXX if applicable
-                try:
-                    import re as _re
-                    digits = _re.sub(r"\D", "", wa_id)
-                    last10 = digits[-10:] if len(digits) >= 10 else None
-                    display_phone = f"+91{last10}" if last10 and len(last10) == 10 else wa_id
-                except Exception:
-                    display_phone = wa_id
-
-                # Send confirmation message
-                confirm_msg = (
-                    f"Please confirm your name and contact number:\n*{display_name}*\n*{display_phone}*"
-                )
-                await send_message_to_waid(wa_id, confirm_msg, db)
-                
-                # Set up state for treatment flow
+                # Mark context as treatment flow
+                from controllers.web_socket import appointment_state  # type: ignore
                 st = appointment_state.get(wa_id) or {}
-                st["from_treatment_flow"] = True
+                st["flow_context"] = "treatment"
                 appointment_state[wa_id] = st
-                
-                # Send Yes/No confirmation buttons
-                token_entry_btn = get_latest_token(db)
-                if token_entry_btn and token_entry_btn.token:
-                    access_token_btn = token_entry_btn.token
-                    phone_id_btn = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
-                    headers_btn = {"Authorization": f"Bearer {access_token_btn}", "Content-Type": "application/json"}
-                    payload_btn = {
-                        "messaging_product": "whatsapp",
-                        "to": wa_id,
-                        "type": "interactive",
-                        "interactive": {
-                            "type": "button",
-                            "body": {"text": "Is this name and number correct?"},
-                            "action": {
-                                "buttons": [
-                                    {"type": "reply", "reply": {"id": "confirm_yes", "title": "Yes"}},
-                                    {"type": "reply", "reply": {"id": "confirm_no", "title": "No"}},
-                                ]
-                            },
-                        },
-                    }
-                    requests.post(get_messages_url(phone_id_btn), headers=headers_btn, json=payload_btn)
-                    
-                    # Broadcast to WebSocket
-                    try:
-                        await manager.broadcast({
-                            "from": "system",
-                            "to": wa_id,
-                            "type": "interactive",
-                            "message": "Is this name and number correct?",
-                            "timestamp": datetime.now().isoformat(),
-                            "meta": {"kind": "buttons", "options": ["Yes", "No"]},
-                        })
-                    except Exception:
-                        pass
-                
-                return {"status": "awaiting_confirmation"}
+
+                # Ask for preferred city
+                from controllers.components.lead_appointment_flow.city_selection import send_city_selection
+                result = await send_city_selection(db, wa_id=wa_id)
+                return {"status": "city_list_sent", "result": result}
             except Exception as e:
                 return {"status": "failed", "error": str(e)[:200]}
 

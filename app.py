@@ -33,7 +33,7 @@ from database.db import SessionLocal, engine, get_db
 from models import models
 from schemas.token_schema import Token
 from automation.controller import router as automation_router
-from wa_redirects import router as wa_redirects_router
+
 
 models.Base.metadata.create_all(bind=engine)
 
@@ -90,7 +90,7 @@ app.include_router(catalog_router, prefix="/catalog")
 app.include_router(flow_router, prefix="/flow")
 app.include_router(zoho_leads_router)
 app.include_router(zoho_mapping_router, prefix="/zoho-mappings")
-app.include_router(wa_redirects_router, prefix="/wa-redirects")
+
 
 
 @app.on_event("startup")

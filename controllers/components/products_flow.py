@@ -31,15 +31,18 @@ async def run_buy_products_flow(
     wa_id: str,
     catalog_url: str = "https://wa.me/c/917729992376",
 ) -> Dict[str, Any]:
+    print(f"[DEBUG] run_buy_products_flow triggered for {wa_id}")
     """Send the catalog link used for the "Buy Products" quick action.
 
     Returns a status dict.
     """
 
     try:
+        print(f"[DEBUG] Sending catalogue to {wa_id}: {catalog_url}")
         await send_message_to_waid(wa_id, f"🛍️ Browse our catalog: {catalog_url}", db)
         return {"status": "sent", "catalog_url": catalog_url}
     except Exception as e:
+        print(f"[DEBUG][ERROR] Exception in run_buy_products_flow: {e}")
         return {"status": "failed", "error": str(e)[:200]}
 
 
@@ -154,7 +157,7 @@ async def handle_cart_next_action(
     - cancel_order: acknowledge
     - proceed_order: send address_collection template
     """
-
+    # Removed wa_id restriction; cart summary is sent for every cart for all wa_ids.
     normalized = (reply_id or "").strip().lower()
 
     # Modify → show catalog again, with a Your Cart section if we can fetch it
@@ -350,3 +353,47 @@ async def handle_cart_next_action(
         return {"status": "address_flow_failed"}
 
     return {"status": "skipped"}
+
+
+def _matches_any(val, keywords):
+    if not val:
+        return False
+    check_val = val.strip().lower()
+    return any(kw in check_val for kw in keywords)
+
+async def route_product_flow(
+    db: Session,
+    message: dict,
+    interactive: dict,
+    i_type: str,
+    timestamp: datetime,
+    message_id: str,
+    from_wa_id: str,
+    to_wa_id: str,
+    wa_id: str,
+    customer: Any
+) -> Optional[dict]:
+    """
+    Route all Buy Products/catalogue/cart triggers.
+    Used by the main interactive router to delegate all product flows cleanly.
+    """
+    buy_keywords = {"buy_products", "buy product", "buy products", "show catalogue", "catalogue", "catalog", "browse products"}
+    cart_triggers = {"modify_order", "cancel_order", "proceed_order"}
+    input_fields = [
+        interactive.get("button_reply", {}).get("id"),
+        interactive.get("button_reply", {}).get("title"),
+        interactive.get("list_reply", {}).get("id"),
+        interactive.get("list_reply", {}).get("title"),
+        message.get("message"),
+    ]
+    # Early return for Buy/Catalogue
+    for val in input_fields:
+        if _matches_any(val, buy_keywords):
+            print(f"[route_product_flow] Detected catalogue/buy trigger: {val}")
+            return await run_buy_products_flow(db, wa_id=wa_id)
+    # Check for cart actions
+    reply_id = interactive.get("button_reply", {}).get("id") or interactive.get("list_reply", {}).get("id")
+    if reply_id and _matches_any(reply_id, cart_triggers):
+        print(f"[route_product_flow] Routing cart action: {reply_id}")
+        return await handle_cart_next_action(db, wa_id=wa_id, reply_id=reply_id, customer=customer)
+    return None

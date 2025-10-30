@@ -15,6 +15,7 @@ from services.whatsapp_service import get_latest_token
 from schemas.message_schema import MessageCreate
 from utils.whatsapp import send_message_to_waid
 from utils.ws_manager import manager
+from controllers.components.products_flow import route_product_flow
 
 
 async def _send_payment_redirect_button(wa_id: str, payment_url: str, order_id: str, db: Session) -> None:
@@ -114,15 +115,17 @@ async def run_interactive_type(
     wa_id: str,
     customer: Any,
 ) -> Dict[str, Any]:
-    """Handle WhatsApp interactive payloads (flow, form, button_reply, list_reply).
-
+    """
+    Handle WhatsApp interactive payloads (flow, form, button_reply, list_reply).
     Returns a status dict. If not handled, returns {"status": "skipped"}.
     """
-    
     print(f"[interactive_type] DEBUG - run_interactive_type called for {wa_id}, i_type={i_type}")
-    if i_type == "list_reply":
-        reply_id = interactive.get("list_reply", {}).get("id", "")
-        print(f"[interactive_type] DEBUG - list_reply with id: {reply_id}")
+
+    # ========== DELEGATE PRODUCT FLOW HANDLING ========== #
+    product_result = await route_product_flow(db, message, interactive, i_type, timestamp, message_id, from_wa_id, to_wa_id, wa_id, customer)
+    if product_result is not None:
+        return product_result
+    # ========== END PRODUCT FLOW HANDLING ========== #
 
     # 1) Flow submission (e.g., address collection)
     if i_type == "flow":
@@ -416,31 +419,33 @@ async def run_interactive_type(
 
                             # Continue with payment flow (best-effort)
                             try:
+                                from services.cart_checkout_service import CartCheckoutService
+                                checkout_service = CartCheckoutService(db)
                                 latest_order = (
                                     db.query(order_service.Order)
                                     .filter(order_service.Order.customer_id == customer.id)
                                     .order_by(order_service.Order.timestamp.desc())
                                     .first()
                                 )
-                                total_amount = 0
                                 if latest_order:
-                                    for item in latest_order.items:
-                                        qty = item.quantity or 1
-                                        price = item.item_price or item.price or 0
-                                        total_amount += float(price) * int(qty)
-                                if total_amount > 0:
-                                    from utils.razorpay_utils import create_razorpay_payment_link
-                                    try:
-                                        payment_resp = create_razorpay_payment_link(
-                                            amount=float(total_amount),
-                                            currency="INR",
-                                            description=f"WA Order {str(latest_order.id) if latest_order else ''}",
+                                    payment_result = await checkout_service.generate_payment_link_for_order(
+                                        order_id=str(latest_order.id),
+                                        customer_wa_id=wa_id,
+                                        customer_name=getattr(customer, "name", None),
+                                        customer_email=getattr(customer, "email", None),
+                                        customer_phone=getattr(customer, "phone", None)
+                                    )
+                                    if payment_result.get("success"):
+                                        await checkout_service._send_cart_display_with_payment(
+                                            wa_id,
+                                            payment_result.get("payment_url") or payment_result.get("short_url"),
+                                            payment_result.get("order_summary", {}),
+                                            getattr(customer, "name", None)
                                         )
-                                        pay_link = payment_resp.get("short_url") if isinstance(payment_resp, dict) else None
-                                        if pay_link:
-                                            await send_message_to_waid(wa_id, f"💳 Please complete your payment using this link: {pay_link}", db)
-                                    except Exception:
-                                        pass
+                                    else:
+                                        await send_message_to_waid(wa_id, "❌ Unable to generate payment link. Please try again.", db)
+                                else:
+                                    await send_message_to_waid(wa_id, "❌ No order found. Please add items to your cart first.", db)
                             except Exception:
                                 pass
 
@@ -1091,20 +1096,6 @@ Contact us for assistance with your payment."""
                         
             except Exception as e:
                 print(f"[address_selection] ERROR - Exception in address selection: {str(e)}")
-                pass
-
-            # Handle cart next actions (modify/cancel/proceed) first
-            try:
-                from controllers.components.products_flow import handle_cart_next_action  # type: ignore
-                cart_result = await handle_cart_next_action(
-                    db,
-                    wa_id=wa_id,
-                    reply_id=(reply_id or ""),
-                    customer=customer,
-                )
-                if (cart_result or {}).get("status") in {"modify_catalog_sent", "catalog_link_sent", "order_cancel_ack", "address_template_sent", "address_prompt_sent"}:
-                    return cart_result
-            except Exception:
                 pass
 
             # Delegate skin/hair/body and next actions

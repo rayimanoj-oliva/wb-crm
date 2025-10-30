@@ -118,6 +118,7 @@ async def handle_welcome_response(
             from controllers.web_socket import lead_appointment_state
             if wa_id not in lead_appointment_state:
                 lead_appointment_state[wa_id] = {}
+            lead_appointment_state[wa_id]["flow_context"] = "lead_appointment"
             print(f"[lead_appointment_flow] DEBUG - Initialized lead appointment state for {wa_id}")
         except Exception as e:
             print(f"[lead_appointment_flow] WARNING - Could not initialize lead appointment state: {e}")
@@ -136,6 +137,7 @@ async def handle_welcome_response(
             from controllers.web_socket import lead_appointment_state
             if wa_id not in lead_appointment_state:
                 lead_appointment_state[wa_id] = {}
+            lead_appointment_state[wa_id]["flow_context"] = "lead_appointment"
             print(f"[lead_appointment_flow] DEBUG - Initialized lead appointment state for {wa_id}")
         except Exception as e:
             print(f"[lead_appointment_flow] WARNING - Could not initialize lead appointment state: {e}")
