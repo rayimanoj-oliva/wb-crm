@@ -65,6 +65,7 @@ class ZohoLeadService:
 
         # Map local names to Zoho API field names
         concerns_value = None
+        additional_concerns_value = None
         clinic_branch_region = None
         phone_1 = None
         phone_2 = None
@@ -74,6 +75,17 @@ class ZohoLeadService:
                     appointment_details.get("zoho_mapped_concern")
                     or appointment_details.get("selected_concern")
                 )
+                # Fill Zoho's Additional_Concerns with the user's originally selected treatment/concern
+                # Zoho expects this to be a JSON array; coerce to [str] when a single value is present
+                _addl = appointment_details.get("selected_concern")
+                if isinstance(_addl, list):
+                    additional_concerns_value = [str(x) for x in _addl if isinstance(x, (str, int, float)) and str(x).strip()]
+                    if not additional_concerns_value:
+                        additional_concerns_value = None
+                elif isinstance(_addl, (str, int, float)) and str(_addl).strip():
+                    additional_concerns_value = [str(_addl).strip()]
+                else:
+                    additional_concerns_value = None
                 # Region should reflect the parsed location (e.g., Jubilee Hills) only
                 clinic_branch_region = appointment_details.get("selected_location")
                 # Primary and secondary phones
@@ -118,6 +130,7 @@ class ZohoLeadService:
                     "Description": full_description,
                     # Business fields expected by Zoho
                     **({"Concerns": concerns_value} if concerns_value else {}),
+                    **({"Additional_Concerns": additional_concerns_value} if additional_concerns_value else {}),
                     **({"Clinic_Branch": clinic_branch_region} if clinic_branch_region else {}),
                     # Custom fields / standard fields expected in Zoho
                     "Sub_Source": sub_source,
