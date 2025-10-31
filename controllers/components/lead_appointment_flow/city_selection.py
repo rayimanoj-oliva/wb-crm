@@ -51,8 +51,8 @@ async def send_city_selection(db: Session, *, wa_id: str) -> Dict[str, Any]:
             "type": "interactive",
             "interactive": {
                 "type": "list",
-                "header": {"type": "text", "text": "City Selection"},
-                "body": {"text": "Please select your city from the list below 👇"},
+                # "header": {"type": "text", "text": "City Selection"},
+                "body": {"text": "Please select your city:"},
                 "action": {
                     "button": "Choose City",
                     "sections": [
@@ -78,7 +78,7 @@ async def send_city_selection(db: Session, *, wa_id: str) -> Dict[str, Any]:
                     from_wa_id=os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
                     to_wa_id=wa_id,
                     type="interactive",
-                    body="Please select your city from the list below 👇",
+                    body="Please select your city:",
                     timestamp=datetime.now(),
                     customer_id=customer.id,
                 )
@@ -87,7 +87,7 @@ async def send_city_selection(db: Session, *, wa_id: str) -> Dict[str, Any]:
                     "from": os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
                     "to": wa_id,
                     "type": "interactive",
-                    "message": "Please select your city from the list below 👇",
+                    "message": "Please select your city:",
                     "timestamp": datetime.now().isoformat(),
                     "meta": {"kind": "list", "section": "Available Cities"}
                 })
@@ -133,7 +133,7 @@ async def send_city_selection_page2(db: Session, *, wa_id: str) -> Dict[str, Any
             "interactive": {
                 "type": "list",
                 "header": {"type": "text", "text": "More Cities"},
-                "body": {"text": "Please select your city from the list below 👇"},
+                "body": {"text": "Please select your city:"},
                 "action": {
                     "button": "Choose City",
                     "sections": [
@@ -194,11 +194,17 @@ async def handle_city_selection(
         await send_message_to_waid(wa_id, "❌ Invalid city selection. Please try again.", db)
         return {"status": "invalid_selection"}
     
-    # Store selected city in customer data or session
+    # Store selected city in customer data or session and establish idempotency keys
     try:
         from controllers.web_socket import lead_appointment_state, appointment_state
         if wa_id not in lead_appointment_state:
             lead_appointment_state[wa_id] = {}
+        # Hard idempotency: if this same reply_id already handled and topics were sent, skip
+        last_city_reply = lead_appointment_state[wa_id].get("last_city_reply_id")
+        if last_city_reply == (reply_id or "").strip().lower() and lead_appointment_state[wa_id].get("treatment_topics_sent"):
+            return {"status": "city_already_handled", "city": selected_city}
+
+        lead_appointment_state[wa_id]["last_city_reply_id"] = (reply_id or "").strip().lower()
         lead_appointment_state[wa_id]["selected_city"] = selected_city
         print(f"[lead_appointment_flow] DEBUG - Stored city selection: {selected_city}")
     except Exception as e:
@@ -218,40 +224,123 @@ async def handle_city_selection(
         except Exception:
             context = None
 
-    # Treatment flow: ask for name/number confirmation directly
+    # Treatment flow: after city, send mr_treatment (once) then ask concern (Skin/Hair/Body)
     if context == "treatment":
+        # Strong re-entrancy lock: prevent duplicate sends if handler is invoked twice concurrently or reprocessed
+        try:
+            from controllers.web_socket import lead_appointment_state as _lead_lock  # type: ignore
+            lock_state = _lead_lock.get(wa_id) or {}
+            from datetime import datetime as _dt
+            now = _dt.now()
+            lock_ts = lock_state.get("treatment_topics_lock_ts")
+            lock_flag = bool(lock_state.get("treatment_topics_lock"))
+            if lock_flag and isinstance(lock_ts, str):
+                try:
+                    from datetime import datetime as _dt2
+                    if (now - _dt2.fromisoformat(lock_ts)).total_seconds() < 30:
+                        return {"status": "topics_locked_skip", "city": selected_city}
+                except Exception:
+                    return {"status": "topics_locked_skip", "city": selected_city}
+            # acquire lock
+            lock_state["treatment_topics_lock"] = True
+            lock_state["treatment_topics_lock_ts"] = now.isoformat()
+            _lead_lock[wa_id] = lock_state
+        except Exception:
+            pass
+
         await send_message_to_waid(wa_id, f"✅ Great! You selected {selected_city}.", db)
-        # Flag treatment flow confirmation path
         try:
-            from controllers.web_socket import appointment_state  # type: ignore
-            st = appointment_state.get(wa_id) or {}
-            st["from_treatment_flow"] = True
-            appointment_state[wa_id] = st
-        except Exception as e:
-            print(f"[lead_appointment_flow] WARNING - Could not set from_treatment_flow flag: {e}")
-
-        # Ask for name/number confirmation (reuse existing pattern)
-        try:
-            from services.customer_service import get_customer_record_by_wa_id
-            customer_rec = get_customer_record_by_wa_id(db, wa_id)
-            display_name = (customer_rec.name.strip() if customer_rec and isinstance(customer_rec.name, str) else None) or "there"
+            # Early exit if already marked sent
             try:
-                import re as _re
-                digits = _re.sub(r"\D", "", wa_id)
-                last10 = digits[-10:] if len(digits) >= 10 else None
-                display_phone = f"+91{last10}" if last10 and len(last10) == 10 else wa_id
+                from controllers.web_socket import lead_appointment_state as _lead_state_early
+                st_early = _lead_state_early.get(wa_id) or {}
+                if st_early.get("treatment_topics_sent"):
+                    # release lock and exit
+                    st_early["treatment_topics_lock"] = False
+                    _lead_state_early[wa_id] = st_early
+                    return {"status": "topics_already_sent", "city": selected_city}
             except Exception:
-                display_phone = wa_id
-            confirm_msg = (
-                f"Please confirm your name and contact number:\n*{display_name}*\n*{display_phone}*"
-            )
-            await send_message_to_waid(wa_id, confirm_msg, db)
+                pass
 
-            # Send Yes/No confirmation buttons
+            # Idempotency: avoid duplicate mr_treatment/template and topic sends within a short window
+            try:
+                from controllers.web_socket import lead_appointment_state as _lead_state  # type: ignore
+                st = _lead_state.get(wa_id) or {}
+                from datetime import datetime as _dt
+                now = _dt.now()
+                # Template guard
+                tpl_ts = st.get("treatment_template_ts")
+                tpl_sent = bool(st.get("treatment_template_sent"))
+                if tpl_sent and isinstance(tpl_ts, str):
+                    try:
+                        from datetime import datetime as _dt2
+                        if (now - _dt2.fromisoformat(tpl_ts)).total_seconds() < 10:
+                            skip_template = True
+                        else:
+                            skip_template = False
+                    except Exception:
+                        skip_template = True
+                else:
+                    skip_template = False
+                # Topics guard
+                topics_ts = st.get("topics_sent_ts")
+                topics_sent = bool(st.get("treatment_topics_sent"))
+                if topics_sent and isinstance(topics_ts, str):
+                    try:
+                        from datetime import datetime as _dt3
+                        if (now - _dt3.fromisoformat(topics_ts)).total_seconds() < 5:
+                            return {"status": "topics_already_sent_recently", "city": selected_city}
+                    except Exception:
+                        return {"status": "topics_already_sent_recently", "city": selected_city}
+            except Exception:
+                skip_template = False
+
             token_entry = get_latest_token(db)
             if token_entry and token_entry.token:
                 access_token = token_entry.token
                 phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+                lang_code = os.getenv("WELCOME_TEMPLATE_LANG", "en_US")
+                from controllers.auto_welcome_controller import _send_template  # reuse helper
+                tpl_ok = False
+                if not skip_template:
+                    try:
+                        resp_tpl = _send_template(
+                            wa_id=wa_id,
+                            template_name="mr_treatment",
+                            access_token=access_token,
+                            phone_id=phone_id,
+                            components=None,
+                            lang_code=lang_code,
+                        )
+                        tpl_ok = bool(getattr(resp_tpl, "status_code", None) == 200)
+                    except Exception:
+                        tpl_ok = False
+                    if tpl_ok:
+                        # Mark template sent and release lock; do NOT send interactive
+                        try:
+                            from controllers.web_socket import lead_appointment_state as _lead_state_tpl
+                            st_tpl = _lead_state_tpl.get(wa_id) or {}
+                            st_tpl["treatment_template_sent"] = True
+                            st_tpl["treatment_template_ts"] = datetime.now().isoformat()
+                            st_tpl["treatment_topics_lock"] = False
+                            _lead_state_tpl[wa_id] = st_tpl
+                        except Exception:
+                            pass
+                        return {"status": "treatment_template_sent", "city": selected_city}
+                # If template skipped or failed, send concern buttons once
+                try:
+                    from controllers.web_socket import lead_appointment_state as _lead_state_mark
+                    st_mark = _lead_state_mark.get(wa_id) or {}
+                    # If already marked sent, avoid sending again
+                    if st_mark.get("treatment_topics_sent"):
+                        st_mark["treatment_topics_lock"] = False
+                        _lead_state_mark[wa_id] = st_mark
+                        return {"status": "topics_already_sent", "city": selected_city}
+                    st_mark["treatment_topics_sent"] = True
+                    st_mark["topics_sent_ts"] = datetime.now().isoformat()
+                    _lead_state_mark[wa_id] = st_mark
+                except Exception:
+                    pass
                 headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
                 payload_btn = {
                     "messaging_product": "whatsapp",
@@ -259,11 +348,12 @@ async def handle_city_selection(
                     "type": "interactive",
                     "interactive": {
                         "type": "button",
-                        "body": {"text": "Is this name and number correct?"},
+                        "body": {"text": "Please choose your area of concern:"},
                         "action": {
                             "buttons": [
-                                {"type": "reply", "reply": {"id": "confirm_yes", "title": "Yes"}},
-                                {"type": "reply", "reply": {"id": "confirm_no", "title": "No"}},
+                                {"type": "reply", "reply": {"id": "skin", "title": "Skin"}},
+                                {"type": "reply", "reply": {"id": "hair", "title": "Hair"}},
+                                {"type": "reply", "reply": {"id": "body", "title": "Body"}},
                             ]
                         },
                     },
@@ -271,10 +361,47 @@ async def handle_city_selection(
                 import requests as _req
                 from config.constants import get_messages_url as _gm
                 _req.post(_gm(phone_id), headers=headers, json=payload_btn)
+                # Broadcast to websocket for dashboard visibility
+                try:
+                    await manager.broadcast({
+                        "from": os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                        "to": wa_id,
+                        "type": "interactive",
+                        "message": "Please choose your area of concern:",
+                        "timestamp": datetime.now().isoformat(),
+                        "meta": {"kind": "buttons", "options": ["Skin", "Hair", "Body"]}
+                    })
+                except Exception:
+                    pass
+                # release lock
+                try:
+                    from controllers.web_socket import lead_appointment_state as _lead_unlock
+                    st_unlock = _lead_unlock.get(wa_id) or {}
+                    st_unlock["treatment_topics_lock"] = False
+                    _lead_unlock[wa_id] = st_unlock
+                except Exception:
+                    pass
+                return {"status": "treatment_topics_sent", "city": selected_city}
+                # release lock
+                try:
+                    from controllers.web_socket import lead_appointment_state as _lead_unlock
+                    st_unlock = _lead_unlock.get(wa_id) or {}
+                    st_unlock["treatment_topics_lock"] = False
+                    _lead_unlock[wa_id] = st_unlock
+                except Exception:
+                    pass
+                return {"status": "treatment_topics_sent", "city": selected_city}
         except Exception as e:
-            print(f"[lead_appointment_flow] WARNING - Could not send confirmation prompt: {e}")
-
-        return {"status": "awaiting_confirmation", "city": selected_city}
+            print(f"[lead_appointment_flow] WARNING - Could not send treatment topics: {e}")
+            # release lock on failure
+            try:
+                from controllers.web_socket import lead_appointment_state as _lead_unlock2
+                st_unlock2 = _lead_unlock2.get(wa_id) or {}
+                st_unlock2["treatment_topics_lock"] = False
+                _lead_unlock2[wa_id] = st_unlock2
+            except Exception:
+                pass
+        return {"status": "failed_to_send_topics", "city": selected_city}
 
     # Lead appointment flow: proceed to clinic selection
     else:

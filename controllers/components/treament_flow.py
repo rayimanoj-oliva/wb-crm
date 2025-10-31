@@ -162,87 +162,62 @@ async def run_treament_flow(
                         except Exception:
                             pass
 
-                        # Immediately proceed to treatment flow without asking name/phone
+                        # Do NOT send mr_treatment here; it will be sent after city selection
+
+                        # Mark context and set treatment flag
                         try:
-                            components_treat = None
-                            resp_treat = _send_template(
-                                wa_id=wa_id,
-                                template_name="mr_treatment",
-                                access_token=access_token_prefill,
-                                phone_id=phone_id_prefill,
-                                components=components_treat,
-                                lang_code=lang_code_prefill,
-                            )
+                            from controllers.web_socket import appointment_state  # type: ignore
+                            st = appointment_state.get(wa_id) or {}
+                            st["flow_context"] = "treatment"
+                            st["from_treatment_flow"] = True
+                            appointment_state[wa_id] = st
+                        except Exception:
+                            pass
+
+                        # Build and send name/phone confirmation with Yes/No
+                        try:
+                            from services.customer_service import get_customer_record_by_wa_id
+                            customer_rec = get_customer_record_by_wa_id(db, wa_id)
+                            display_name = (customer_rec.name.strip() if customer_rec and isinstance(customer_rec.name, str) else None) or "there"
                             try:
-                                await manager.broadcast({
-                                    "from": to_wa_id,
-                                    "to": wa_id,
-                                    "type": "template" if resp_treat.status_code == 200 else "template_error",
-                                    "message": "mr_treatment sent" if resp_treat.status_code == 200 else "mr_treatment failed",
-                                    **({"status_code": resp_treat.status_code} if resp_treat.status_code != 200 else {}),
-                                    "timestamp": datetime.now().isoformat(),
-                                })
+                                import re as _re
+                                digits = _re.sub(r"\D", "", wa_id)
+                                last10 = digits[-10:] if len(digits) >= 10 else None
+                                display_phone = f"+91{last10}" if last10 and len(last10) == 10 else wa_id
                             except Exception:
-                                pass
-                            if resp_treat.status_code != 200:
-                                # Fallback to interactive buttons (Skin/Hair/Body)
-                                headers_btn2 = {
-                                    "Authorization": f"Bearer {access_token_prefill}",
-                                    "Content-Type": "application/json",
-                                }
-                                payload_btn2 = {
+                                display_phone = wa_id
+
+                            confirm_msg = (
+                                f"To help us serve you better, please confirm your contact details:\n*{display_name}*\n*{display_phone}*"
+                            )
+                            await send_message_to_waid(wa_id, confirm_msg, db)
+
+                            token_entry = get_latest_token(db)
+                            if token_entry and token_entry.token:
+                                access_token = token_entry.token
+                                phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+                                headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+                                payload_btn = {
                                     "messaging_product": "whatsapp",
                                     "to": wa_id,
                                     "type": "interactive",
                                     "interactive": {
                                         "type": "button",
-                                        "body": {"text": "Please choose your area of concern:"},
+                                        "body": {"text": "Are your name and contact number correct? "},
                                         "action": {
                                             "buttons": [
-                                                {"type": "reply", "reply": {"id": "skin", "title": "Skin"}},
-                                                {"type": "reply", "reply": {"id": "hair", "title": "Hair"}},
-                                                {"type": "reply", "reply": {"id": "body", "title": "Body"}},
+                                                {"type": "reply", "reply": {"id": "confirm_yes", "title": "Yes"}},
+                                                {"type": "reply", "reply": {"id": "confirm_no", "title": "No"}},
                                             ]
                                         },
                                     },
                                 }
-                                resp_btn2 = requests.post(get_messages_url(phone_id_prefill), headers=headers_btn2, json=payload_btn2)
-                                if resp_btn2.status_code == 200:
-                                    try:
-                                        # Save outbound message to database
-                                        response_data = resp_btn2.json()
-                                        message_id = response_data.get("messages", [{}])[0].get("id", f"outbound_{datetime.now().timestamp()}")
-                                        
-                                        from services.message_service import create_message
-                                        from schemas.message_schema import MessageCreate
-                                        
-                                        outbound_message = MessageCreate(
-                                            message_id=message_id,
-                                            from_wa_id=to_wa_id,
-                                            to_wa_id=wa_id,
-                                            type="interactive",
-                                            body="What treatment are you interested in?",
-                                            timestamp=datetime.now(),
-                                            customer_id=customer.id,
-                                        )
-                                        create_message(db, outbound_message)
-                                        print(f"[treatment_flow] DEBUG - Outbound treatment buttons saved to database: {message_id}")
-                                        
-                                        await manager.broadcast({
-                                            "from": to_wa_id,
-                                            "to": wa_id,
-                                            "type": "interactive",
-                                            "message": "What treatment are you interested in?",
-                                            "timestamp": datetime.now().isoformat(),
-                                            "meta": {"kind": "buttons", "options": ["Skin", "Hair", "Body"]}
-                                        })
-                                    except Exception as e:
-                                        print(f"[treatment_flow] WARNING - Database save or WebSocket broadcast failed: {e}")
-                        except Exception:
-                            pass
+                                requests.post(get_messages_url(phone_id), headers=headers, json=payload_btn)
+                        except Exception as e:
+                            print(f"[treatment_flow] WARNING - Could not send confirmation: {e}")
 
                         handled_text = True
-                        return {"status": "welcome_and_treatment_sent", "message_id": message_id}
+                        return {"status": "awaiting_confirmation", "message_id": message_id}
                     else:
                         try:
                             await manager.broadcast({
@@ -527,11 +502,11 @@ async def run_treatment_buttons_flow(
                     "type": "interactive",
                     "interactive": {
                         "type": "button",
-                        "body": {"text": "Please choose one option:"},
+                        "body": {"text": "Please choose one of the following options:"},
                         "action": {
                             "buttons": [
-                                {"type": "reply", "reply": {"id": "book_appointment", "title": "\ud83d\udcc5 Book an Appointment"}},
-                                {"type": "reply", "reply": {"id": "request_callback", "title": "\ud83d\udcde Request a Call Back"}},
+                                {"type": "reply", "reply": {"id": "book_appointment", "title": "\ud83d\udcc5 📅 Book an Appointment"}},
+                                {"type": "reply", "reply": {"id": "request_callback", "title": "\ud83d\udcde 📞 Request a Call Back"}},
                             ]
                         },
                     },
@@ -605,16 +580,52 @@ async def run_appointment_buttons_flow(
             or normalized_payload in {"book an appointment", "book appointment"}
         ):
             try:
-                # Mark context as treatment flow
+                # If in treatment context, create lead immediately and send thank you
                 from controllers.web_socket import appointment_state  # type: ignore
                 st = appointment_state.get(wa_id) or {}
-                st["flow_context"] = "treatment"
-                appointment_state[wa_id] = st
-
-                # Ask for preferred city
-                from controllers.components.lead_appointment_flow.city_selection import send_city_selection
-                result = await send_city_selection(db, wa_id=wa_id)
-                return {"status": "city_list_sent", "result": result}
+                flow_ctx = st.get("flow_context")
+                if flow_ctx == "treatment":
+                    try:
+                        from controllers.components.lead_appointment_flow.zoho_lead_service import create_lead_for_appointment
+                        from services.customer_service import get_customer_record_by_wa_id
+                        customer = get_customer_record_by_wa_id(db, wa_id)
+                        selected_concern = (st or {}).get("selected_concern")
+                        appointment_details = {
+                            "flow_type": "treatment_flow",
+                            "treatment_selected": True,
+                            "no_scheduling_required": True,
+                            "selected_concern": selected_concern,
+                        }
+                        await create_lead_for_appointment(
+                            db=db,
+                            wa_id=wa_id,
+                            customer=customer,
+                            appointment_details=appointment_details,
+                            lead_status="PENDING",
+                            appointment_preference="Treatment consultation - no specific appointment time requested",
+                        )
+                    except Exception:
+                        pass
+                    # Thank you message
+                    await send_message_to_waid(
+                        wa_id,
+                        "✅ Thank you! Our team will call and confirm your appointment shortly.",
+                        db,
+                    )
+                    # Clear state
+                    try:
+                        if wa_id in appointment_state:
+                            appointment_state.pop(wa_id, None)
+                    except Exception:
+                        pass
+                    return {"status": "treatment_lead_created"}
+                else:
+                    # Non-treatment flows: route to city selection
+                    st["flow_context"] = "treatment"
+                    appointment_state[wa_id] = st
+                    from controllers.components.lead_appointment_flow.city_selection import send_city_selection
+                    result = await send_city_selection(db, wa_id=wa_id)
+                    return {"status": "city_list_sent", "result": result}
             except Exception as e:
                 return {"status": "failed", "error": str(e)[:200]}
 

@@ -136,20 +136,43 @@ async def handle_user_details_input(
         except Exception as e:
             print(f"[lead_appointment_flow] WARNING - Could not update customer record: {e}")
         
-        # Send confirmation and proceed to callback confirmation
-        await send_message_to_waid(
-            wa_id, 
-            f"✅ Thank you {name}! Your details have been saved.\n\n"
-            f"📞 Phone: {phone}\n"
-            f"📧 WhatsApp: {wa_id}\n\n"
-            "Now, would you like one of our agents to call you back to confirm your appointment?",
-            db
-        )
-        
-        # Proceed to callback confirmation
-        from .callback_confirmation import send_callback_confirmation
-        result = await send_callback_confirmation(db=db, wa_id=wa_id)
-        return {"status": "callback_confirmation_sent", "user_name": name, "user_phone": phone, "result": result}
+        # Decide next step based on flow context
+        context = None
+        try:
+            from controllers.web_socket import appointment_state as _appt_state
+            context = ((_appt_state.get(wa_id) or {}).get("flow_context"))
+        except Exception:
+            context = None
+        if not context:
+            try:
+                from controllers.web_socket import lead_appointment_state as _lead_state
+                context = ((_lead_state.get(wa_id) or {}).get("flow_context"))
+            except Exception:
+                context = None
+
+        if context == "treatment":
+            # For treatment flow: go to city selection
+            await send_message_to_waid(
+                wa_id,
+                f"✅ Thank you {name}! Your details have been saved. Let's pick your city next.",
+                db
+            )
+            from .city_selection import send_city_selection
+            result = await send_city_selection(db, wa_id=wa_id)
+            return {"status": "proceed_to_city_selection", "user_name": name, "user_phone": phone, "result": result}
+        else:
+            # Default: proceed to callback confirmation
+            await send_message_to_waid(
+                wa_id, 
+                f"✅ Thank you {name}! Your details have been saved.\n\n"
+                f"📞 Phone: {phone}\n"
+                f"📧 WhatsApp: {wa_id}\n\n"
+                "Now, would you like one of our agents to call you back to confirm your appointment?",
+                db
+            )
+            from .callback_confirmation import send_callback_confirmation
+            result = await send_callback_confirmation(db=db, wa_id=wa_id)
+            return {"status": "callback_confirmation_sent", "user_name": name, "user_phone": phone, "result": result}
             
     except Exception as e:
         print(f"[lead_appointment_flow] ERROR - Failed to handle user details: {e}")

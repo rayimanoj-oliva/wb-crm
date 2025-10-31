@@ -458,7 +458,7 @@ async def _confirm_appointment(wa_id: str, db: Session, date_iso: str, time_labe
             display_phone = wa_id
 
         confirm_msg = (
-            f"Please confirm your name and contact number:\n*{display_name}*\n*{display_phone}*"
+            f"To help us serve you better, please confirm your contact details:\n*{display_name}*\n*{display_phone}*"
         )
         await send_message_to_waid(wa_id, confirm_msg, db)
 
@@ -483,7 +483,7 @@ async def _confirm_appointment(wa_id: str, db: Session, date_iso: str, time_labe
                     "type": "interactive",
                     "interactive": {
                         "type": "button",
-                        "body": {"text": "Is this name and number correct?"},
+                        "body": {"text": "Are your name and contact number correct? "},
                         "action": {
                             "buttons": [
                                 {"type": "reply", "reply": {"id": "confirm_yes", "title": "Yes"}},
@@ -498,7 +498,7 @@ async def _confirm_appointment(wa_id: str, db: Session, date_iso: str, time_labe
                         "from": "system",
                         "to": wa_id,
                         "type": "interactive",
-                        "message": "Is this name and number correct?",
+                        "message": "Are your name and contact number correct? ",
                         "timestamp": datetime.now().isoformat(),
                         "meta": {"kind": "buttons", "options": ["Yes", "No"]},
                     })
@@ -927,6 +927,21 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 print(f"  - Timestamp: {timestamp}")
                 print(f"  - Customer ID: {customer.id}")
             
+            # If we are waiting for user details (after confirm_no in treatment flow), handle now
+            try:
+                from controllers.web_socket import lead_appointment_state as _lead_state  # type: ignore
+                waiting_details = ((_lead_state.get(wa_id) or {}).get("waiting_for_user_details"))
+            except Exception:
+                waiting_details = False
+
+            if waiting_details:
+                try:
+                    from controllers.components.lead_appointment_flow.user_details import handle_user_details_input  # type: ignore
+                    result = await handle_user_details_input(db=db, wa_id=wa_id, details_text=body_text, customer=customer)
+                    return {"status": "user_details_handled", **result}
+                except Exception:
+                    pass
+
             # Always broadcast to WebSocket (even if already saved)
             if not handled_text:  # Only broadcast if not already handled by treatment flow
                 await manager.broadcast({
@@ -1735,50 +1750,13 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         
                         if (norm_btn_id in yes_ids or norm_btn_title in yes_ids):
                             if from_treatment_flow:
-                                # Treatment flow confirmation - no date/time details
-                                thank_you = (
-                                    f"✅ Thank you! Our team will call and confirm your appointment shortly."
-                                )
-                                await send_message_to_waid(wa_id, thank_you, db)
-                                
-                                # Create lead in Zoho for treatment flow
                                 try:
-                                    from controllers.components.lead_appointment_flow.zoho_lead_service import create_lead_for_appointment
-                                    from services.customer_service import get_customer_record_by_wa_id
-                                    customer = get_customer_record_by_wa_id(db, wa_id)
-                                    
-                                    # Get selected concern from appointment_state
-                                    selected_concern = appointment_state.get(wa_id, {}).get("selected_concern")
-                                    print(f"[treatment_flow] DEBUG - Selected concern from state: {selected_concern}")
-                                    
-                                    # Prepare appointment details for treatment flow
-                                    appointment_details = {
-                                        "flow_type": "treatment_flow",
-                                        "treatment_selected": True,
-                                        "no_scheduling_required": True,
-                                        "selected_concern": selected_concern
-                                    }
-                                    print(f"[treatment_flow] DEBUG - Appointment details with concern: {appointment_details}")
-                                    
-                                    lead_result = await create_lead_for_appointment(
-                                        db=db,
-                                        wa_id=wa_id,
-                                        customer=customer,
-                                        appointment_details=appointment_details,
-                                        lead_status="PENDING",
-                                        appointment_preference="Treatment consultation - no specific appointment time requested"
-                                    )
-                                    print(f"[treatment_flow] DEBUG - Lead creation result: {lead_result}")
+                                    from controllers.components.lead_appointment_flow.city_selection import send_city_selection  # type: ignore
+                                    result = await send_city_selection(db, wa_id=wa_id)
+                                    return {"status": "proceed_to_city_selection", "message_id": message_id, "result": result}
                                 except Exception as e:
-                                    print(f"[treatment_flow] WARNING - Could not create lead: {e}")
-                                
-                                # Clear state
-                                try:
-                                    if wa_id in appointment_state:
-                                        appointment_state.pop(wa_id, None)
-                                except Exception:
-                                    pass
-                                return {"status": "treatment_appointment_confirmed", "message_id": message_id}
+                                    print(f"[treatment_flow] WARNING - Could not send city selection: {e}")
+                                    return {"status": "failed", "message_id": message_id}
                             elif date_iso and time_label:
                                 
                                 # Regular appointment flow with date/time
@@ -1810,13 +1788,11 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                 pass
                             return {"status": "appointment_confirmed", "message_id": message_id}
                         elif (norm_btn_id in no_ids or norm_btn_title in no_ids):
-                            # Ask for full name or first name and set awaiting_name flag
+                            # Ask for name first, then number (validated via OpenAI-backed validators)
                             try:
                                 st = appointment_state.get(wa_id) or {}
-                                from_treatment_flow = st.get("from_treatment_flow", False)
-                                
-                                # If not from treatment flow, try to recover date/time from DB
-                                if not from_treatment_flow and (not st.get("date") or not st.get("time")):
+                                # Try to recover date/time from DB if missing
+                                if not st.get("date") or not st.get("time"):
                                     try:
                                         from services.referrer_service import referrer_service
                                         existing_ref = referrer_service.get_referrer_by_wa_id(db, wa_id)
@@ -1825,7 +1801,6 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                                 date_iso_rec = getattr(existing_ref.appointment_date, "date", None)()
                                                 st["date"] = date_iso_rec.isoformat()
                                             except Exception:
-                                                # Fallback string formatting
                                                 try:
                                                     st["date"] = existing_ref.appointment_date.strftime("%Y-%m-%d")
                                                 except Exception:
@@ -1833,7 +1808,6 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                             st["time"] = existing_ref.appointment_time
                                     except Exception:
                                         pass
-                                
                                 st["awaiting_name"] = True
                                 st.pop("awaiting_phone", None)
                                 st.pop("corrected_name", None)
@@ -1841,7 +1815,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                 appointment_state[wa_id] = st
                             except Exception:
                                 pass
-                            await send_message_to_waid(wa_id, "No problem. Please share your name (full name or first name).", db)
+                            await send_message_to_waid(wa_id, "No problem. Let's update your details.\nPlease share your full name first.", db)
                             return {"status": "awaiting_name", "message_id": message_id}
                         else:
                             # Before sending user back, try to recover any existing appointment from DB
@@ -1865,7 +1839,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                         await _confirm_appointment(wa_id, db, st.get("date"), st.get("time"))
                                         return {"status": "appointment_captured", "message_id": message_id}
                                     # If it was not an explicit Yes, at least proceed to name capture without resetting flow
-                                    await send_message_to_waid(wa_id, "No problem. Please share your name (full name or first name).", db)
+                                    await send_message_to_waid(wa_id, "No problem. Let's update your details.\nPlease share your full name first.", db)
                                     st["awaiting_name"] = True
                                     appointment_state[wa_id] = st
                                     return {"status": "awaiting_name", "message_id": message_id}
@@ -2012,11 +1986,11 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                             "type": "interactive",
                             "interactive": {
                                 "type": "button",
-                                "body": {"text": "Please choose one option:"},
+                                "body": {"text": "Please choose one of the following options:"},
                                 "action": {
                                     "buttons": [
-                                        {"type": "reply", "reply": {"id": "book_appointment", "title": "\ud83d\udcc5 Book an Appointment"}},
-                                        {"type": "reply", "reply": {"id": "request_callback", "title": "\ud83d\udcde Request a Call Back"}}
+                                        {"type": "reply", "reply": {"id": "book_appointment", "title": "\ud83d\udcc5 📅 Book an Appointment"}},
+                                        {"type": "reply", "reply": {"id": "request_callback", "title": "\ud83d\udcde 📞 Request a Call Back"}}
                                     ]
                                 }
                             }
@@ -2027,9 +2001,9 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                 "from": to_wa_id,
                                 "to": wa_id,
                                 "type": "interactive",
-                                "message": "Please choose one option:",
+                                "message": "Please choose one of the following options:",
                                 "timestamp": timestamp.isoformat(),
-                                "meta": {"kind": "buttons", "options": ["Book an Appointment", "Request a Call Back"]}
+                                "meta": {"kind": "buttons", "options": ["📅 Book an Appointment", "📞 Request a Call Back"]}
                             })
                         except Exception:
                             pass
@@ -2138,46 +2112,13 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                             ))
                         except Exception:
                             pass
-                        # Proceed as in awaiting_phone success for treatment flow
-                        name_final = (st.get("corrected_name") or "there").strip()
-                        phone_final = st.get("corrected_phone")
-                        msg = (
-                            f"✅ Thank you! Our team will call and confirm your appointment shortly."
-                        )
-                        await send_message_to_waid(wa_id, msg, db)
+                        # After capturing both, go to city selection
                         try:
-                            from controllers.components.lead_appointment_flow.zoho_lead_service import create_lead_for_appointment
-                            from services.customer_service import get_customer_record_by_wa_id
-                            customer = get_customer_record_by_wa_id(db, wa_id)
-                            try:
-                                selected_concern = appointment_state.get(wa_id, {}).get("selected_concern")
-                            except Exception:
-                                selected_concern = (st or {}).get("selected_concern")
-                            # Compute WA phone for Phone_2
-                            import re as _re
-                            wa_digits = _re.sub(r"\D", "", wa_id)
-                            wa_last10 = wa_digits[-10:] if len(wa_digits) >= 10 else wa_digits
-                            wa_phone_norm = ("+91" + wa_last10) if len(wa_last10) == 10 else wa_id
-                            appointment_details = {
-                                "flow_type": "treatment_flow",
-                                "treatment_selected": True,
-                                "no_scheduling_required": True,
-                                "corrected_name": name_final,
-                                "corrected_phone": phone_final,
-                                "wa_phone": wa_phone_norm,
-                                "selected_concern": selected_concern,
-                            }
-                            await create_lead_for_appointment(
-                                db=db,
-                                wa_id=wa_id,
-                                customer=customer,
-                                appointment_details=appointment_details,
-                                lead_status="PENDING",
-                                appointment_preference="Treatment consultation - no specific appointment time requested",
-                            )
+                            from controllers.components.lead_appointment_flow.city_selection import send_city_selection  # type: ignore
+                            result = await send_city_selection(db, wa_id=wa_id)
+                            return {"status": "proceed_to_city_selection", "message_id": message_id, "result": result}
                         except Exception:
-                            pass
-                        return {"status": "treatment_name_phone_captured", "message_id": message_id}
+                            return {"status": "failed_after_details", "message_id": message_id}
                     elif name_ok and not phone_ok:
                         st["corrected_name"] = name_res.get("name").strip()
                         st["awaiting_name"] = False
@@ -2246,90 +2187,13 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                     update_customer(db, cust.id, CustomerUpdate(name=name_final, phone_2=phone_final))
                             except Exception:
                                 pass
-                            # Treatment flow confirmation - no date/time details
-                            msg = (
-                                f"✅ Thank you! Our team will call and confirm your appointment shortly."
-                            )
-                            await send_message_to_waid(wa_id, msg, db)
-                            
-                            # Create lead in Zoho for treatment flow
+                            # After capturing both, go to city selection
                             try:
-                                from controllers.components.lead_appointment_flow.zoho_lead_service import create_lead_for_appointment
-                                from services.customer_service import get_customer_record_by_wa_id
-                                customer = get_customer_record_by_wa_id(db, wa_id)
-                                
-                                # Get selected concern from appointment_state (fresh read, not cached 'st')
-                                try:
-                                    selected_concern = appointment_state.get(wa_id, {}).get("selected_concern")
-                                except Exception:
-                                    selected_concern = (st or {}).get("selected_concern")
-                                print(f"[treatment_flow] DEBUG - Selected concern from state: {selected_concern}")
-                                
-                                # Prepare appointment details for treatment flow
-                                appointment_details = {
-                                    "flow_type": "treatment_flow",
-                                    "treatment_selected": True,
-                                    "no_scheduling_required": True,
-                                    "corrected_name": name_final,
-                                    "corrected_phone": phone_final,
-                                    "selected_concern": selected_concern
-                                }
-                                print(f"[treatment_flow] DEBUG - Appointment details with concern: {appointment_details}")
-                                
-                                lead_result = await create_lead_for_appointment(
-                                    db=db,
-                                    wa_id=wa_id,
-                                    customer=customer,
-                                    appointment_details=appointment_details,
-                                    lead_status="PENDING",
-                                    appointment_preference="Treatment consultation - no specific appointment time requested"
-                                )
-                                print(f"[treatment_flow] DEBUG - Lead creation result (name/phone verification): {lead_result}")
-                                
-                                # Save to referrer table with treatment type
-                                if selected_concern:
-                                    try:
-                                        from services.zoho_mapping_service import get_zoho_name
-                                        from services.referrer_service import referrer_service
-                                        
-                                        # Get the Zoho mapped name for the treatment
-                                        zoho_treatment_name = get_zoho_name(db, selected_concern)
-                                        
-                                        # Get or create referrer record
-                                        existing_ref = referrer_service.get_referrer_by_wa_id(db, wa_id)
-                                        if existing_ref:
-                                            # Update existing record
-                                            existing_ref.treatment_type = zoho_treatment_name
-                                            db.commit()
-                                            print(f"[treatment_flow] Updated referrer table with treatment: {zoho_treatment_name}")
-                                        else:
-                                            # Create new referrer record
-                                            from schemas.referrer_schema import ReferrerTrackingCreate
-                                            referrer_data = ReferrerTrackingCreate(
-                                                wa_id=wa_id,
-                                                center_name="Oliva Skin & Hair Clinic",
-                                                location="Multiple Locations",
-                                                customer_id=customer.id,
-                                                appointment_date=None,
-                                                appointment_time=None,
-                                                treatment_type=zoho_treatment_name,
-                                                is_appointment_booked=False
-                                            )
-                                            referrer_service.create_referrer_tracking(db, referrer_data)
-                                            print(f"[treatment_flow] Created referrer record with treatment: {zoho_treatment_name}")
-                                    except Exception as ref_e:
-                                        print(f"[treatment_flow] WARNING - Could not save to referrer table: {ref_e}")
-                                
-                            except Exception as e:
-                                print(f"[treatment_flow] WARNING - Could not create lead (name/phone verification): {e}")
-                            
-                            # Clear state after confirmation
-                            try:
-                                if wa_id in appointment_state:
-                                    appointment_state.pop(wa_id, None)
+                                from controllers.components.lead_appointment_flow.city_selection import send_city_selection  # type: ignore
+                                result = await send_city_selection(db, wa_id=wa_id)
+                                return {"status": "proceed_to_city_selection", "message_id": message_id, "result": result}
                             except Exception:
-                                pass
-                            return {"status": "treatment_appointment_confirmed", "message_id": message_id}
+                                return {"status": "failed_after_details", "message_id": message_id}
                         elif date_iso and time_label and name_final and phone_final:
                             # Regular appointment flow with date/time
                             msg = (

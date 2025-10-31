@@ -338,73 +338,10 @@ async def whatsapp_auto_welcome_webhook(request: Request, db: Session = Depends(
                     print(f"[auto_webhook] DEBUG - Verification valid, sending confirmation message")
                     await send_message_to_waid(wa_id, f"✅ Received details. Name: {verification.get('name')} | Phone: {verification.get('phone')}", db)
                     print(f"[auto_webhook] DEBUG - Confirmation message sent")
-                    # Send mr_treatment template (with name param) and fallback to interactive buttons on failure
+                    # After successful details, proceed to city selection (treatment flow)
                     try:
-                        print(f"[auto_webhook] DEBUG - Attempting to send mr_treatment template")
-                        token_entry_btn = get_latest_token(db)
-                        if token_entry_btn and token_entry_btn.token:
-                            print(f"[auto_webhook] DEBUG - Token found, proceeding with template")
-                            access_token_btn = token_entry_btn.token
-                            phone_id_btn = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
-                            lang_code_btn = os.getenv("WELCOME_TEMPLATE_LANG", "en_US")
-                            name_param = verification.get('name') or sender_name or wa_id or "there"
-                            components_btn = [{"type": "body", "parameters": [{"type": "text", "text": name_param}]}]
-                            try:
-                                await manager.broadcast({
-                                    "from": to_wa_id,
-                                    "to": wa_id,
-                                    "type": "template_attempt",
-                                    "message": "Sending mr_treatment...",
-                                    "params": {"body_param_1": name_param, "lang": lang_code_btn},
-                                    "timestamp": datetime.now().isoformat()
-                                })
-                            except Exception:
-                                pass
-                            resp_btn = _send_template(wa_id=wa_id, template_name="mr_treatment", access_token=token_entry_btn.token, phone_id=phone_id_btn, components=components_btn, lang_code=lang_code_btn)
-                            print(f"[auto_webhook] DEBUG - Template response status: {resp_btn.status_code}")
-                            if resp_btn.status_code == 200:
-                                print(f"[auto_webhook] DEBUG - Template sent successfully")
-                                try:
-                                    await manager.broadcast({
-                                        "from": to_wa_id,
-                                        "to": wa_id,
-                                        "type": "template",
-                                        "message": "mr_treatment sent",
-                                        "timestamp": datetime.now().isoformat()
-                                    })
-                                except Exception:
-                                    pass
-                            else:
-                                # Fallback to interactive buttons
-                                headers_btn = {"Authorization": f"Bearer {access_token_btn}", "Content-Type": "application/json"}
-                                payload_btn = {
-                                    "messaging_product": "whatsapp",
-                                    "to": wa_id,
-                                    "type": "interactive",
-                                    "interactive": {
-                                        "type": "button",
-                                        "body": {"text": "Please choose your area of concern:"},
-                                        "action": {
-                                            "buttons": [
-                                                {"type": "reply", "reply": {"id": "skin", "title": "Skin"}},
-                                                {"type": "reply", "reply": {"id": "hair", "title": "Hair"}},
-                                                {"type": "reply", "reply": {"id": "body", "title": "Body"}}
-                                            ]
-                                        }
-                                    }
-                                }
-                                requests.post(get_messages_url(phone_id_btn), headers=headers_btn, json=payload_btn)
-                                try:
-                                    await manager.broadcast({
-                                        "from": to_wa_id,
-                                        "to": wa_id,
-                                        "type": "interactive",
-                                        "message": "Please choose your area of concern:",
-                                        "timestamp": datetime.now().isoformat(),
-                                        "meta": {"kind": "buttons", "options": ["Skin", "Hair", "Body"]}
-                                    })
-                                except Exception:
-                                    pass
+                        from controllers.components.lead_appointment_flow.city_selection import send_city_selection  # type: ignore
+                        await send_city_selection(db, wa_id=wa_id)
                     except Exception:
                         pass
                 else:
@@ -539,44 +476,59 @@ async def whatsapp_auto_welcome_webhook(request: Request, db: Session = Depends(
                     pass
             except Exception:
                 pass
-            # Immediately proceed to treatment flow without asking name/phone
+            # After mr_welcome: ask name/phone confirmation, then proceed to city → treatment
             try:
+                # Mark treatment flow context for subsequent steps
+                from controllers.web_socket import appointment_state  # type: ignore
+                st = appointment_state.get(wa_id) or {}
+                st["flow_context"] = "treatment"
+                st["from_treatment_flow"] = True
+                appointment_state[wa_id] = st
+            except Exception:
+                pass
+
+            # Send name/phone confirmation
+            try:
+                from services.customer_service import get_customer_record_by_wa_id
+                customer_rec = get_customer_record_by_wa_id(db, wa_id)
+                display_name = (customer_rec.name.strip() if customer_rec and isinstance(customer_rec.name, str) else None) or "there"
+                try:
+                    import re as _re
+                    digits = _re.sub(r"\D", "", wa_id)
+                    last10 = digits[-10:] if len(digits) >= 10 else None
+                    display_phone = f"+91{last10}" if last10 and len(last10) == 10 else wa_id
+                except Exception:
+                    display_phone = wa_id
+
+                confirm_msg = (
+                    f"To help us serve you better, please confirm your contact details:\n*{display_name}*\n*{display_phone}*"
+                )
+                await send_message_to_waid(wa_id, confirm_msg, db)
+
                 token_entry_btn = get_latest_token(db)
                 if token_entry_btn and token_entry_btn.token:
                     access_token_btn = token_entry_btn.token
                     phone_id_btn = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
-                    lang_code_btn = os.getenv("WELCOME_TEMPLATE_LANG", "en_US")
-                    # No name param; send template bare and fallback to buttons
-                    resp_btn = _send_template(
-                        wa_id=wa_id,
-                        template_name="mr_treatment",
-                        access_token=access_token_btn,
-                        phone_id=phone_id_btn,
-                        components=None,
-                        lang_code=lang_code_btn,
-                    )
-                    if resp_btn.status_code != 200:
-                        headers_btn = {"Authorization": f"Bearer {access_token_btn}", "Content-Type": "application/json"}
-                        payload_btn = {
-                            "messaging_product": "whatsapp",
-                            "to": wa_id,
-                            "type": "interactive",
-                            "interactive": {
-                                "type": "button",
-                                "body": {"text": "Please choose your area of concern:"},
-                                "action": {
-                                    "buttons": [
-                                        {"type": "reply", "reply": {"id": "skin", "title": "Skin"}},
-                                        {"type": "reply", "reply": {"id": "hair", "title": "Hair"}},
-                                        {"type": "reply", "reply": {"id": "body", "title": "Body"}},
-                                    ]
-                                },
+                    headers_btn = {"Authorization": f"Bearer {access_token_btn}", "Content-Type": "application/json"}
+                    payload_btn = {
+                        "messaging_product": "whatsapp",
+                        "to": wa_id,
+                        "type": "interactive",
+                        "interactive": {
+                            "type": "button",
+                            "body": {"text": "Are your name and contact number correct? "},
+                            "action": {
+                                "buttons": [
+                                    {"type": "reply", "reply": {"id": "confirm_yes", "title": "Yes"}},
+                                    {"type": "reply", "reply": {"id": "confirm_no", "title": "No"}},
+                                ]
                             },
-                        }
-                        requests.post(get_messages_url(phone_id_btn), headers=headers_btn, json=payload_btn)
+                        },
+                    }
+                    requests.post(get_messages_url(phone_id_btn), headers=headers_btn, json=payload_btn)
             except Exception:
                 pass
-            return {"status": "welcome_and_treatment_sent", "message_id": message_id}
+            return {"status": "welcome_and_confirm_sent", "message_id": message_id}
         else:
             try:
                     print("[auto_webhook] mr_welcome send failed:", resp.status_code, resp.text[:500])
