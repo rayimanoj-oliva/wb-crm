@@ -162,12 +162,31 @@ async def trigger_zoho_lead_creation(
         
         description_parts.append(f"Status: {lead_status}")
         
+        # Name handling per requirement:
+        # - If only first name is present, treat it as Last_Name and leave First_Name empty
+        # - If both first and last are present, fill both accordingly
+        try:
+            import re as _re
+            tokens = [t for t in _re.split(r"\s+", (user_name or "").strip()) if t]
+        except Exception:
+            tokens = [(user_name or "").strip()] if (user_name or "").strip() else []
+
+        if len(tokens) >= 2:
+            first_name_val = tokens[0]
+            last_name_val = " ".join(tokens[1:])
+        elif len(tokens) == 1:
+            first_name_val = ""
+            last_name_val = tokens[0]
+        else:
+            first_name_val = ""
+            last_name_val = "Customer"
+
         # Simplified lead data without custom fields to avoid API errors
         lead_data = {
             "data": [
                 {
-                    "First_Name": user_name,
-                    "Last_Name": "",
+                    "First_Name": first_name_val,
+                    "Last_Name": last_name_val,
                     "Phone": phone_number,
                     "Email": getattr(customer, 'email', '') or '',
                     "Lead_Source": "WhatsApp Lead-to-Appointment Flow",

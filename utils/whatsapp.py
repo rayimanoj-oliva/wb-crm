@@ -11,11 +11,12 @@ from config.constants import get_messages_url
 import os
 from schemas.message_schema import MessageCreate
 from services import whatsapp_service, customer_service, message_service
+from services.followup_service import schedule_next_followup
 from utils.ws_manager import manager
 
 WHATSAPP_API_URL = "https://graph.facebook.com/v22.0/367633743092037/messages"
 
-async def send_message_to_waid(wa_id: str, message_body: str, db, from_wa_id="917729992376"):
+async def send_message_to_waid(wa_id: str, message_body: str, db, from_wa_id="917729992376", *, schedule_followup: bool = False, stage_label: str | None = None):
     token_obj = whatsapp_service.get_latest_token(db)
     if not token_obj:
         raise HTTPException(status_code=400, detail="Token not available")
@@ -49,6 +50,13 @@ async def send_message_to_waid(wa_id: str, message_body: str, db, from_wa_id="91
         customer_id=customer.id,
     )
     new_msg = message_service.create_message(db, message_data)
+
+    # Schedule a follow-up in 2 minutes for any outbound message unless explicitly disabled
+    try:
+        if schedule_followup:
+            schedule_next_followup(db, customer_id=customer.id, delay_minutes=2, stage_label=stage_label)
+    except Exception:
+        pass
     
     # Debug: Print message details to verify saving
     print(f"[send_message_to_waid] DEBUG - Outbound message saved:")

@@ -14,6 +14,8 @@ from schemas.message_schema import MessageCreate
 from starlette.responses import PlainTextResponse
 from controllers.web_socket import VERIFY_TOKEN
 from utils.ws_manager import manager
+from services.followup_service import mark_customer_replied
+from services.followup_service import schedule_next_followup
 from utils.whatsapp import send_message_to_waid
 import re
 
@@ -290,6 +292,11 @@ async def whatsapp_auto_welcome_webhook(request: Request, db: Session = Depends(
                 customer_id=customer.id,
             )
             message_service.create_message(db, inbound)
+            # Mark customer replied and clear any pending follow-up
+            try:
+                mark_customer_replied(db, customer_id=customer.id)
+            except Exception:
+                pass
             db.commit()  # Explicitly commit the transaction
             try:
                 # Broadcast inbound to websocket clients
@@ -463,6 +470,14 @@ async def whatsapp_auto_welcome_webhook(request: Request, db: Session = Depends(
                 )
                 message_service.create_message(db, tpl_message)
                 db.commit()  # Explicitly commit the transaction
+                # Schedule follow-up 1 window only for mr_welcome
+                try:
+                    from services.customer_service import get_customer_record_by_wa_id as _get_c
+                    cust = _get_c(db, wa_id)
+                    if cust:
+                        schedule_next_followup(db, customer_id=cust.id, delay_minutes=2, stage_label="mr_welcome_sent")
+                except Exception:
+                    pass
                 try:
                     # Broadcast template send event to websocket clients
                     await manager.broadcast({

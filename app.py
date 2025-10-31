@@ -33,6 +33,10 @@ from database.db import SessionLocal, engine, get_db
 from models import models
 from schemas.token_schema import Token
 from automation.controller import router as automation_router
+import asyncio
+from datetime import datetime, timedelta
+from services.followup_service import due_customers_for_followup, FOLLOW_UP_2_TEXT, send_followup1_interactive
+from utils.whatsapp import send_message_to_waid
 
 
 models.Base.metadata.create_all(bind=engine)
@@ -102,4 +106,56 @@ def seed_catalog_on_startup():
         seed_zoho_mappings()
     finally:
         db.close()
+
+
+@app.on_event("startup")
+async def start_followup_scheduler():
+    async def _runner():
+        while True:
+            db = SessionLocal()
+            try:
+                customers = due_customers_for_followup(db)
+                for c in customers:
+                    try:
+                        # Decide which follow-up to send based on last_message_type
+                        if (c.last_message_type or "").lower() == "follow_up_1_sent":
+                            # Only send Follow-Up 2 if NO replies since Follow-Up 1
+                            # infer follow-up 1 sent time as next_followup_time - 5 minutes
+                            fu1_sent_at = (c.next_followup_time - timedelta(minutes=5)) if c.next_followup_time else None
+                            if fu1_sent_at and c.last_interaction_time and c.last_interaction_time >= fu1_sent_at:
+                                # user replied after Follow-Up 1; skip Follow-Up 2
+                                c.next_followup_time = None
+                                db.add(c)
+                                db.commit()
+                                continue
+                            # Send Follow-Up 2 and create a lead with available details
+                            await send_message_to_waid(c.wa_id, FOLLOW_UP_2_TEXT, db, schedule_followup=False, stage_label="follow_up_2_sent")
+                            # Create lead with available details
+                            try:
+                                from services import customer_service
+                                customer = customer_service.get_customer_record_by_wa_id(db, c.wa_id)
+                            except Exception:
+                                customer = c
+                            try:
+                                from controllers.components.lead_appointment_flow.zoho_integration import trigger_zoho_lead_creation
+                                await trigger_zoho_lead_creation(db, wa_id=c.wa_id, customer=customer, lead_status="CALL_INITIATED")
+                            except Exception:
+                                pass
+                            # Done with follow-ups
+                            c.next_followup_time = None
+                            c.last_message_type = "follow_up_2_sent"
+                        else:
+                            # Send Follow-Up 1 (interactive Yes/No) and schedule Follow-Up 2 in 5 minutes
+                            await send_followup1_interactive(db, wa_id=c.wa_id)
+                            # send_followup1_interactive already schedules 5 minutes and sets label
+                        db.add(c)
+                        db.commit()
+                    except Exception:
+                        db.rollback()
+                        pass
+            finally:
+                db.close()
+            await asyncio.sleep(30)
+
+    asyncio.create_task(_runner())
 

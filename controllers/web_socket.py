@@ -918,6 +918,11 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 )
                 message_service.create_message(db, inbound_text_msg)
                 db.commit()  # Explicitly commit the transaction
+                try:
+                    from services.followup_service import mark_customer_replied as _mark_replied
+                    _mark_replied(db, customer_id=customer.id)
+                except Exception:
+                    pass
                 print(f"[ws_webhook] DEBUG - Inbound text message saved to database:")
                 print(f"  - Message ID: {message_id}")
                 print(f"  - From: {from_wa_id}")
@@ -1669,6 +1674,91 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         except Exception:
                             pass
                         return {"status": "list_sent", "message_id": message_id}
+            except Exception:
+                pass
+
+            # Follow-Up 1: User tapped Yes → trigger welcome and confirmation flow
+            try:
+                if i_type == "button_reply":
+                    button_reply = interactive.get("button_reply", {})
+                    button_id = (button_reply.get("id", "") or "").strip().lower()
+                    if button_id == "followup_yes":
+                        # Clear any pending follow-up timers and reset state so new inactivity starts with Follow-Up 1
+                        try:
+                            from services.followup_service import mark_customer_replied as _mark_replied
+                            _mark_replied(db, customer_id=customer.id)
+                        except Exception:
+                            pass
+                        from services.whatsapp_service import get_latest_token as _get_token
+                        token_entry2 = _get_token(db)
+                        if token_entry2 and token_entry2.token:
+                            access_token2 = token_entry2.token
+                            phone_id2 = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+                            lang_code2 = os.getenv("WELCOME_TEMPLATE_LANG", "en_US")
+
+                            # Send mr_welcome template
+                            from controllers.auto_welcome_controller import _send_template as _send_tpl
+                            body_components2 = [{
+                                "type": "body",
+                                "parameters": [
+                                    {"type": "text", "text": (sender_name or wa_id or "there")}
+                                ]
+                            }]
+                            _send_tpl(
+                                wa_id=wa_id,
+                                template_name="mr_welcome",
+                                access_token=access_token2,
+                                phone_id=phone_id2,
+                                components=body_components2,
+                                lang_code=lang_code2,
+                            )
+
+                            # Schedule follow-up only for mr_welcome
+                            try:
+                                from services.followup_service import schedule_next_followup as _schedule
+                                _schedule(db, customer_id=customer.id, delay_minutes=2, stage_label="mr_welcome_sent")
+                            except Exception:
+                                pass
+
+                            # Send name/phone confirmation prompt
+                            try:
+                                from services.customer_service import get_customer_record_by_wa_id
+                                customer_rec = get_customer_record_by_wa_id(db, wa_id)
+                                display_name = (customer_rec.name.strip() if customer_rec and isinstance(customer_rec.name, str) else None) or "there"
+                                import re as _re
+                                digits = _re.sub(r"\D", "", wa_id)
+                                last10 = digits[-10:] if len(digits) >= 10 else None
+                                display_phone = f"+91{last10}" if last10 and len(last10) == 10 else wa_id
+                            except Exception:
+                                display_name = "there"
+                                display_phone = wa_id
+
+                            from utils.whatsapp import send_message_to_waid as _send_text
+                            await _send_text(wa_id, f"To help us serve you better, please confirm your contact details:\n*{display_name}*\n*{display_phone}*", db)
+
+                            # Send Yes/No buttons for confirmation
+                            token_entry_btn = _get_token(db)
+                            if token_entry_btn and token_entry_btn.token:
+                                access_token_btn = token_entry_btn.token
+                                phone_id_btn = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+                                headers_btn = {"Authorization": f"Bearer {access_token_btn}", "Content-Type": "application/json"}
+                                payload_btn = {
+                                    "messaging_product": "whatsapp",
+                                    "to": wa_id,
+                                    "type": "interactive",
+                                    "interactive": {
+                                        "type": "button",
+                                        "body": {"text": "Are your name and contact number correct? "},
+                                        "action": {
+                                            "buttons": [
+                                                {"type": "reply", "reply": {"id": "confirm_yes", "title": "Yes"}},
+                                                {"type": "reply", "reply": {"id": "confirm_no", "title": "No"}},
+                                            ]
+                                        },
+                                    },
+                                }
+                                requests.post(get_messages_url(phone_id_btn), headers=headers_btn, json=payload_btn)
+                        return {"status": "followup_yes_flow_started", "message_id": message_id}
             except Exception:
                 pass
 

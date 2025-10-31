@@ -161,6 +161,15 @@ async def run_treament_flow(
                             })
                         except Exception:
                             pass
+                        # Schedule follow-up only for mr_welcome
+                        try:
+                            from services.followup_service import schedule_next_followup as _schedule
+                            from services.customer_service import get_customer_record_by_wa_id as _get_c
+                            _cust = _get_c(db, wa_id)
+                            if _cust:
+                                _schedule(db, customer_id=_cust.id, delay_minutes=2, stage_label="mr_welcome_sent")
+                        except Exception:
+                            pass
 
                         # Do NOT send mr_treatment here; it will be sent after city selection
 
@@ -612,6 +621,15 @@ async def run_appointment_buttons_flow(
                         "✅ Thank you! Our team will call and confirm your appointment shortly.",
                         db,
                     )
+                    # Stop any follow-ups for completed flow
+                    try:
+                        from services.followup_service import mark_customer_replied as _mark_replied
+                        from services.customer_service import get_customer_record_by_wa_id as _get_cust
+                        _cust = _get_cust(db, wa_id)
+                        if _cust:
+                            _mark_replied(db, customer_id=_cust.id)
+                    except Exception:
+                        pass
                     # Clear state
                     try:
                         if wa_id in appointment_state:
@@ -641,6 +659,15 @@ async def run_appointment_buttons_flow(
                     "📌 Thank you for your interest! One of our team members will contact you shortly to assist further.",
                     db,
                 )
+                # Stop any follow-ups for completed flow
+                try:
+                    from services.followup_service import mark_customer_replied as _mark_replied
+                    from services.customer_service import get_customer_record_by_wa_id as _get_cust
+                    _cust = _get_cust(db, wa_id)
+                    if _cust:
+                        _mark_replied(db, customer_id=_cust.id)
+                except Exception:
+                    pass
                 
                 # Create lead in Zoho for callback request
                 try:

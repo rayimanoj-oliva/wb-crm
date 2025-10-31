@@ -100,6 +100,10 @@ class Customer(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow)
     last_message_at = Column(DateTime, nullable=True)
+    # Follow-up automation tracking
+    last_interaction_time = Column(DateTime, nullable=True)
+    last_message_type = Column(String(50), nullable=True)
+    next_followup_time = Column(DateTime, nullable=True)
 
     # Relations
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
