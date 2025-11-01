@@ -119,7 +119,24 @@ async def handle_text_message(
     
     # Check for auto-welcome triggers
     # Normalize text: lowercase, normalize whitespace, remove trailing periods
-    normalized_text = ' '.join(body_text.lower().strip().rstrip('.').split())
+    # Also handle special characters and Unicode variations
+    try:
+        # Normalize Unicode characters (e.g., smart quotes, apostrophes)
+        import unicodedata
+        body_text_normalized = unicodedata.normalize('NFKC', body_text)
+        # Replace various apostrophe/quote characters with standard apostrophe
+        body_text_normalized = body_text_normalized.replace("'", "'").replace("'", "'").replace("'", "'")
+        body_text_normalized = body_text_normalized.replace(""", '"').replace(""", '"')
+    except Exception:
+        # Fallback if unicodedata not available
+        body_text_normalized = body_text.replace("'", "'").replace("'", "'")
+    
+    normalized_text = ' '.join(body_text_normalized.lower().strip().rstrip('.').split())
+    
+    # Debug logging for server troubleshooting
+    print(f"[lead_appointment_flow] DEBUG - handle_text_message called: wa_id={wa_id}")
+    print(f"[lead_appointment_flow] DEBUG - Original body_text (first 150 chars): '{body_text[:150]}'")
+    print(f"[lead_appointment_flow] DEBUG - Normalized text (first 150 chars): '{normalized_text[:150]}'")
     
     # Specific starting point messages from WhatsApp links
     # These are the exact messages that come from WhatsApp links when customers click them
