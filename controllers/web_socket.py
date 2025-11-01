@@ -810,9 +810,45 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
 
         # Address flow gating removed to allow other flows to proceed after "Provide Address"
 
-        # 3️⃣ AUTO WELCOME VALIDATION - extracted to component function
+        # 3️⃣ LEAD-TO-APPOINTMENT FLOW - handle Meta ad triggered flows FIRST (priority check)
+        # Check for starting point messages before treatment flow to give lead appointment flow priority
         handled_text = False
-        if message_type == "text":
+        if message_type == "text" and body_text:
+            # Quick check for lead appointment starting point patterns
+            normalized_check = ' '.join(body_text.lower().strip().rstrip('.').split())
+            is_lead_starting_point = (
+                "i saw your ad for oliva's" in normalized_check 
+                and "want to know more" in normalized_check
+            ) or normalized_check in [
+                "hi! i saw your ad for oliva's hair regrowth treatments and want to know more",
+                "hi! i saw your ad for oliva's precision+ laser hair reduction and want to know more",
+                "hi! i saw your ad for oliva's skin brightening treatments and want to know more",
+                "hi! i saw your ad for oliva's acne & scar treatments and want to know more",
+                "hi! i saw your ad for oliva's skin boosters and want to know more",
+            ]
+            
+            if is_lead_starting_point:
+                # Lead appointment flow has priority - skip treatment flow for these messages
+                lead_result = await run_lead_appointment_flow(
+                    db,
+                    wa_id=wa_id,
+                    message_type=message_type,
+                    message_id=message_id,
+                    from_wa_id=from_wa_id,
+                    to_wa_id=to_wa_id,
+                    body_text=body_text,
+                    timestamp=timestamp,
+                    customer=customer,
+                    interactive=interactive,
+                    i_type=i_type,
+                )
+                lead_status = (lead_result or {}).get("status")
+                if lead_status not in {"skipped", "error"}:
+                    return lead_result
+                handled_text = lead_status in {"auto_welcome_sent", "proceed_to_city_selection", "proceed_to_clinic_location", "proceed_to_time_slot", "waiting_for_custom_date", "callback_initiated", "lead_created_no_callback", "thank_you_sent", "week_list_sent", "day_list_sent", "time_slots_sent", "times_sent"}
+
+        # 3️⃣ AUTO WELCOME VALIDATION - extracted to component function
+        if not handled_text and message_type == "text":
             result = await run_treament_flow(
                 db,
                 message_type=message_type,
@@ -831,7 +867,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 return result
             handled_text = status_val in {"handled"}
 
-        # 3️⃣ LEAD-TO-APPOINTMENT FLOW - handle Meta ad triggered flows
+        # 3️⃣ LEAD-TO-APPOINTMENT FLOW - handle other lead appointment triggers
         if not handled_text:
             lead_result = await run_lead_appointment_flow(
                 db,

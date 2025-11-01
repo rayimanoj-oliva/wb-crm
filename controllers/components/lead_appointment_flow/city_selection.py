@@ -211,16 +211,17 @@ async def handle_city_selection(
         print(f"[lead_appointment_flow] WARNING - Could not store city selection: {e}")
     
     # Determine flow context
+    # Priority: Check lead_appointment_state first (for lead appointment flow), then appointment_state (for treatment flow)
     context = None
     try:
-        from controllers.web_socket import appointment_state as _appt_state
-        context = ((_appt_state.get(wa_id) or {}).get("flow_context"))
+        from controllers.web_socket import lead_appointment_state as _lead_state
+        context = ((_lead_state.get(wa_id) or {}).get("flow_context"))
     except Exception:
         context = None
     if not context:
         try:
-            from controllers.web_socket import lead_appointment_state as _lead_state
-            context = ((_lead_state.get(wa_id) or {}).get("flow_context"))
+            from controllers.web_socket import appointment_state as _appt_state
+            context = ((_appt_state.get(wa_id) or {}).get("flow_context"))
         except Exception:
             context = None
 
@@ -405,6 +406,9 @@ async def handle_city_selection(
 
     # Lead appointment flow: proceed to clinic selection
     else:
+        # Send confirmation message for lead appointment flow
+        await send_message_to_waid(wa_id, f"✅ Great! You selected {selected_city}.", db)
+        
         from .clinic_location import send_clinic_location
         # Normalize city for clinic mapping (e.g., Bangalore -> Bengaluru)
         city_for_clinic = selected_city
