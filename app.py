@@ -1,10 +1,27 @@
 # app.py
+import logging
+import sys
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from datetime import timedelta
 
 import consumer
+
+# Configure logging to ensure messages appear in server logs
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)  # Explicitly use stdout
+    ],
+    force=True  # Override any existing configuration
+)
+# Ensure stdout is unbuffered
+sys.stdout.reconfigure(line_buffering=True) if hasattr(sys.stdout, 'reconfigure') else None
+
+# Create logger for this module
+logger = logging.getLogger(__name__)
 from media import media_controller
 from zenoti.zenoti_controller import router as zenoti_router
 from starlette.middleware.cors import CORSMiddleware
@@ -116,18 +133,19 @@ async def start_followup_scheduler():
     from services.followup_service import acquire_followup_lock, release_followup_lock
     
     async def _runner():
+        scheduler_logger = logging.getLogger("followup_scheduler")
         iteration = 0
         while True:
             db = None
             try:
                 iteration += 1
-                print(f"[followup_scheduler] INFO - Starting iteration {iteration}")
+                scheduler_logger.info(f"Starting iteration {iteration}")
                 
                 db = SessionLocal()
                 customers = due_customers_for_followup(db)
                 
                 if customers:
-                    print(f"[followup_scheduler] INFO - Found {len(customers)} customer(s) due for follow-up")
+                    scheduler_logger.info(f"Found {len(customers)} customer(s) due for follow-up")
                 else:
                     # Enhanced debugging every 10 iterations to reduce log noise
                     if iteration % 10 == 0:
@@ -144,11 +162,11 @@ async def start_followup_scheduler():
                                 Customer.next_followup_time.isnot(None),
                                 Customer.next_followup_time <= now
                             ).count()
-                            print(f"[followup_scheduler] DEBUG - Current UTC time: {now}")
-                            print(f"[followup_scheduler] DEBUG - {total_scheduled} customer(s) have follow-up scheduled")
-                            print(f"[followup_scheduler] DEBUG - {past_count} due now, {future_count} in the future")
+                            scheduler_logger.debug(f"Current UTC time: {now}")
+                            scheduler_logger.debug(f"{total_scheduled} customer(s) have follow-up scheduled")
+                            scheduler_logger.debug(f"{past_count} due now, {future_count} in the future")
                             if past_count > 0:
-                                print(f"[followup_scheduler] WARNING - Found {past_count} due customers but query returned 0 - possible timezone issue!")
+                                scheduler_logger.warning(f"Found {past_count} due customers but query returned 0 - possible timezone issue!")
                 
                 for c in customers:
                     lock_value = None
@@ -156,10 +174,10 @@ async def start_followup_scheduler():
                         # Acquire distributed lock to prevent duplicate processing
                         lock_value = acquire_followup_lock(str(c.id))
                         if lock_value is None:
-                            print(f"[followup_scheduler] INFO - Skipping customer {c.id} (wa_id: {c.wa_id}) - already being processed")
+                            scheduler_logger.info(f"Skipping customer {c.id} (wa_id: {c.wa_id}) - already being processed")
                             continue
                         
-                        print(f"[followup_scheduler] INFO - Processing follow-up for customer {c.id} (wa_id: {c.wa_id})")
+                        scheduler_logger.info(f"Processing follow-up for customer {c.id} (wa_id: {c.wa_id})")
                         
                         # Decide which follow-up to send based on last_message_type
                         if (c.last_message_type or "").lower() == "follow_up_1_sent":
@@ -171,7 +189,7 @@ async def start_followup_scheduler():
                                 c.next_followup_time = None
                                 db.add(c)
                                 db.commit()
-                                print(f"[followup_scheduler] INFO - Customer {c.wa_id} replied after Follow-Up 1, skipping Follow-Up 2")
+                                scheduler_logger.info(f"Customer {c.wa_id} replied after Follow-Up 1, skipping Follow-Up 2")
                                 continue
                             
                             # Send Follow-Up 2 and create a lead with available details
@@ -182,14 +200,14 @@ async def start_followup_scheduler():
                                 from services import customer_service
                                 customer = customer_service.get_customer_record_by_wa_id(db, c.wa_id)
                             except Exception as e:
-                                print(f"[followup_scheduler] WARNING - Could not get customer record: {e}")
+                                scheduler_logger.warning(f"Could not get customer record: {e}")
                                 customer = c
                             
                             try:
                                 from controllers.components.lead_appointment_flow.zoho_integration import trigger_zoho_lead_creation
                                 await trigger_zoho_lead_creation(db, wa_id=c.wa_id, customer=customer, lead_status="CALL_INITIATED")
                             except Exception as e:
-                                print(f"[followup_scheduler] WARNING - Could not create Zoho lead: {e}")
+                                scheduler_logger.warning(f"Could not create Zoho lead: {e}")
                         else:
                             # Send Follow-Up 1 (interactive Yes/No) and schedule Follow-Up 2 in 5 minutes
                             await send_followup1_interactive(db, wa_id=c.wa_id)
@@ -197,12 +215,10 @@ async def start_followup_scheduler():
                         
                         db.add(c)
                         db.commit()
-                        print(f"[followup_scheduler] INFO - Successfully processed follow-up for customer {c.wa_id}")
+                        scheduler_logger.info(f"Successfully processed follow-up for customer {c.wa_id}")
                         
                     except Exception as e:
-                        print(f"[followup_scheduler] ERROR - Failed to process follow-up for customer {c.id if c else 'unknown'}: {e}")
-                        import traceback
-                        traceback.print_exc()
+                        scheduler_logger.error(f"Failed to process follow-up for customer {c.id if c else 'unknown'}: {e}", exc_info=True)
                         if db:
                             db.rollback()
                     finally:
@@ -218,9 +234,7 @@ async def start_followup_scheduler():
                 await asyncio.sleep(30)
                 
             except Exception as e:
-                print(f"[followup_scheduler] ERROR - Critical error in scheduler: {e}")
-                import traceback
-                traceback.print_exc()
+                scheduler_logger.error(f"Critical error in scheduler: {e}", exc_info=True)
                 if db:
                     try:
                         db.close()
@@ -230,6 +244,6 @@ async def start_followup_scheduler():
                 # Wait before retrying after error
                 await asyncio.sleep(30)
 
-    print("[followup_scheduler] INFO - Starting follow-up scheduler background task")
+    logger.info("Starting follow-up scheduler background task")
     asyncio.create_task(_runner())
 
