@@ -35,7 +35,7 @@ from schemas.token_schema import Token
 from automation.controller import router as automation_router
 import asyncio
 from datetime import datetime, timedelta
-from services.followup_service import due_customers_for_followup, FOLLOW_UP_2_TEXT, send_followup1_interactive
+from services.followup_service import due_customers_for_followup, FOLLOW_UP_2_TEXT, send_followup1_interactive, send_followup2
 from utils.whatsapp import send_message_to_waid
 
 
@@ -129,7 +129,7 @@ async def start_followup_scheduler():
                                 db.commit()
                                 continue
                             # Send Follow-Up 2 and create a lead with available details
-                            await send_message_to_waid(c.wa_id, FOLLOW_UP_2_TEXT, db, schedule_followup=False, stage_label="follow_up_2_sent")
+                            await send_followup2(db, wa_id=c.wa_id)
                             # Create lead with available details
                             try:
                                 from services import customer_service
@@ -141,9 +141,6 @@ async def start_followup_scheduler():
                                 await trigger_zoho_lead_creation(db, wa_id=c.wa_id, customer=customer, lead_status="CALL_INITIATED")
                             except Exception:
                                 pass
-                            # Done with follow-ups
-                            c.next_followup_time = None
-                            c.last_message_type = "follow_up_2_sent"
                         else:
                             # Send Follow-Up 1 (interactive Yes/No) and schedule Follow-Up 2 in 5 minutes
                             await send_followup1_interactive(db, wa_id=c.wa_id)

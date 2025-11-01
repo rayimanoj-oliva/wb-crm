@@ -322,7 +322,15 @@ async def whatsapp_auto_welcome_webhook(request: Request, db: Session = Depends(
         print(f"[auto_webhook] DEBUG - has_phone: {has_phone}")
         print(f"[auto_webhook] DEBUG - has_name_keywords: {has_name_keywords}")
         
-        if message_type == "text" and (has_phone or has_name_keywords):
+        # Only validate contact details when we're explicitly awaiting them (after confirm_no)
+        waiting_details = False
+        try:
+            from controllers.web_socket import lead_appointment_state as _lead_state  # type: ignore
+            waiting_details = ((_lead_state.get(wa_id) or {}).get("waiting_for_user_details") is True)
+        except Exception:
+            waiting_details = False
+
+        if message_type == "text" and waiting_details and (has_phone or has_name_keywords):
             print(f"[auto_webhook] DEBUG - Triggering contact verification")
             verification = _verify_contact_with_openai(body_text)
             print(f"[auto_webhook] DEBUG - Verification result: {verification}")

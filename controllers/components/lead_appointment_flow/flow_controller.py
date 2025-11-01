@@ -117,13 +117,76 @@ async def handle_text_message(
     3. General text responses
     """
     
-    # Check for auto-welcome triggers (excluding hi/hello to avoid conflicts with treatment flow)
-    normalized_text = body_text.lower().strip()
+    # Check for auto-welcome triggers
+    # Normalize text: lowercase, normalize whitespace, remove trailing periods
+    normalized_text = ' '.join(body_text.lower().strip().rstrip('.').split())
+    
+    # Specific starting point messages from WhatsApp links with concern mappings
+    # Map each message to its corresponding Zoho concern
+    link_starting_points_map = {
+        "hi! i saw your ad for oliva's hair regrowth treatments and want to know more": "Hair Loss / PRP",
+        "hi! i saw your ad for oliva's precision+ laser hair reduction and want to know more": "LHR",
+        "hi! i saw your ad for oliva's skin brightening treatments and want to know more": "LT",
+        "hi! i saw your ad for oliva's acne & scar treatments and want to know more": "Scars",
+        "hi! i saw your ad for oliva's skin boosters and want to know more": "Anti ageing",
+    }
+    
+    # List of starting point messages for pattern matching
+    link_starting_points = list(link_starting_points_map.keys())
+    
+    # Also check for messages that contain the key pattern "i saw your ad for oliva's" and "want to know more"
+    # This handles variations in punctuation, extra whitespace, etc.
+    has_link_pattern = (
+        "i saw your ad for oliva's" in normalized_text 
+        and "want to know more" in normalized_text
+    )
+    
+    # Generic keyword triggers (fallback for older behavior)
     welcome_triggers = [
         "book", "appointment", "inquire", "inquiry", "consultation", "visit", "schedule"
     ]
     
-    if any(trigger in normalized_text for trigger in welcome_triggers):
+    # Check if message matches any starting point message (exact match after normalization)
+    is_starting_point = normalized_text in link_starting_points
+    
+    # Detect concern from starting point message
+    detected_concern = None
+    if is_starting_point:
+        # Exact match - get concern from map
+        detected_concern = link_starting_points_map.get(normalized_text)
+        print(f"[lead_appointment_flow] DEBUG - Detected exact starting point: {normalized_text}")
+        print(f"[lead_appointment_flow] DEBUG - Mapped concern: {detected_concern}")
+    elif has_link_pattern:
+        # Pattern match - try to detect which concern based on keywords
+        if "hair regrowth" in normalized_text:
+            detected_concern = "Hair Loss / PRP"
+        elif "laser hair reduction" in normalized_text or "precision+" in normalized_text:
+            detected_concern = "LHR"
+        elif "skin brightening" in normalized_text:
+            detected_concern = "LT"
+        elif "acne" in normalized_text or "scar" in normalized_text:
+            detected_concern = "Scars"
+        elif "skin boosters" in normalized_text:
+            detected_concern = "Anti ageing"
+        print(f"[lead_appointment_flow] DEBUG - Detected pattern match, concern: {detected_concern}")
+    
+    # Store concern in session state if detected
+    if detected_concern:
+        try:
+            from controllers.web_socket import lead_appointment_state
+            if wa_id not in lead_appointment_state:
+                lead_appointment_state[wa_id] = {}
+            lead_appointment_state[wa_id]["selected_concern"] = detected_concern
+            lead_appointment_state[wa_id]["zoho_mapped_concern"] = detected_concern
+            lead_appointment_state[wa_id]["flow_context"] = "lead_appointment"
+            print(f"[lead_appointment_flow] DEBUG - Stored concern '{detected_concern}' in session state for {wa_id}")
+        except Exception as e:
+            print(f"[lead_appointment_flow] WARNING - Could not store concern in session state: {e}")
+    
+    # Also check for generic triggers
+    has_generic_trigger = any(trigger in normalized_text for trigger in welcome_triggers)
+    
+    if is_starting_point or has_link_pattern or has_generic_trigger:
         from .auto_welcome import send_auto_welcome_message
         result = await send_auto_welcome_message(db, wa_id=wa_id)
         return {"status": "auto_welcome_sent", "result": result}

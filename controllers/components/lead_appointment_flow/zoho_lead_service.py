@@ -507,11 +507,20 @@ async def create_lead_for_appointment(
         print(f"🚀 [LEAD APPOINTMENT FLOW] Calling Zoho lead service...")
         
         # Split user name into first and last name
+        # Logic: If customer has only first name (no space) → treat it as last name, leave first name empty
+        #        If customer has both first and last name (has space) → use both
         name_parts = user_name.strip().split(' ', 1)
-        first_name = name_parts[0] if name_parts else "Customer"
-        last_name = name_parts[1] if len(name_parts) > 1 else "Lead"
         
-        print(f"👤 [LEAD APPOINTMENT FLOW] Name split - First: {first_name}, Last: {last_name}")
+        if len(name_parts) == 1:
+            # Only first name provided - treat it as last name, leave first name empty
+            first_name = ""
+            last_name = name_parts[0] if name_parts else "Customer"
+        else:
+            # Both first and last name provided - use both
+            first_name = name_parts[0] if name_parts else ""
+            last_name = name_parts[1] if len(name_parts) > 1 else ""
+        
+        print(f"👤 [LEAD APPOINTMENT FLOW] Name mapping - Original: '{user_name}', First: '{first_name}', Last: '{last_name}'")
         
         result = zoho_lead_service.create_lead(
             first_name=first_name,

@@ -1,0 +1,33 @@
+# CURL COMMANDS TO TEST LEAD APPOINTMENT FLOW STARTING POINTS
+# Update BASE_URL with your server URL (e.g., http://localhost:8000 or https://your-domain.com)
+
+# ============================================================
+# 1. HAIR REGROWTH TREATMENTS
+# ============================================================
+
+curl -X POST "http://localhost:8000/ws/webhook" -H "Content-Type: application/json" -d "{\"object\":\"whatsapp_business_account\",\"entry\":[{\"id\":\"WHATSAPP_BUSINESS_ACCOUNT_ID\",\"changes\":[{\"value\":{\"messaging_product\":\"whatsapp\",\"metadata\":{\"display_phone_number\":\"917729992376\",\"phone_number_id\":\"367633743092037\"},\"contacts\":[{\"profile\":{\"name\":\"Test User\"},\"wa_id\":\"919876543210\"}],\"messages\":[{\"from\":\"919876543210\",\"id\":\"wamid.test123456789\",\"timestamp\":\"1234567890\",\"type\":\"text\",\"text\":{\"body\":\"Hi! I saw your ad for Oliva's Hair Regrowth treatments and want to know more.\"}}]},\"field\":\"messages\"}]}]}"
+
+# ============================================================
+# 2. PRECISION+ LASER HAIR REDUCTION
+# ============================================================
+
+curl -X POST "http://localhost:8000/ws/webhook" -H "Content-Type: application/json" -d "{\"object\":\"whatsapp_business_account\",\"entry\":[{\"id\":\"WHATSAPP_BUSINESS_ACCOUNT_ID\",\"changes\":[{\"value\":{\"messaging_product\":\"whatsapp\",\"metadata\":{\"display_phone_number\":\"917729992376\",\"phone_number_id\":\"367633743092037\"},\"contacts\":[{\"profile\":{\"name\":\"Test User\"},\"wa_id\":\"919876543211\"}],\"messages\":[{\"from\":\"919876543211\",\"id\":\"wamid.test123456790\",\"timestamp\":\"1234567891\",\"type\":\"text\",\"text\":{\"body\":\"Hi! I saw your ad for Oliva's Precision+ Laser Hair Reduction and want to know more.\"}}]},\"field\":\"messages\"}]}]}"
+
+# ============================================================
+# 3. SKIN BRIGHTENING TREATMENTS
+# ============================================================
+
+curl -X POST "http://localhost:8000/ws/webhook" -H "Content-Type: application/json" -d "{\"object\":\"whatsapp_business_account\",\"entry\":[{\"id\":\"WHATSAPP_BUSINESS_ACCOUNT_ID\",\"changes\":[{\"value\":{\"messaging_product\":\"whatsapp\",\"metadata\":{\"display_phone_number\":\"917729992376\",\"phone_number_id\":\"367633743092037\"},\"contacts\":[{\"profile\":{\"name\":\"Test User\"},\"wa_id\":\"919876543212\"}],\"messages\":[{\"from\":\"919876543212\",\"id\":\"wamid.test123456791\",\"timestamp\":\"1234567892\",\"type\":\"text\",\"text\":{\"body\":\"Hi! I saw your ad for Oliva's Skin Brightening treatments and want to know more.\"}}]},\"field\":\"messages\"}]}]}"
+
+# ============================================================
+# 4. ACNE & SCAR TREATMENTS
+# ============================================================
+
+curl -X POST "http://localhost:8000/ws/webhook" -H "Content-Type: application/json" -d "{\"object\":\"whatsapp_business_account\",\"entry\":[{\"id\":\"WHATSAPP_BUSINESS_ACCOUNT_ID\",\"changes\":[{\"value\":{\"messaging_product\":\"whatsapp\",\"metadata\":{\"display_phone_number\":\"917729992376\",\"phone_number_id\":\"367633743092037\"},\"contacts\":[{\"profile\":{\"name\":\"Test User\"},\"wa_id\":\"919876543213\"}],\"messages\":[{\"from\":\"919876543213\",\"id\":\"wamid.test123456792\",\"timestamp\":\"1234567893\",\"type\":\"text\",\"text\":{\"body\":\"Hi! I saw your ad for Oliva's acne & scar treatments and want to know more.\"}}]},\"field\":\"messages\"}]}]}"
+
+# ============================================================
+# 5. SKIN BOOSTERS
+# ============================================================
+
+curl -X POST "http://localhost:8000/ws/webhook" -H "Content-Type: application/json" -d "{\"object\":\"whatsapp_business_account\",\"entry\":[{\"id\":\"WHATSAPP_BUSINESS_ACCOUNT_ID\",\"changes\":[{\"value\":{\"messaging_product\":\"whatsapp\",\"metadata\":{\"display_phone_number\":\"917729992376\",\"phone_number_id\":\"367633743092037\"},\"contacts\":[{\"profile\":{\"name\":\"Test User\"},\"wa_id\":\"919876543214\"}],\"messages\":[{\"from\":\"919876543214\",\"id\":\"wamid.test123456793\",\"timestamp\":\"1234567894\",\"type\":\"text\",\"text\":{\"body\":\"Hi! I saw your ad for Oliva's Skin Boosters and want to know more.\"}}]},\"field\":\"messages\"}]}]}"
+
