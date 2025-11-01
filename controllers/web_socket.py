@@ -1006,28 +1006,60 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 db.commit()  # Explicitly commit the transaction
                 
                 # Only mark customer as replied if they have previous OUTBOUND messages from us
-                # This prevents clearing follow-ups for initial conversation-starting messages
-                # The follow-up will be scheduled AFTER this check, so we preserve it for initial messages
+                # AND the follow-up wasn't just scheduled (to avoid clearing follow-ups for initial messages)
                 try:
                     from services.followup_service import mark_customer_replied as _mark_replied
+                    from models.models import Customer
+                    from datetime import datetime as dt, timedelta
                     
-                    # Check if there are any outbound messages from us before this inbound message
-                    # Only mark as replied if they're actually replying to something we sent earlier
-                    our_phone = os.getenv("WHATSAPP_PHONE_ID", "917729992376")
-                    has_outbound_before = db.query(Message).filter(
-                        Message.customer_id == customer.id,
-                        Message.from_wa_id == our_phone,  # Messages we sent
-                        Message.timestamp < timestamp  # Before this inbound message
-                    ).first() is not None
+                    # Refresh customer object to get latest state
+                    db.refresh(customer)
                     
-                    if has_outbound_before:
-                        _mark_replied(db, customer_id=customer.id)
-                        print(f"[ws_webhook] DEBUG - Customer {wa_id} replied after our message - cleared follow-up")
+                    # Check if follow-up was just scheduled (within last 5 seconds) - don't clear if so
+                    just_scheduled = False
+                    if customer.next_followup_time:
+                        time_since_scheduled = (dt.utcnow() - customer.next_followup_time).total_seconds()
+                        # If follow-up is scheduled in the future (normal case), check when it was set
+                        # We look at last_message_type to see if it was just set
+                        if customer.last_message_type and "welcome" in customer.last_message_type.lower():
+                            # Follow-up was likely just scheduled by treatment flow
+                            # Only clear if there were outbound messages BEFORE this conversation started
+                            # Check for outbound messages at least 10 seconds before this inbound message
+                            # (to avoid matching messages sent during this same conversation)
+                            time_threshold = timestamp - timedelta(seconds=10)
+                            our_phone = os.getenv("WHATSAPP_PHONE_ID", "917729992376")
+                            has_old_outbound = db.query(Message).filter(
+                                Message.customer_id == customer.id,
+                                Message.from_wa_id == our_phone,
+                                Message.timestamp < time_threshold  # Old messages from before this conversation
+                            ).first() is not None
+                            
+                            if has_old_outbound:
+                                _mark_replied(db, customer_id=customer.id)
+                                print(f"[ws_webhook] DEBUG - Customer {wa_id} replied after our previous message - cleared follow-up")
+                            else:
+                                print(f"[ws_webhook] DEBUG - Customer {wa_id} initial message in new conversation - preserving follow-up scheduled at {customer.next_followup_time}")
+                        else:
+                            # Not a welcome flow - use normal logic
+                            our_phone = os.getenv("WHATSAPP_PHONE_ID", "917729992376")
+                            has_outbound_before = db.query(Message).filter(
+                                Message.customer_id == customer.id,
+                                Message.from_wa_id == our_phone,
+                                Message.timestamp < timestamp
+                            ).first() is not None
+                            
+                            if has_outbound_before:
+                                _mark_replied(db, customer_id=customer.id)
+                                print(f"[ws_webhook] DEBUG - Customer {wa_id} replied after our message - cleared follow-up")
+                            else:
+                                print(f"[ws_webhook] DEBUG - Customer {wa_id} initial message - preserving scheduled follow-up")
                     else:
-                        # This is an initial message - don't clear follow-up (it will be scheduled by treatment flow)
-                        print(f"[ws_webhook] DEBUG - Customer {wa_id} initial message - preserving scheduled follow-up")
+                        # No follow-up scheduled - no need to clear
+                        print(f"[ws_webhook] DEBUG - Customer {wa_id} - no follow-up scheduled, nothing to clear")
                 except Exception as e:
                     print(f"[ws_webhook] WARNING - Could not check if customer replied: {e}")
+                    import traceback
+                    traceback.print_exc()
                     # If error, default to NOT clearing follow-up for safety
                     pass
                 print(f"[ws_webhook] DEBUG - Inbound text message saved to database:")
