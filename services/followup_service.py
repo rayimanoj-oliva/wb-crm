@@ -130,10 +130,28 @@ def mark_customer_replied(db: Session, *, customer_id) -> None:
 
 def due_customers_for_followup(db: Session):
     now = datetime.utcnow()
-    return db.query(Customer).filter(
+    due = db.query(Customer).filter(
         Customer.next_followup_time.isnot(None),
         Customer.next_followup_time <= now
     ).all()
+    
+    # Enhanced debugging: show what we're looking for
+    if not due:
+        # Check total scheduled and show examples
+        total_scheduled = db.query(Customer).filter(Customer.next_followup_time.isnot(None)).count()
+        if total_scheduled > 0:
+            # Get a few examples of scheduled follow-ups
+            examples = db.query(Customer).filter(
+                Customer.next_followup_time.isnot(None)
+            ).limit(3).all()
+            print(f"[followup_service] DEBUG - Current UTC time: {now}")
+            print(f"[followup_service] DEBUG - Found {total_scheduled} customer(s) with follow-ups scheduled, but none are due yet")
+            for ex in examples:
+                time_diff = (ex.next_followup_time - now).total_seconds() if ex.next_followup_time else None
+                status = "PAST (due)" if time_diff and time_diff <= 0 else f"FUTURE ({int(time_diff/60)} min away)" if time_diff else "NULL"
+                print(f"[followup_service] DEBUG - Example: Customer {ex.wa_id} - next_followup_time: {ex.next_followup_time}, status: {status}")
+    
+    return due
 
 
 async def send_followup1_interactive(db: Session, *, wa_id: str, from_wa_id: str = "917729992376"):

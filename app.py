@@ -29,6 +29,7 @@ from seed_zoho_mappings import seed_zoho_mappings
 from flow_integration import router as flow_router
 from controllers.components.lead_appointment_flow.zoho_lead_api import router as zoho_leads_router
 from controllers.components.zoho_mapping_controller import router as zoho_mapping_router
+from controllers.followup_debug_controller import router as followup_debug_router
 from database.db import SessionLocal, engine, get_db
 from models import models
 from schemas.token_schema import Token
@@ -94,6 +95,7 @@ app.include_router(catalog_router, prefix="/catalog")
 app.include_router(flow_router, prefix="/flow")
 app.include_router(zoho_leads_router)
 app.include_router(zoho_mapping_router, prefix="/zoho-mappings")
+app.include_router(followup_debug_router)  # Debug endpoints for follow-ups
 
 
 
@@ -127,16 +129,26 @@ async def start_followup_scheduler():
                 if customers:
                     print(f"[followup_scheduler] INFO - Found {len(customers)} customer(s) due for follow-up")
                 else:
-                    # Debug: Check how many customers have next_followup_time set (for debugging)
-                    from models.models import Customer
-                    from datetime import datetime as dt
-                    total_scheduled = db.query(Customer).filter(Customer.next_followup_time.isnot(None)).count()
-                    if total_scheduled > 0:
-                        future_count = db.query(Customer).filter(
-                            Customer.next_followup_time.isnot(None),
-                            Customer.next_followup_time > dt.utcnow()
-                        ).count()
-                        print(f"[followup_scheduler] DEBUG - {total_scheduled} customer(s) have follow-up scheduled, {future_count} are in the future")
+                    # Enhanced debugging every 10 iterations to reduce log noise
+                    if iteration % 10 == 0:
+                        from models.models import Customer
+                        from datetime import datetime as dt
+                        total_scheduled = db.query(Customer).filter(Customer.next_followup_time.isnot(None)).count()
+                        if total_scheduled > 0:
+                            now = dt.utcnow()
+                            future_count = db.query(Customer).filter(
+                                Customer.next_followup_time.isnot(None),
+                                Customer.next_followup_time > now
+                            ).count()
+                            past_count = db.query(Customer).filter(
+                                Customer.next_followup_time.isnot(None),
+                                Customer.next_followup_time <= now
+                            ).count()
+                            print(f"[followup_scheduler] DEBUG - Current UTC time: {now}")
+                            print(f"[followup_scheduler] DEBUG - {total_scheduled} customer(s) have follow-up scheduled")
+                            print(f"[followup_scheduler] DEBUG - {past_count} due now, {future_count} in the future")
+                            if past_count > 0:
+                                print(f"[followup_scheduler] WARNING - Found {past_count} due customers but query returned 0 - possible timezone issue!")
                 
                 for c in customers:
                     lock_value = None
