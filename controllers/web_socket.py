@@ -2254,58 +2254,84 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             return {"status": "success", "message_id": message_id}
         
         # Handle free-form text in treatment flow to capture name/phone even if user skips buttons
+        # BUT: Only validate if message looks like name/phone input, not conversational text
         try:
             if message_type == "text":
                 st = appointment_state.get(wa_id) or {}
                 if bool(st.get("from_treatment_flow")) and not bool(st.get("awaiting_name")) and not bool(st.get("awaiting_phone")):
-                    name_res = validate_human_name(body_text)
-                    phone_res = validate_indian_phone(body_text)
-                    name_ok = bool(name_res.get("valid")) and bool(name_res.get("name"))
-                    phone_ok = bool(phone_res.get("valid")) and bool(phone_res.get("phone"))
-                    if name_ok and phone_ok:
-                        st["corrected_name"] = name_res.get("name").strip()
-                        st["corrected_phone"] = phone_res.get("phone")
-                        st["awaiting_name"] = False
-                        st["awaiting_phone"] = False
-                        appointment_state[wa_id] = st
-                        # Update local customer record with corrected details
-                        try:
-                            from services.customer_service import get_customer_record_by_wa_id, update_customer
-                            from schemas.customer_schema import CustomerUpdate
-                            cust = get_customer_record_by_wa_id(db, wa_id)
-                            if cust:
-                                # Normalize WA number to +91XXXXXXXXXX
-                                import re as _re
-                                wa_digits = _re.sub(r"\D", "", wa_id)
-                                wa_last10 = wa_digits[-10:] if len(wa_digits) >= 10 else wa_digits
-                                wa_norm = ("+91" + wa_last10) if len(wa_last10) == 10 else wa_id
-                            update_customer(db, cust.id, CustomerUpdate(
-                                name=name_res.get("name").strip(),
-                                phone_2=phone_res.get("phone"),
-                            ))
-                        except Exception:
-                            pass
-                        # After capturing both, go to city selection
-                        try:
-                            from controllers.components.lead_appointment_flow.city_selection import send_city_selection  # type: ignore
-                            result = await send_city_selection(db, wa_id=wa_id)
-                            return {"status": "proceed_to_city_selection", "message_id": message_id, "result": result}
-                        except Exception:
-                            return {"status": "failed_after_details", "message_id": message_id}
-                    elif name_ok and not phone_ok:
-                        st["corrected_name"] = name_res.get("name").strip()
-                        st["awaiting_name"] = False
-                        st["awaiting_phone"] = True
-                        appointment_state[wa_id] = st
-                        await send_message_to_waid(wa_id, f"Thanks {st['corrected_name']}! Now please share your number.", db)
-                        return {"status": "name_captured_awaiting_phone", "message_id": message_id}
-                    elif phone_ok and not name_ok:
-                        st["corrected_phone"] = phone_res.get("phone")
-                        st["awaiting_name"] = True
-                        st["awaiting_phone"] = False
-                        appointment_state[wa_id] = st
-                        await send_message_to_waid(wa_id, "Got your number. Please share your name (full name or first name).", db)
-                        return {"status": "phone_captured_awaiting_name", "message_id": message_id}
+                    # Check if message is conversational (contains common conversational phrases)
+                    # If so, skip validation - user should use Yes/No buttons instead
+                    conversational_indicators = [
+                        "thanks", "thank", "hi", "hello", "hey", "please", "share", 
+                        "your", "number", "want", "now", "need", "help", "ok", "okay"
+                    ]
+                    text_lower = body_text.lower()
+                    is_conversational = any(indicator in text_lower for indicator in conversational_indicators) and len(body_text.split()) > 5
+                    
+                    # Also check if it's clearly a request/question rather than name/phone input
+                    is_request = any(word in text_lower for word in ["share", "provide", "give", "send", "tell"])
+                    
+                    # Skip validation if message is clearly conversational or a request
+                    if is_conversational or is_request:
+                        # User is likely responding conversationally to Yes/No buttons
+                        # Don't validate as name/phone, let the normal flow handle it
+                        pass
+                    else:
+                        # Only validate if message looks like it might be name/phone input
+                        # Must be relatively short and not contain request words
+                        name_res = validate_human_name(body_text)
+                        phone_res = validate_indian_phone(body_text)
+                        name_ok = bool(name_res.get("valid")) and bool(name_res.get("name"))
+                        phone_ok = bool(phone_res.get("valid")) and bool(phone_res.get("phone"))
+                        if name_ok and phone_ok:
+                            st["corrected_name"] = name_res.get("name").strip()
+                            st["corrected_phone"] = phone_res.get("phone")
+                            st["awaiting_name"] = False
+                            st["awaiting_phone"] = False
+                            appointment_state[wa_id] = st
+                            # Update local customer record with corrected details
+                            try:
+                                from services.customer_service import get_customer_record_by_wa_id, update_customer
+                                from schemas.customer_schema import CustomerUpdate
+                                cust = get_customer_record_by_wa_id(db, wa_id)
+                                if cust:
+                                    # Normalize WA number to +91XXXXXXXXXX
+                                    import re as _re
+                                    wa_digits = _re.sub(r"\D", "", wa_id)
+                                    wa_last10 = wa_digits[-10:] if len(wa_digits) >= 10 else wa_digits
+                                    wa_norm = ("+91" + wa_last10) if len(wa_last10) == 10 else wa_id
+                                update_customer(db, cust.id, CustomerUpdate(
+                                    name=name_res.get("name").strip(),
+                                    phone_2=phone_res.get("phone"),
+                                ))
+                            except Exception:
+                                pass
+                            # After capturing both, go to city selection
+                            try:
+                                from controllers.components.lead_appointment_flow.city_selection import send_city_selection  # type: ignore
+                                result = await send_city_selection(db, wa_id=wa_id)
+                                return {"status": "proceed_to_city_selection", "message_id": message_id, "result": result}
+                            except Exception:
+                                return {"status": "failed_after_details", "message_id": message_id}
+                        elif name_ok and not phone_ok:
+                            # Only set awaiting_phone if the extracted name seems valid AND message is short (likely just a name)
+                            # Don't trigger if message is long/conversational
+                            if len(body_text.strip().split()) <= 5:
+                                st["corrected_name"] = name_res.get("name").strip()
+                                st["awaiting_name"] = False
+                                st["awaiting_phone"] = True
+                                appointment_state[wa_id] = st
+                                await send_message_to_waid(wa_id, f"Thanks {st['corrected_name']}! Now please share your number.", db)
+                                return {"status": "name_captured_awaiting_phone", "message_id": message_id}
+                        elif phone_ok and not name_ok:
+                            # Only set awaiting_name if the extracted phone seems valid AND message is short
+                            if len(body_text.strip().split()) <= 5:
+                                st["corrected_phone"] = phone_res.get("phone")
+                                st["awaiting_name"] = True
+                                st["awaiting_phone"] = False
+                                appointment_state[wa_id] = st
+                                await send_message_to_waid(wa_id, "Got your number. Please share your name (full name or first name).", db)
+                                return {"status": "phone_captured_awaiting_name", "message_id": message_id}
         except Exception:
             pass
         
@@ -2314,18 +2340,34 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             if message_type == "text":
                 st = appointment_state.get(wa_id) or {}
                 if bool(st.get("awaiting_name")):
-                    result = validate_human_name(body_text)
-                    if result.get("valid") and result.get("name"):
-                        # Save corrected name and clear awaiting_name; ask for phone next
-                        st["corrected_name"] = result.get("name").strip()
-                        st["awaiting_name"] = False
-                        st["awaiting_phone"] = True
-                        appointment_state[wa_id] = st
-                        await send_message_to_waid(wa_id, f"Thanks {st['corrected_name']}! Now please share your number.", db)
-                        return {"status": "name_captured_awaiting_phone", "message_id": message_id}
+                    # Check if message is conversational (not a name input)
+                    conversational_indicators = [
+                        "thanks", "thank", "hi", "hello", "hey", "please", "share", 
+                        "your", "number", "want", "now", "need", "help", "ok", "okay"
+                    ]
+                    text_lower = body_text.lower()
+                    is_conversational = any(indicator in text_lower for indicator in conversational_indicators) and len(body_text.split()) > 5
+                    is_request = any(word in text_lower for word in ["share", "provide", "give", "send", "tell"])
+                    
+                    # Skip validation if message is clearly conversational or a request
+                    if is_conversational or is_request:
+                        # User is responding conversationally, not providing a name
+                        # Don't validate - this shouldn't happen if awaiting_name is correctly set,
+                        # but if it does, just skip validation to avoid incorrect error messages
+                        pass
                     else:
-                        await send_message_to_waid(wa_id, "❌ That doesn't look like a valid name. Please send your full name or first name (letters only).", db)
-                        return {"status": "invalid_name", "message_id": message_id}
+                        result = validate_human_name(body_text)
+                        if result.get("valid") and result.get("name"):
+                            # Save corrected name and clear awaiting_name; ask for phone next
+                            st["corrected_name"] = result.get("name").strip()
+                            st["awaiting_name"] = False
+                            st["awaiting_phone"] = True
+                            appointment_state[wa_id] = st
+                            await send_message_to_waid(wa_id, f"Thanks {st['corrected_name']}! Now please share your number.", db)
+                            return {"status": "name_captured_awaiting_phone", "message_id": message_id}
+                        else:
+                            await send_message_to_waid(wa_id, "❌ That doesn't look like a valid name. Please send your full name or first name (letters only).", db)
+                            return {"status": "invalid_name", "message_id": message_id}
         except Exception:
             pass
 
