@@ -1004,10 +1004,31 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 )
                 message_service.create_message(db, inbound_text_msg)
                 db.commit()  # Explicitly commit the transaction
+                
+                # Only mark customer as replied if they have previous OUTBOUND messages from us
+                # This prevents clearing follow-ups for initial conversation-starting messages
+                # The follow-up will be scheduled AFTER this check, so we preserve it for initial messages
                 try:
                     from services.followup_service import mark_customer_replied as _mark_replied
-                    _mark_replied(db, customer_id=customer.id)
-                except Exception:
+                    
+                    # Check if there are any outbound messages from us before this inbound message
+                    # Only mark as replied if they're actually replying to something we sent earlier
+                    our_phone = os.getenv("WHATSAPP_PHONE_ID", "917729992376")
+                    has_outbound_before = db.query(Message).filter(
+                        Message.customer_id == customer.id,
+                        Message.from_wa_id == our_phone,  # Messages we sent
+                        Message.timestamp < timestamp  # Before this inbound message
+                    ).first() is not None
+                    
+                    if has_outbound_before:
+                        _mark_replied(db, customer_id=customer.id)
+                        print(f"[ws_webhook] DEBUG - Customer {wa_id} replied after our message - cleared follow-up")
+                    else:
+                        # This is an initial message - don't clear follow-up (it will be scheduled by treatment flow)
+                        print(f"[ws_webhook] DEBUG - Customer {wa_id} initial message - preserving scheduled follow-up")
+                except Exception as e:
+                    print(f"[ws_webhook] WARNING - Could not check if customer replied: {e}")
+                    # If error, default to NOT clearing follow-up for safety
                     pass
                 print(f"[ws_webhook] DEBUG - Inbound text message saved to database:")
                 print(f"  - Message ID: {message_id}")
