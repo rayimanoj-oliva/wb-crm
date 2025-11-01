@@ -94,17 +94,22 @@ def release_followup_lock(customer_id: str, lock_value: str) -> None:
 def schedule_next_followup(db: Session, *, customer_id, delay_minutes: int = 2, stage_label: Optional[str] = None) -> None:
     customer: Optional[Customer] = db.query(Customer).filter(Customer.id == customer_id).first()
     if not customer:
+        print(f"[followup_service] WARNING - Customer {customer_id} not found for scheduling follow-up")
         return
     # If a Follow-Up 1 wait window is already active, do not overwrite it with generic outbound scheduling
     if stage_label is None and (customer.last_message_type or "").lower() == "follow_up_1_sent" and customer.next_followup_time:
+        print(f"[followup_service] INFO - Skipping follow-up scheduling for customer {customer_id} - Follow-Up 1 already active")
         return
-    customer.next_followup_time = datetime.utcnow() + timedelta(minutes=delay_minutes)
+    followup_time = datetime.utcnow() + timedelta(minutes=delay_minutes)
+    customer.next_followup_time = followup_time
     if stage_label:
         customer.last_message_type = stage_label
     db.add(customer)
     try:
         db.commit()
-    except Exception:
+        print(f"[followup_service] INFO - Scheduled follow-up for customer {customer_id} (wa_id: {customer.wa_id}) at {followup_time}, stage_label: {stage_label}")
+    except Exception as e:
+        print(f"[followup_service] ERROR - Failed to commit follow-up schedule for customer {customer_id}: {e}")
         db.rollback()
 
 

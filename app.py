@@ -126,6 +126,17 @@ async def start_followup_scheduler():
                 
                 if customers:
                     print(f"[followup_scheduler] INFO - Found {len(customers)} customer(s) due for follow-up")
+                else:
+                    # Debug: Check how many customers have next_followup_time set (for debugging)
+                    from models.models import Customer
+                    from datetime import datetime as dt
+                    total_scheduled = db.query(Customer).filter(Customer.next_followup_time.isnot(None)).count()
+                    if total_scheduled > 0:
+                        future_count = db.query(Customer).filter(
+                            Customer.next_followup_time.isnot(None),
+                            Customer.next_followup_time > dt.utcnow()
+                        ).count()
+                        print(f"[followup_scheduler] DEBUG - {total_scheduled} customer(s) have follow-up scheduled, {future_count} are in the future")
                 
                 for c in customers:
                     lock_value = None

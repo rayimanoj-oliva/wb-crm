@@ -168,8 +168,13 @@ async def run_treament_flow(
                             _cust = _get_c(db, wa_id)
                             if _cust:
                                 _schedule(db, customer_id=_cust.id, delay_minutes=2, stage_label="mr_welcome_sent")
-                        except Exception:
-                            pass
+                                print(f"[treatment_flow] INFO - Scheduled follow-up for customer {_cust.id} (wa_id: {wa_id}) after mr_welcome sent")
+                            else:
+                                print(f"[treatment_flow] WARNING - Could not find customer to schedule follow-up for wa_id: {wa_id}")
+                        except Exception as e:
+                            print(f"[treatment_flow] ERROR - Failed to schedule follow-up for {wa_id}: {e}")
+                            import traceback
+                            traceback.print_exc()
 
                         # Do NOT send mr_treatment here; it will be sent after city selection
 
