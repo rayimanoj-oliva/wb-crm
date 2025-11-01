@@ -148,10 +148,11 @@ async def handle_text_message(
         "hi! i saw your ad for oliva's skin boosters and want to know more",
     ]
     
-    # Also check for messages that contain the key pattern "i saw your ad for oliva's" and "want to know more"
+    # Also check for messages that contain the key pattern "i saw your ad for oliva" and "want to know more"
+    # Use "oliva" without apostrophe to handle all Unicode variants
     # This handles variations in punctuation, extra whitespace, etc.
     has_link_pattern = (
-        "i saw your ad for oliva's" in normalized_text 
+        "i saw your ad for oliva" in normalized_text 
         and "want to know more" in normalized_text
     )
     
@@ -161,7 +162,9 @@ async def handle_text_message(
     ]
     
     # Check if message matches any starting point message (exact match after normalization)
-    is_starting_point = normalized_text in link_starting_points
+    # Normalize apostrophes in the starting points list to match
+    normalized_starting_points = [point.replace("'", "'").replace("'", "'") for point in link_starting_points]
+    is_starting_point = normalized_text in normalized_starting_points
     
     # Also check for generic triggers
     has_generic_trigger = any(trigger in normalized_text for trigger in welcome_triggers)

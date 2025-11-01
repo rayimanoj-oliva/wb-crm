@@ -819,11 +819,16 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             try:
                 import unicodedata
                 body_text_normalized = unicodedata.normalize('NFKC', body_text)
-                # Replace various apostrophe/quote characters with standard apostrophe
-                body_text_normalized = body_text_normalized.replace("'", "'").replace("'", "'").replace("'", "'")
+                # Replace various apostrophe/quote characters with standard apostrophe (handle all Unicode variants)
+                # U+2019 (right single quotation mark), U+2018 (left single quotation mark), U+02BC (modifier letter apostrophe)
+                body_text_normalized = body_text_normalized.replace("'", "'")  # Right single quotation mark → standard apostrophe
+                body_text_normalized = body_text_normalized.replace("'", "'")  # Left single quotation mark → standard apostrophe
+                body_text_normalized = body_text_normalized.replace("'", "'")  # Modifier letter apostrophe → standard apostrophe
+                body_text_normalized = body_text_normalized.replace("'", "'")  # Any other variants
                 body_text_normalized = body_text_normalized.replace(""", '"').replace(""", '"')
             except Exception:
-                body_text_normalized = body_text.replace("'", "'").replace("'", "'")
+                # Fallback: replace common apostrophe variants
+                body_text_normalized = body_text.replace("'", "'").replace("'", "'").replace("'", "'")
             
             normalized_check = ' '.join(body_text_normalized.lower().strip().rstrip('.').split())
             
@@ -832,18 +837,29 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             print(f"[lead_appointment_flow] DEBUG - Original body_text (first 150 chars): '{body_text[:150]}'")
             print(f"[lead_appointment_flow] DEBUG - Normalized (first 150 chars): '{normalized_check[:150]}'")
             
-            is_lead_starting_point = (
-                "i saw your ad for oliva's" in normalized_check 
+            # Check for pattern match (more flexible)
+            has_pattern = (
+                "i saw your ad for oliva" in normalized_check 
                 and "want to know more" in normalized_check
-            ) or normalized_check in [
+            )
+            
+            # Also check exact matches (but with normalized apostrophes)
+            exact_matches = [
                 "hi! i saw your ad for oliva's hair regrowth treatments and want to know more",
                 "hi! i saw your ad for oliva's precision+ laser hair reduction and want to know more",
                 "hi! i saw your ad for oliva's skin brightening treatments and want to know more",
                 "hi! i saw your ad for oliva's acne & scar treatments and want to know more",
                 "hi! i saw your ad for oliva's skin boosters and want to know more",
             ]
+            # Normalize apostrophes in exact matches too
+            normalized_exact_matches = [m.replace("'", "'").replace("'", "'") for m in exact_matches]
             
-            print(f"[lead_appointment_flow] DEBUG - is_lead_starting_point={is_lead_starting_point}, wa_id={wa_id}")
+            is_exact_match = normalized_check in normalized_exact_matches
+            is_lead_starting_point = has_pattern or is_exact_match
+            
+            print(f"[lead_appointment_flow] DEBUG - Pattern check: has_pattern={has_pattern}")
+            print(f"[lead_appointment_flow] DEBUG - Exact match check: is_exact_match={is_exact_match}")
+            print(f"[lead_appointment_flow] DEBUG - Final result: is_lead_starting_point={is_lead_starting_point}, wa_id={wa_id}")
             
             if is_lead_starting_point:
                 print(f"[lead_appointment_flow] DEBUG - ✅ Starting point detected! Running lead appointment flow...")
