@@ -1015,30 +1015,15 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     # Refresh customer object to get latest state
                     db.refresh(customer)
                     
-                    # Check if follow-up was just scheduled (within last 5 seconds) - don't clear if so
-                    just_scheduled = False
+                    # Check if follow-up was just scheduled - don't clear if so
                     if customer.next_followup_time:
-                        time_since_scheduled = (dt.utcnow() - customer.next_followup_time).total_seconds()
-                        # If follow-up is scheduled in the future (normal case), check when it was set
-                        # We look at last_message_type to see if it was just set
+                        # We look at last_message_type to see if it was just set by treatment flow
                         if customer.last_message_type and "welcome" in customer.last_message_type.lower():
-                            # Follow-up was likely just scheduled by treatment flow
-                            # Only clear if there were outbound messages BEFORE this conversation started
-                            # Check for outbound messages at least 10 seconds before this inbound message
-                            # (to avoid matching messages sent during this same conversation)
-                            time_threshold = timestamp - timedelta(seconds=10)
-                            our_phone = os.getenv("WHATSAPP_PHONE_ID", "917729992376")
-                            has_old_outbound = db.query(Message).filter(
-                                Message.customer_id == customer.id,
-                                Message.from_wa_id == our_phone,
-                                Message.timestamp < time_threshold  # Old messages from before this conversation
-                            ).first() is not None
-                            
-                            if has_old_outbound:
-                                _mark_replied(db, customer_id=customer.id)
-                                print(f"[ws_webhook] DEBUG - Customer {wa_id} replied after our previous message - cleared follow-up")
-                            else:
-                                print(f"[ws_webhook] DEBUG - Customer {wa_id} initial message in new conversation - preserving follow-up scheduled at {customer.next_followup_time}")
+                            # Follow-up was just scheduled by treatment flow in response to INITIAL message
+                            # This is ALWAYS an initial message - we just sent the welcome message!
+                            # NEVER clear the follow-up for initial messages in welcome flow
+                            # The whole point is to follow up if they don't respond to our welcome message
+                            print(f"[ws_webhook] DEBUG - Customer {wa_id} initial message in welcome flow - PRESERVING follow-up scheduled at {customer.next_followup_time} (this is the message that triggered the welcome)")
                         else:
                             # Not a welcome flow - use normal logic
                             our_phone = os.getenv("WHATSAPP_PHONE_ID", "917729992376")
