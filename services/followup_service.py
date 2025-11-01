@@ -131,7 +131,12 @@ def schedule_next_followup(db: Session, *, customer_id, delay_minutes: int = 2, 
 def mark_customer_replied(db: Session, *, customer_id) -> None:
     customer: Optional[Customer] = db.query(Customer).filter(Customer.id == customer_id).first()
     if not customer:
+        logger.warning(f"[followup_service] mark_customer_replied: Customer {customer_id} not found")
         return
+    
+    had_followup = customer.next_followup_time is not None
+    followup_time = customer.next_followup_time
+    
     customer.last_interaction_time = datetime.utcnow()
     # Clear any pending follow-up since customer replied
     customer.next_followup_time = None
@@ -139,39 +144,66 @@ def mark_customer_replied(db: Session, *, customer_id) -> None:
     db.add(customer)
     try:
         db.commit()
-    except Exception:
+        if had_followup:
+            logger.info(f"[followup_service] Cleared follow-up for customer {customer.wa_id} (ID: {customer_id}) - had scheduled follow-up at {followup_time}")
+        else:
+            logger.debug(f"[followup_service] mark_customer_replied for customer {customer.wa_id} (ID: {customer_id}) - no follow-up was scheduled")
+    except Exception as e:
+        logger.error(f"[followup_service] Failed to mark customer replied: {e}")
         db.rollback()
 
 
 def due_customers_for_followup(db: Session):
     now = datetime.utcnow()
+    
+    # Query for due customers
     due = db.query(Customer).filter(
         Customer.next_followup_time.isnot(None),
         Customer.next_followup_time <= now
     ).all()
     
-    # Enhanced debugging: always show status
-    # Use INFO level to ensure messages appear even if DEBUG is filtered by uvicorn
+    # Enhanced debugging: always show status with detailed query info
     total_scheduled = db.query(Customer).filter(Customer.next_followup_time.isnot(None)).count()
+    
+    # Also get customers that should be due (for debugging)
+    if total_scheduled > 0:
+        all_scheduled = db.query(Customer).filter(
+            Customer.next_followup_time.isnot(None)
+        ).all()
+        
+        # Check for any customers that should be due but weren't found
+        past_due = [c for c in all_scheduled if c.next_followup_time and c.next_followup_time <= now]
+        
+        if len(past_due) != len(due):
+            logger.warning(f"[followup_service] QUERY MISMATCH! Found {len(past_due)} customers that should be due, but query returned {len(due)}")
+            for c in past_due:
+                if c not in due:
+                    logger.warning(f"[followup_service] Customer {c.wa_id} (ID: {c.id}) has next_followup_time={c.next_followup_time} (past due) but not in query results!")
     
     if total_scheduled == 0:
         logger.info(f"[followup_service] Current UTC time: {now} - No customers have follow-ups scheduled")
-        sys.stdout.flush()  # Explicitly flush to ensure immediate output
+        sys.stdout.flush()
     elif not due:
         # Get a few examples of scheduled follow-ups
         examples = db.query(Customer).filter(
             Customer.next_followup_time.isnot(None)
-        ).limit(3).all()
+        ).order_by(Customer.next_followup_time).limit(5).all()
+        
         logger.info(f"[followup_service] Current UTC time: {now}")
         logger.info(f"[followup_service] Found {total_scheduled} customer(s) with follow-ups scheduled, but none are due yet")
+        
         for ex in examples:
-            time_diff = (ex.next_followup_time - now).total_seconds() if ex.next_followup_time else None
-            status = "PAST (due)" if time_diff and time_diff <= 0 else f"FUTURE ({int(time_diff/60)} min away)" if time_diff else "NULL"
-            logger.info(f"[followup_service] Example: Customer {ex.wa_id} - next_followup_time: {ex.next_followup_time}, status: {status}")
-        sys.stdout.flush()  # Explicitly flush to ensure immediate output
+            if ex.next_followup_time:
+                time_diff = (ex.next_followup_time - now).total_seconds()
+                minutes_diff = int(time_diff / 60)
+                status = "PAST (due)" if time_diff <= 0 else f"FUTURE ({minutes_diff} min away)"
+                logger.info(f"[followup_service] Example: Customer {ex.wa_id} (ID: {ex.id}) - next_followup_time: {ex.next_followup_time}, status: {status}, time_diff: {time_diff:.1f} seconds")
+        sys.stdout.flush()
     else:
         logger.info(f"[followup_service] Current UTC time: {now} - Found {len(due)} customer(s) due for follow-up out of {total_scheduled} scheduled")
-        sys.stdout.flush()  # Explicitly flush to ensure immediate output
+        for d in due:
+            logger.info(f"[followup_service] Due customer: {d.wa_id} (ID: {d.id}), next_followup_time: {d.next_followup_time}, last_message_type: {d.last_message_type}")
+        sys.stdout.flush()
     
     return due
 
