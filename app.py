@@ -9,6 +9,7 @@ from datetime import timedelta
 import consumer
 
 # Configure logging to ensure messages appear in server logs
+# This must be done BEFORE any other imports that create loggers
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -17,11 +18,26 @@ logging.basicConfig(
     ],
     force=True  # Override any existing configuration
 )
+
+# Ensure root logger is at DEBUG level
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.DEBUG)
+
 # Ensure stdout is unbuffered
 sys.stdout.reconfigure(line_buffering=True) if hasattr(sys.stdout, 'reconfigure') else None
 
-# Create logger for this module
+# Create logger for this module and set level explicitly
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+
+# Set loggers for follow-up system to DEBUG level BEFORE they're imported
+followup_logger = logging.getLogger("followup_scheduler")
+followup_logger.setLevel(logging.DEBUG)
+followup_service_logger = logging.getLogger("followup_service")
+followup_service_logger.setLevel(logging.DEBUG)
+
+# Disable uvicorn's access logger noise (optional, but helps focus on our logs)
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 from media import media_controller
 from zenoti.zenoti_controller import router as zenoti_router
 from starlette.middleware.cors import CORSMiddleware
@@ -147,7 +163,9 @@ async def start_followup_scheduler():
                 if customers:
                     scheduler_logger.info(f"Found {len(customers)} customer(s) due for follow-up")
                 else:
-                    # Enhanced debugging every 10 iterations to reduce log noise
+                    # Always log when no customers are due (debug messages come from due_customers_for_followup)
+                    scheduler_logger.debug("No customers due for follow-up at this time")
+                    # Additional detailed check every 10 iterations
                     if iteration % 10 == 0:
                         from models.models import Customer
                         from datetime import datetime as dt
@@ -162,11 +180,10 @@ async def start_followup_scheduler():
                                 Customer.next_followup_time.isnot(None),
                                 Customer.next_followup_time <= now
                             ).count()
-                            scheduler_logger.debug(f"Current UTC time: {now}")
-                            scheduler_logger.debug(f"{total_scheduled} customer(s) have follow-up scheduled")
-                            scheduler_logger.debug(f"{past_count} due now, {future_count} in the future")
+                            scheduler_logger.debug(f"[Detailed check] {total_scheduled} customer(s) have follow-up scheduled")
+                            scheduler_logger.debug(f"[Detailed check] {past_count} due now, {future_count} in the future")
                             if past_count > 0:
-                                scheduler_logger.warning(f"Found {past_count} due customers but query returned 0 - possible timezone issue!")
+                                scheduler_logger.warning(f"[Detailed check] Found {past_count} due customers but query returned 0 - possible timezone issue!")
                 
                 for c in customers:
                     lock_value = None

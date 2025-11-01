@@ -55,5 +55,5 @@ jobs:
           source ~/myenv/bin/activate
           cd wb-crm
           pkill -f uvicorn || true
-          nohup uvicorn app:app --host 0.0.0.0 --port 8001 > logs.out 2>&1 &
+          nohup uvicorn app:app --host 0.0.0.0 --port 8001 --log-level debug > logs.out 2>&1 &
           EOF

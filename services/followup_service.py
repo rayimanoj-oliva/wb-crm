@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 import uuid
 import logging
+import sys
 
 from sqlalchemy.orm import Session
 
@@ -18,6 +19,16 @@ from cache.redis_connection import get_redis_client
 
 # Create logger for this module
 logger = logging.getLogger("followup_service")
+# Ensure logger level is set to DEBUG and it propagates to root logger
+logger.setLevel(logging.DEBUG)
+# Ensure handler is added if not already present (for cases where logging isn't configured yet)
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setLevel(logging.DEBUG)
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+logger.propagate = True  # Ensure messages propagate to root logger
 
 
 FOLLOW_UP_1_TEXT = (
@@ -139,21 +150,28 @@ def due_customers_for_followup(db: Session):
         Customer.next_followup_time <= now
     ).all()
     
-    # Enhanced debugging: show what we're looking for
-    if not due:
-        # Check total scheduled and show examples
-        total_scheduled = db.query(Customer).filter(Customer.next_followup_time.isnot(None)).count()
-        if total_scheduled > 0:
-            # Get a few examples of scheduled follow-ups
-            examples = db.query(Customer).filter(
-                Customer.next_followup_time.isnot(None)
-            ).limit(3).all()
-            logger.debug(f"Current UTC time: {now}")
-            logger.debug(f"Found {total_scheduled} customer(s) with follow-ups scheduled, but none are due yet")
-            for ex in examples:
-                time_diff = (ex.next_followup_time - now).total_seconds() if ex.next_followup_time else None
-                status = "PAST (due)" if time_diff and time_diff <= 0 else f"FUTURE ({int(time_diff/60)} min away)" if time_diff else "NULL"
-                logger.debug(f"Example: Customer {ex.wa_id} - next_followup_time: {ex.next_followup_time}, status: {status}")
+    # Enhanced debugging: always show status
+    # Use INFO level to ensure messages appear even if DEBUG is filtered by uvicorn
+    total_scheduled = db.query(Customer).filter(Customer.next_followup_time.isnot(None)).count()
+    
+    if total_scheduled == 0:
+        logger.info(f"[followup_service] Current UTC time: {now} - No customers have follow-ups scheduled")
+        sys.stdout.flush()  # Explicitly flush to ensure immediate output
+    elif not due:
+        # Get a few examples of scheduled follow-ups
+        examples = db.query(Customer).filter(
+            Customer.next_followup_time.isnot(None)
+        ).limit(3).all()
+        logger.info(f"[followup_service] Current UTC time: {now}")
+        logger.info(f"[followup_service] Found {total_scheduled} customer(s) with follow-ups scheduled, but none are due yet")
+        for ex in examples:
+            time_diff = (ex.next_followup_time - now).total_seconds() if ex.next_followup_time else None
+            status = "PAST (due)" if time_diff and time_diff <= 0 else f"FUTURE ({int(time_diff/60)} min away)" if time_diff else "NULL"
+            logger.info(f"[followup_service] Example: Customer {ex.wa_id} - next_followup_time: {ex.next_followup_time}, status: {status}")
+        sys.stdout.flush()  # Explicitly flush to ensure immediate output
+    else:
+        logger.info(f"[followup_service] Current UTC time: {now} - Found {len(due)} customer(s) due for follow-up out of {total_scheduled} scheduled")
+        sys.stdout.flush()  # Explicitly flush to ensure immediate output
     
     return due
 
