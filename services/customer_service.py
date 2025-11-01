@@ -4,7 +4,7 @@ from typing import List
 from sqlalchemy.orm import Session
 from starlette import status
 
-from cache.redis_connection import redis_client
+from cache.redis_connection import get_redis_client
 from models.models import Customer, User
 from schemas.customer_schema import CustomerCreate, CustomerUpdate, CustomerStatusEnum
 from uuid import UUID
@@ -52,8 +52,14 @@ def get_customer_by_id(db: Session, customer_id: UUID) -> Customer:
 
 # List all customers
 def get_unread_count(wa_id: str) -> int:
-    count = redis_client.get(f"unread:{wa_id}")
-    return int(count) if count else 0
+    redis_client = get_redis_client()
+    if not redis_client:
+        return 0
+    try:
+        count = redis_client.get(f"unread:{wa_id}")
+        return int(count) if count else 0
+    except Exception:
+        return 0
 
 def get_all_customers(db: Session):
     customers = db.query(Customer).order_by(Customer.last_message_at.desc().nullslast()).all()

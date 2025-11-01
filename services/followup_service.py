@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 from typing import Optional
+import uuid
 
 from sqlalchemy.orm import Session
 
@@ -12,6 +13,7 @@ from services import whatsapp_service, customer_service, message_service
 from schemas.message_schema import MessageCreate
 from schemas.customer_schema import CustomerCreate
 from config.constants import get_messages_url
+from cache.redis_connection import get_redis_client
 
 
 FOLLOW_UP_1_TEXT = (
@@ -20,9 +22,73 @@ FOLLOW_UP_1_TEXT = (
     
 )
 FOLLOW_UP_2_TEXT = (
-    "Hi again! 😊 Since we haven’t heard from you, our team will give you a quick call to assist you.\n\n"
+    "Hi again! 😊 Since we haven't heard from you, our team will give you a quick call to assist you.\n\n"
     "Thank you for choosing Oliva Clinics!"
 )
+
+
+def acquire_followup_lock(customer_id: str, lock_ttl: int = 300) -> Optional[str]:
+    """
+    Acquire a distributed lock for processing a customer's follow-up.
+    Returns lock_key if acquired, None if already locked or Redis unavailable.
+    
+    Args:
+        customer_id: The customer ID to lock
+        lock_ttl: Lock time-to-live in seconds (default 5 minutes)
+    
+    Returns:
+        lock_key if lock acquired, None otherwise
+    """
+    redis_client = get_redis_client()
+    if not redis_client:
+        # Redis not available - return a fake lock key to allow processing
+        # In production, you might want to fail here or use DB-based locking
+        print(f"[followup_service] WARNING - Redis unavailable, processing without distributed lock for customer {customer_id}")
+        return f"lock:{customer_id}:{uuid.uuid4()}"
+    
+    lock_key = f"followup_lock:{customer_id}"
+    lock_value = str(uuid.uuid4())
+    
+    try:
+        # Try to acquire lock (SET with NX - only set if not exists)
+        acquired = redis_client.set(lock_key, lock_value, nx=True, ex=lock_ttl)
+        if acquired:
+            return lock_value
+        else:
+            print(f"[followup_service] INFO - Customer {customer_id} already being processed by another instance")
+            return None
+    except Exception as e:
+        print(f"[followup_service] ERROR - Failed to acquire lock for customer {customer_id}: {e}")
+        return None
+
+
+def release_followup_lock(customer_id: str, lock_value: str) -> None:
+    """
+    Release a distributed lock for a customer's follow-up.
+    
+    Args:
+        customer_id: The customer ID
+        lock_value: The lock value returned by acquire_followup_lock
+    """
+    redis_client = get_redis_client()
+    if not redis_client:
+        return
+    
+    lock_key = f"followup_lock:{customer_id}"
+    
+    try:
+        # Use Lua script to ensure we only delete if the value matches
+        # This prevents deleting a lock acquired by another instance
+        lua_script = """
+        if redis.call("get", KEYS[1]) == ARGV[1] then
+            return redis.call("del", KEYS[1])
+        else
+            return 0
+        end
+        """
+        redis_client.eval(lua_script, 1, lock_key, lock_value)
+    except Exception as e:
+        print(f"[followup_service] ERROR - Failed to release lock for customer {customer_id}: {e}")
 
 
 def schedule_next_followup(db: Session, *, customer_id, delay_minutes: int = 2, stage_label: Optional[str] = None) -> None:

@@ -110,13 +110,34 @@ def seed_catalog_on_startup():
 
 @app.on_event("startup")
 async def start_followup_scheduler():
+    """Start the follow-up scheduler with distributed locking support."""
+    from services.followup_service import acquire_followup_lock, release_followup_lock
+    
     async def _runner():
+        iteration = 0
         while True:
-            db = SessionLocal()
+            db = None
             try:
+                iteration += 1
+                print(f"[followup_scheduler] INFO - Starting iteration {iteration}")
+                
+                db = SessionLocal()
                 customers = due_customers_for_followup(db)
+                
+                if customers:
+                    print(f"[followup_scheduler] INFO - Found {len(customers)} customer(s) due for follow-up")
+                
                 for c in customers:
+                    lock_value = None
                     try:
+                        # Acquire distributed lock to prevent duplicate processing
+                        lock_value = acquire_followup_lock(str(c.id))
+                        if lock_value is None:
+                            print(f"[followup_scheduler] INFO - Skipping customer {c.id} (wa_id: {c.wa_id}) - already being processed")
+                            continue
+                        
+                        print(f"[followup_scheduler] INFO - Processing follow-up for customer {c.id} (wa_id: {c.wa_id})")
+                        
                         # Decide which follow-up to send based on last_message_type
                         if (c.last_message_type or "").lower() == "follow_up_1_sent":
                             # Only send Follow-Up 2 if NO replies since Follow-Up 1
@@ -127,32 +148,65 @@ async def start_followup_scheduler():
                                 c.next_followup_time = None
                                 db.add(c)
                                 db.commit()
+                                print(f"[followup_scheduler] INFO - Customer {c.wa_id} replied after Follow-Up 1, skipping Follow-Up 2")
                                 continue
+                            
                             # Send Follow-Up 2 and create a lead with available details
                             await send_followup2(db, wa_id=c.wa_id)
+                            
                             # Create lead with available details
                             try:
                                 from services import customer_service
                                 customer = customer_service.get_customer_record_by_wa_id(db, c.wa_id)
-                            except Exception:
+                            except Exception as e:
+                                print(f"[followup_scheduler] WARNING - Could not get customer record: {e}")
                                 customer = c
+                            
                             try:
                                 from controllers.components.lead_appointment_flow.zoho_integration import trigger_zoho_lead_creation
                                 await trigger_zoho_lead_creation(db, wa_id=c.wa_id, customer=customer, lead_status="CALL_INITIATED")
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                print(f"[followup_scheduler] WARNING - Could not create Zoho lead: {e}")
                         else:
                             # Send Follow-Up 1 (interactive Yes/No) and schedule Follow-Up 2 in 5 minutes
                             await send_followup1_interactive(db, wa_id=c.wa_id)
                             # send_followup1_interactive already schedules 5 minutes and sets label
+                        
                         db.add(c)
                         db.commit()
-                    except Exception:
-                        db.rollback()
+                        print(f"[followup_scheduler] INFO - Successfully processed follow-up for customer {c.wa_id}")
+                        
+                    except Exception as e:
+                        print(f"[followup_scheduler] ERROR - Failed to process follow-up for customer {c.id if c else 'unknown'}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        if db:
+                            db.rollback()
+                    finally:
+                        # Always release the lock
+                        if lock_value and c:
+                            release_followup_lock(str(c.id), lock_value)
+                
+                if db:
+                    db.close()
+                    db = None
+                
+                # Wait 30 seconds before next iteration
+                await asyncio.sleep(30)
+                
+            except Exception as e:
+                print(f"[followup_scheduler] ERROR - Critical error in scheduler: {e}")
+                import traceback
+                traceback.print_exc()
+                if db:
+                    try:
+                        db.close()
+                    except:
                         pass
-            finally:
-                db.close()
-            await asyncio.sleep(30)
+                    db = None
+                # Wait before retrying after error
+                await asyncio.sleep(30)
 
+    print("[followup_scheduler] INFO - Starting follow-up scheduler background task")
     asyncio.create_task(_runner())
 

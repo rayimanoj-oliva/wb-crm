@@ -151,6 +151,8 @@ async def handle_text_message(
     # Also check for messages that contain the key pattern "i saw your ad for oliva" and "want to know more"
     # Use "oliva" without apostrophe to handle all Unicode variants
     # This handles variations in punctuation, extra whitespace, etc.
+    # NOTE: Location inquiry messages ("want to know more about services in...") should NOT match here
+    # They should be handled by the TREATMENT flow instead
     has_link_pattern = (
         "i saw your ad for oliva" in normalized_text 
         and "want to know more" in normalized_text
@@ -169,6 +171,8 @@ async def handle_text_message(
     # Also check for generic triggers
     has_generic_trigger = any(trigger in normalized_text for trigger in welcome_triggers)
     
+    # NOTE: Location inquiry messages like "want to know more about services in..." should go to TREATMENT flow
+    # They are handled by run_treament_flow which has a prefill_regex pattern for them
     if is_starting_point or has_link_pattern or has_generic_trigger:
         # Initialize lead appointment flow state immediately when starting point message is detected
         try:

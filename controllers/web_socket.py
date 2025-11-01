@@ -838,6 +838,8 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             print(f"[lead_appointment_flow] DEBUG - Normalized (first 150 chars): '{normalized_check[:150]}'")
             
             # Check for pattern match (more flexible)
+            # Only match standard ad link messages for lead appointment flow
+            # Location/clinic inquiry messages ("want to know more about services in...") should go to TREATMENT flow
             has_pattern = (
                 "i saw your ad for oliva" in normalized_check 
                 and "want to know more" in normalized_check
@@ -860,6 +862,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             print(f"[lead_appointment_flow] DEBUG - Pattern check: has_pattern={has_pattern}")
             print(f"[lead_appointment_flow] DEBUG - Exact match check: is_exact_match={is_exact_match}")
             print(f"[lead_appointment_flow] DEBUG - Final result: is_lead_starting_point={is_lead_starting_point}, wa_id={wa_id}")
+            print(f"[lead_appointment_flow] DEBUG - Note: Location inquiry messages (like 'want to know more about services in...') route to TREATMENT flow")
             
             if is_lead_starting_point:
                 print(f"[lead_appointment_flow] DEBUG - ✅ Starting point detected! Running lead appointment flow...")

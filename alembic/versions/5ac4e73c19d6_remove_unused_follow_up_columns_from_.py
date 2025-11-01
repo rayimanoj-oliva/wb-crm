@@ -19,10 +19,24 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """Upgrade schema."""
-    pass
+    """Upgrade schema - Remove unused follow_up columns from customers table."""
+    from sqlalchemy import inspect
+    
+    bind = op.get_bind()
+    inspector = inspect(bind)
+    existing_columns = [col["name"] for col in inspector.get_columns("customers")]
+    
+    # Drop follow_up_step if it exists
+    if "follow_up_step" in existing_columns:
+        op.drop_column('customers', 'follow_up_step')
+    
+    # Drop follow_up_status if it exists
+    if "follow_up_status" in existing_columns:
+        op.drop_column('customers', 'follow_up_status')
 
 
 def downgrade() -> None:
-    """Downgrade schema."""
+    """Downgrade schema - Re-add follow_up columns (not recommended)."""
+    # Note: We don't know the original column definitions, so this is a placeholder
+    # If you need to rollback, you'll need to define the original column structure
     pass
