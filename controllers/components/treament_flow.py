@@ -163,11 +163,11 @@ async def run_treament_flow(
                             pass
                         # Schedule follow-up only for mr_welcome
                         try:
-                            from services.followup_service import schedule_next_followup as _schedule
+                            from services.followup_service import schedule_next_followup as _schedule, FOLLOW_UP_1_DELAY_MINUTES
                             from services.customer_service import get_customer_record_by_wa_id as _get_c
                             _cust = _get_c(db, wa_id)
                             if _cust:
-                                _schedule(db, customer_id=_cust.id, delay_minutes=2, stage_label="mr_welcome_sent")
+                                _schedule(db, customer_id=_cust.id, delay_minutes=FOLLOW_UP_1_DELAY_MINUTES, stage_label="mr_welcome_sent")
                                 print(f"[treatment_flow] INFO - Scheduled follow-up for customer {_cust.id} (wa_id: {wa_id}) after mr_welcome sent")
                             else:
                                 print(f"[treatment_flow] WARNING - Could not find customer to schedule follow-up for wa_id: {wa_id}")
@@ -626,13 +626,13 @@ async def run_appointment_buttons_flow(
                         "✅ Thank you! Our team will call and confirm your appointment shortly.",
                         db,
                     )
-                    # Stop any follow-ups for completed flow
+                    # Stop any follow-ups for completed flow (don't reset timer since flow is complete)
                     try:
                         from services.followup_service import mark_customer_replied as _mark_replied
                         from services.customer_service import get_customer_record_by_wa_id as _get_cust
                         _cust = _get_cust(db, wa_id)
                         if _cust:
-                            _mark_replied(db, customer_id=_cust.id)
+                            _mark_replied(db, customer_id=_cust.id, reset_followup_timer=False)
                     except Exception:
                         pass
                     # Clear state
@@ -664,13 +664,13 @@ async def run_appointment_buttons_flow(
                     "📌 Thank you for your interest! One of our team members will contact you shortly to assist further.",
                     db,
                 )
-                # Stop any follow-ups for completed flow
+                # Stop any follow-ups for completed flow (don't reset timer since flow is complete)
                 try:
                     from services.followup_service import mark_customer_replied as _mark_replied
                     from services.customer_service import get_customer_record_by_wa_id as _get_cust
                     _cust = _get_cust(db, wa_id)
                     if _cust:
-                        _mark_replied(db, customer_id=_cust.id)
+                        _mark_replied(db, customer_id=_cust.id, reset_followup_timer=False)
                 except Exception:
                     pass
                 

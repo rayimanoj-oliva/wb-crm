@@ -67,6 +67,15 @@ async def run_interactive_type(
                 "message": reply_text,
                 "timestamp": timestamp.isoformat(),
             })
+            
+            # Mark customer as replied and reset follow-up timer for ANY interactive response
+            # This ensures follow-up timer resets from user's last interaction
+            try:
+                from services.followup_service import mark_customer_replied as _mark_replied
+                _mark_replied(db, customer_id=customer.id, reset_followup_timer=True)
+                print(f"[interactive_type_clean] DEBUG - Customer {wa_id} interactive reply ({i_type}: {reply_id}) - reset follow-up timer")
+            except Exception as e:
+                print(f"[interactive_type_clean] WARNING - Could not mark customer replied for interactive: {e}")
 
             # Delegate Skin/Hair/Body and related list selections to component flow
             from controllers.components.treament_flow import run_treatment_buttons_flow  # local import to avoid cycles

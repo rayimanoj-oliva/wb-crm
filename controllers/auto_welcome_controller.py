@@ -481,9 +481,10 @@ async def whatsapp_auto_welcome_webhook(request: Request, db: Session = Depends(
                 # Schedule follow-up 1 window only for mr_welcome
                 try:
                     from services.customer_service import get_customer_record_by_wa_id as _get_c
+                    from services.followup_service import FOLLOW_UP_1_DELAY_MINUTES
                     cust = _get_c(db, wa_id)
                     if cust:
-                        schedule_next_followup(db, customer_id=cust.id, delay_minutes=2, stage_label="mr_welcome_sent")
+                        schedule_next_followup(db, customer_id=cust.id, delay_minutes=FOLLOW_UP_1_DELAY_MINUTES, stage_label="mr_welcome_sent")
                 except Exception:
                     pass
                 try:

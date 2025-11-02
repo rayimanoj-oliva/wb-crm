@@ -250,6 +250,15 @@ async def handle_interactive_response(
         print(f"[lead_appointment_flow] DEBUG - Handling interactive response: {reply_id} - {reply_title}")
         print(f"[lead_appointment_flow] DEBUG - Reply ID analysis: starts_with_time={reply_id.startswith('time_')}, count_underscores={reply_id.count('_')}, split_length={len(reply_id.split('_'))}")
         
+        # Mark customer as replied for ANY interactive response in lead appointment flow
+        # This ensures follow-up timer resets from user's last interaction
+        try:
+            from services.followup_service import mark_customer_replied as _mark_replied
+            _mark_replied(db, customer_id=customer.id, reset_followup_timer=True)
+            print(f"[lead_appointment_flow] DEBUG - Customer {wa_id} interactive reply ({i_type}: {reply_id}) - reset follow-up timer")
+        except Exception as e:
+            print(f"[lead_appointment_flow] WARNING - Could not mark customer replied for interactive: {e}")
+        
         # Route to appropriate handler based on reply_id
         if reply_id.startswith("yes_book_appointment") or reply_id.startswith("not_now") or reply_id.startswith("book_appointment"):
             # Auto-welcome response (including "Book Appointment" from Not Now flow)

@@ -199,8 +199,9 @@ async def start_followup_scheduler():
                         # Decide which follow-up to send based on last_message_type
                         if (c.last_message_type or "").lower() == "follow_up_1_sent":
                             # Only send Follow-Up 2 if NO replies since Follow-Up 1
-                            # infer follow-up 1 sent time as next_followup_time - 5 minutes
-                            fu1_sent_at = (c.next_followup_time - timedelta(minutes=5)) if c.next_followup_time else None
+                            # infer follow-up 1 sent time as next_followup_time - FOLLOW_UP_2_DELAY_MINUTES
+                            from services.followup_service import FOLLOW_UP_2_DELAY_MINUTES
+                            fu1_sent_at = (c.next_followup_time - timedelta(minutes=FOLLOW_UP_2_DELAY_MINUTES)) if c.next_followup_time else None
                             if fu1_sent_at and c.last_interaction_time and c.last_interaction_time >= fu1_sent_at:
                                 # user replied after Follow-Up 1; skip Follow-Up 2
                                 c.next_followup_time = None
@@ -226,9 +227,24 @@ async def start_followup_scheduler():
                             except Exception as e:
                                 scheduler_logger.warning(f"Could not create Zoho lead: {e}")
                         else:
-                            # Send Follow-Up 1 (interactive Yes/No) and schedule Follow-Up 2 in 5 minutes
+                            # Before sending Follow-Up 1, double-check that user hasn't replied recently
+                            # This ensures we only send if 2 minutes have truly passed since last interaction
+                            from services.followup_service import FOLLOW_UP_1_DELAY_MINUTES
+                            db.refresh(c)  # Refresh to get latest state
+                            
+                            if c.last_interaction_time:
+                                time_since_last_interaction = (datetime.utcnow() - c.last_interaction_time).total_seconds() / 60
+                                if time_since_last_interaction < FOLLOW_UP_1_DELAY_MINUTES:
+                                    # User interacted less than 2 minutes ago, skip this follow-up
+                                    scheduler_logger.info(f"Skipping Follow-Up 1 for customer {c.wa_id} - user interacted {time_since_last_interaction:.1f} minutes ago (less than {FOLLOW_UP_1_DELAY_MINUTES} min)")
+                                    c.next_followup_time = None
+                                    db.add(c)
+                                    db.commit()
+                                    continue
+                            
+                            # Send Follow-Up 1 (interactive Yes/No) and schedule Follow-Up 2
                             await send_followup1_interactive(db, wa_id=c.wa_id)
-                            # send_followup1_interactive already schedules 5 minutes and sets label
+                            # send_followup1_interactive already schedules Follow-Up 2 and sets label
                         
                         db.add(c)
                         db.commit()

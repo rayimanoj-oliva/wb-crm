@@ -51,10 +51,11 @@ async def send_message_to_waid(wa_id: str, message_body: str, db, from_wa_id="91
     )
     new_msg = message_service.create_message(db, message_data)
 
-    # Schedule a follow-up in 2 minutes for any outbound message unless explicitly disabled
+    # Schedule a follow-up for any outbound message unless explicitly disabled
     try:
         if schedule_followup:
-            schedule_next_followup(db, customer_id=customer.id, delay_minutes=2, stage_label=stage_label)
+            from services.followup_service import FOLLOW_UP_1_DELAY_MINUTES
+            schedule_next_followup(db, customer_id=customer.id, delay_minutes=FOLLOW_UP_1_DELAY_MINUTES, stage_label=stage_label)
     except Exception:
         pass
     

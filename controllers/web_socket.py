@@ -1607,6 +1607,18 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         "timestamp": timestamp.isoformat(),
                     })
                     interactive_broadcasted = True
+                    
+                    # Mark customer as replied and reset follow-up timer for ANY interactive response
+                    # This ensures follow-up timer resets from user's last interaction (button/list click)
+                    try:
+                        from services.followup_service import mark_customer_replied as _mark_replied
+                        db.refresh(customer)  # Refresh to get latest state
+                        _mark_replied(db, customer_id=customer.id, reset_followup_timer=True)
+                        print(f"[ws_webhook] DEBUG - Customer {wa_id} interactive reply ({i_type}) - reset follow-up timer from last interaction")
+                    except Exception as e:
+                        print(f"[ws_webhook] WARNING - Could not mark customer replied for interactive message: {e}")
+                        import traceback
+                        traceback.print_exc()
             except Exception:
                 pass
 
@@ -1839,8 +1851,8 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
 
                             # Schedule follow-up only for mr_welcome
                             try:
-                                from services.followup_service import schedule_next_followup as _schedule
-                                _schedule(db, customer_id=customer.id, delay_minutes=2, stage_label="mr_welcome_sent")
+                                from services.followup_service import schedule_next_followup as _schedule, FOLLOW_UP_1_DELAY_MINUTES
+                                _schedule(db, customer_id=customer.id, delay_minutes=FOLLOW_UP_1_DELAY_MINUTES, stage_label="mr_welcome_sent")
                             except Exception:
                                 pass
 

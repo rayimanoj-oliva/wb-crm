@@ -31,6 +31,10 @@ if not logger.handlers:
 logger.propagate = True  # Ensure messages propagate to root logger
 
 
+# Follow-up timing constants (in minutes)
+FOLLOW_UP_1_DELAY_MINUTES = 5  # Time before sending Follow-Up 1
+FOLLOW_UP_2_DELAY_MINUTES = 30  # Time after Follow-Up 1 before sending Follow-Up 2
+
 FOLLOW_UP_1_TEXT = (
     "👋 Hi! Just checking in — are we still connected?\n\n"
     "Reply to continue. 💬\n\n"
@@ -106,7 +110,7 @@ def release_followup_lock(customer_id: str, lock_value: str) -> None:
         logger.error(f"Failed to release lock for customer {customer_id}: {e}")
 
 
-def schedule_next_followup(db: Session, *, customer_id, delay_minutes: int = 2, stage_label: Optional[str] = None) -> None:
+def schedule_next_followup(db: Session, *, customer_id, delay_minutes: int = FOLLOW_UP_1_DELAY_MINUTES, stage_label: Optional[str] = None) -> None:
     customer: Optional[Customer] = db.query(Customer).filter(Customer.id == customer_id).first()
     if not customer:
         logger.warning(f"Customer {customer_id} not found for scheduling follow-up")
@@ -128,7 +132,15 @@ def schedule_next_followup(db: Session, *, customer_id, delay_minutes: int = 2, 
         db.rollback()
 
 
-def mark_customer_replied(db: Session, *, customer_id) -> None:
+def mark_customer_replied(db: Session, *, customer_id, reset_followup_timer: bool = True) -> None:
+    """
+    Mark customer as replied and optionally reset the follow-up timer.
+    
+    Args:
+        customer_id: The customer ID
+        reset_followup_timer: If True, schedule a new follow-up timer starting from now (default: True)
+                             This ensures the follow-up countdown restarts from the customer's last interaction
+    """
     customer: Optional[Customer] = db.query(Customer).filter(Customer.id == customer_id).first()
     if not customer:
         logger.warning(f"[followup_service] mark_customer_replied: Customer {customer_id} not found")
@@ -141,12 +153,20 @@ def mark_customer_replied(db: Session, *, customer_id) -> None:
     # Clear any pending follow-up since customer replied
     customer.next_followup_time = None
     customer.last_message_type = None
+    
+    # Reset follow-up timer: schedule a new Follow-Up 1 starting from this reply
+    # This ensures if customer replies, the timer restarts from their last interaction
+    if reset_followup_timer:
+        followup_time = datetime.utcnow() + timedelta(minutes=FOLLOW_UP_1_DELAY_MINUTES)
+        customer.next_followup_time = followup_time
+        logger.info(f"[followup_service] Reset follow-up timer for customer {customer.wa_id} (ID: {customer_id}) - new Follow-Up 1 scheduled at {followup_time} (from last interaction, {FOLLOW_UP_1_DELAY_MINUTES} minutes)")
+    
     db.add(customer)
     try:
         db.commit()
-        if had_followup:
+        if had_followup and not reset_followup_timer:
             logger.info(f"[followup_service] Cleared follow-up for customer {customer.wa_id} (ID: {customer_id}) - had scheduled follow-up at {followup_time}")
-        else:
+        elif not had_followup and not reset_followup_timer:
             logger.debug(f"[followup_service] mark_customer_replied for customer {customer.wa_id} (ID: {customer_id}) - no follow-up was scheduled")
     except Exception as e:
         logger.error(f"[followup_service] Failed to mark customer replied: {e}")
@@ -156,11 +176,45 @@ def mark_customer_replied(db: Session, *, customer_id) -> None:
 def due_customers_for_followup(db: Session):
     now = datetime.utcnow()
     
-    # Query for due customers
+    # Query for due customers - only those where follow-up time has passed
+    # AND user hasn't interacted since the follow-up was scheduled
     due = db.query(Customer).filter(
         Customer.next_followup_time.isnot(None),
         Customer.next_followup_time <= now
     ).all()
+    
+    # Filter out customers who have interacted recently
+    # Follow-Up 1 should ONLY be sent if 2 minutes have passed since last user interaction
+    actually_due = []
+    for c in due:
+        if c.last_interaction_time is None:
+            # No interaction recorded, proceed with follow-up (shouldn't happen normally)
+            actually_due.append(c)
+            continue
+        
+        # Calculate time since last user interaction
+        time_since_last_interaction = (now - c.last_interaction_time).total_seconds() / 60
+        
+        # Only send follow-up if at least 2 minutes have passed since last interaction
+        if time_since_last_interaction >= FOLLOW_UP_1_DELAY_MINUTES:
+            # User hasn't interacted in the last 2 minutes, so follow-up is valid
+            actually_due.append(c)
+        else:
+            # User interacted less than 2 minutes ago - clear this stale follow-up
+            logger.info(f"[followup_service] Skipping follow-up for customer {c.wa_id} - user interacted {time_since_last_interaction:.2f} minutes ago (less than {FOLLOW_UP_1_DELAY_MINUTES} min threshold)")
+            c.next_followup_time = None
+            db.add(c)
+    
+    # Commit any cleared follow-ups
+    if len(actually_due) < len(due):
+        try:
+            db.commit()
+            logger.info(f"[followup_service] Cleared {len(due) - len(actually_due)} stale follow-up(s) - users interacted recently")
+        except Exception as e:
+            logger.error(f"[followup_service] Failed to clear stale follow-ups: {e}")
+            db.rollback()
+    
+    due = actually_due
     
     # Enhanced debugging: always show status with detailed query info
     total_scheduled = db.query(Customer).filter(Customer.next_followup_time.isnot(None)).count()
@@ -268,14 +322,14 @@ async def send_followup1_interactive(db: Session, *, wa_id: str, from_wa_id: str
     logger.debug(f"Follow-Up 1 message persisted to database for customer_id: {customer.id}, wa_id: {wa_id}")
     
     try:
-        # Also mark Follow-Up 1 state on the customer and schedule Follow-Up 2 timer (5 minutes)
+        # Also mark Follow-Up 1 state on the customer and schedule Follow-Up 2 timer
         cust = db.query(Customer).filter(Customer.id == customer.id).first()
         if cust:
             cust.last_message_type = "follow_up_1_sent"
-            cust.next_followup_time = datetime.utcnow() + timedelta(minutes=5)
+            cust.next_followup_time = datetime.utcnow() + timedelta(minutes=FOLLOW_UP_2_DELAY_MINUTES)
             db.add(cust)
         db.commit()
-        logger.info(f"Follow-Up 1 completed for {wa_id}. Scheduled Follow-Up 2 in 5 minutes")
+        logger.info(f"Follow-Up 1 completed for {wa_id}. Scheduled Follow-Up 2 in {FOLLOW_UP_2_DELAY_MINUTES} minutes")
     except Exception as e:
         logger.error(f"Failed to update customer state after Follow-Up 1 to {wa_id}: {e}")
         db.rollback()
