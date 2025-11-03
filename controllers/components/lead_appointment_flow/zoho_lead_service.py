@@ -51,7 +51,12 @@ class ZohoLeadService:
         # Prepare description with appointment details
         desc_parts = [description] if description else []
         
+        language_value = None
         if appointment_details:
+            try:
+                flow_type = appointment_details.get("flow_type")
+            except Exception:
+                flow_type = None
             if appointment_details.get("selected_city"):
                 desc_parts.append(f"City: {appointment_details['selected_city']}")
             if appointment_details.get("selected_clinic"):
@@ -60,6 +65,18 @@ class ZohoLeadService:
                 desc_parts.append(f"Preferred Date: {appointment_details['custom_date']}")
             if appointment_details.get("selected_time"):
                 desc_parts.append(f"Preferred Time: {appointment_details['selected_time']}")
+            # Language only for lead appointment flow
+            if flow_type == "lead_appointment_flow":
+                try:
+                    lang = appointment_details.get("language")
+                    if isinstance(lang, str) and lang.strip():
+                        language_value = lang.strip()
+                    else:
+                        language_value = "English"
+                    desc_parts.append(f"Language: {language_value}")
+                except Exception:
+                    language_value = "English"
+                    desc_parts.append("Language: English")
         
         full_description = " | ".join(desc_parts) if desc_parts else "Lead from WhatsApp"
 
@@ -128,6 +145,8 @@ class ZohoLeadService:
                     "Lead_Source": lead_source,
                     "Company": company,
                     "Description": full_description,
+                    # Language field only for lead appointment flow
+                    **({"Language": language_value} if language_value else {}),
                     # Business fields expected by Zoho
                     **({"Concerns": concerns_value} if concerns_value else {}),
                     **({"Additional_Concerns": additional_concerns_value} if additional_concerns_value else {}),
@@ -527,7 +546,28 @@ async def create_lead_for_appointment(
                 last_name = name_parts[1] if len(name_parts) > 1 else ""
         
         print(f"👤 [LEAD APPOINTMENT FLOW] Name mapping - Original: '{user_name}', First: '{first_name}', Last: '{last_name}'")
-        
+
+        # Determine flow type and set Lead Source / Sub Source / Language per flow
+        try:
+            flow_type = (appointment_details or {}).get("flow_type")
+        except Exception:
+            flow_type = None
+
+        if flow_type == "treatment_flow":
+            # Treatment flow
+            lead_source_val = "Business Listing"
+            sub_source_val = "WhatsApp"
+            language_val = None  # Not specified for treatment flow
+        else:
+            # Lead appointment flow (default)
+            try:
+                lead_source_val = session_data.get("lead_source") or "Facebook"
+                language_val = session_data.get("language") or "English"
+            except Exception:
+                lead_source_val = "Facebook"
+                language_val = "English"
+            sub_source_val = "Chats"
+
         result = zoho_lead_service.create_lead(
             first_name=first_name,
             last_name=last_name,
@@ -535,10 +575,11 @@ async def create_lead_for_appointment(
             phone=phone_number,
             mobile=phone_number,
             city=city,
-            lead_source="Business Listing",
+            lead_source=lead_source_val,
             company="Oliva Skin & Hair Clinic",
-            description="Lead from WhatsApp",
+            description=(f"Lead from WhatsApp | Language: {language_val}" if language_val else "Lead from WhatsApp"),
             appointment_details={
+                "flow_type": (flow_type or "lead_appointment_flow"),
                 "selected_city": city,
                 "selected_clinic": clinic,
                 **({"selected_location": location} if 'location' in locals() and location else {}),
@@ -547,11 +588,13 @@ async def create_lead_for_appointment(
                 "selected_time": appointment_time,
                 "selected_concern": selected_concern,
                 "zoho_mapped_concern": zoho_mapped_concern,
+                "lead_source": lead_source_val,
+                **({"language": language_val} if language_val else {}),
                 # Preserve phone numbers from customer table
                 **({"wa_phone": appointment_details.get("wa_phone")} if appointment_details.get("wa_phone") else {}),
                 **({"corrected_phone": appointment_details.get("corrected_phone")} if appointment_details.get("corrected_phone") else {}),
             },
-            sub_source="Chats",
+            sub_source=sub_source_val,
             
         )
         

@@ -225,6 +225,20 @@ async def send_not_now_followup(db: Session, *, wa_id: str, customer: Any) -> Di
                         "options": ["Book Appointment"]
                     }
                 })
+                
+                # Create a Zoho lead immediately with current details and NO_CALLBACK status
+                try:
+                    from .zoho_lead_service import handle_termination_event
+                    await handle_termination_event(
+                        db=db,
+                        wa_id=wa_id,
+                        customer=customer,
+                        termination_reason="not_right_now",
+                        appointment_details={}
+                    )
+                    print(f"[lead_appointment_flow] DEBUG - Lead created on 'Not Now' click (template path)")
+                except Exception as e:
+                    print(f"[lead_appointment_flow] WARNING - Could not create lead on 'Not Now': {e}")
             except Exception as e:
                 print(f"[lead_appointment_flow] WARNING - Database save or WebSocket broadcast failed: {e}")
             
