@@ -119,6 +119,9 @@ async def handle_welcome_response(
             if wa_id not in lead_appointment_state:
                 lead_appointment_state[wa_id] = {}
             lead_appointment_state[wa_id]["flow_context"] = "lead_appointment"
+            # Set default Zoho fields for lead appointment flow
+            lead_appointment_state[wa_id]["lead_source"] = "Facebook"
+            lead_appointment_state[wa_id]["language"] = "English"
             print(f"[lead_appointment_flow] DEBUG - Initialized lead appointment state for {wa_id}")
         except Exception as e:
             print(f"[lead_appointment_flow] WARNING - Could not initialize lead appointment state: {e}")
@@ -138,6 +141,9 @@ async def handle_welcome_response(
             if wa_id not in lead_appointment_state:
                 lead_appointment_state[wa_id] = {}
             lead_appointment_state[wa_id]["flow_context"] = "lead_appointment"
+            # Set default Zoho fields for lead appointment flow
+            lead_appointment_state[wa_id]["lead_source"] = "Facebook"
+            lead_appointment_state[wa_id]["language"] = "English"
             print(f"[lead_appointment_flow] DEBUG - Initialized lead appointment state for {wa_id}")
         except Exception as e:
             print(f"[lead_appointment_flow] WARNING - Could not initialize lead appointment state: {e}")

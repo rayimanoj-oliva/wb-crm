@@ -1,0 +1,43 @@
+{
+    "object": "whatsapp_business_account",
+    "entry": [
+        {
+            "id": "WHATSAPP_BUSINESS_ACCOUNT_ID",
+            "changes": [
+                {
+                    "field": "messages",
+                    "value": {
+                        "messaging_product": "whatsapp",
+                        "metadata": {
+                            "display_phone_number": "917729992376",
+                            "phone_number_id": "PHONE_NUMBER_ID"
+                        },
+                        "contacts": [
+                            {
+                                "profile": {
+                                    "name": "Test User"
+                                },
+                                "wa_id": "918309866859"
+                            }
+                        ],
+                        "messages": [
+                            {
+                                "id": "wamid.not_right_now",
+                                "from": "918309866859",
+                                "timestamp": "1704067200",
+                                "type": "interactive",
+                                "interactive": {
+                                    "type": "button_reply",
+                                    "button_reply": {
+                                        "id": "no_callback_not_now",
+                                        "title": "Not right now"
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    ]
+}

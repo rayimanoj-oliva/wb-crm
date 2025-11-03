@@ -51,10 +51,21 @@ async def send_message_to_waid(wa_id: str, message_body: str, db, from_wa_id="91
     )
     new_msg = message_service.create_message(db, message_data)
 
-    # Schedule a follow-up for any outbound message unless explicitly disabled
+    # Schedule a follow-up for outbound messages for treatment flow only.
+    # If caller asked explicitly, honor schedule_followup flag.
+    # Otherwise, auto-schedule when NOT in lead appointment flow.
     try:
-        if schedule_followup:
-            from services.followup_service import FOLLOW_UP_1_DELAY_MINUTES
+        from services.followup_service import FOLLOW_UP_1_DELAY_MINUTES
+        def _in_lead_flow(_wa_id: str) -> bool:
+            try:
+                from controllers.web_socket import lead_appointment_state  # type: ignore
+                st = lead_appointment_state.get(_wa_id) or {}
+                return bool(st) and (st.get("flow_context") == "lead_appointment")
+            except Exception:
+                return False
+
+        should_schedule = schedule_followup or (not schedule_followup and not _in_lead_flow(wa_id))
+        if should_schedule:
             schedule_next_followup(db, customer_id=customer.id, delay_minutes=FOLLOW_UP_1_DELAY_MINUTES, stage_label=stage_label)
     except Exception:
         pass

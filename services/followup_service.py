@@ -31,6 +31,19 @@ if not logger.handlers:
 logger.propagate = True  # Ensure messages propagate to root logger
 
 
+# Helper: check if a WA user is currently in lead appointment flow (skip followups in that case)
+def _is_in_lead_appointment_flow(wa_id: Optional[str]) -> bool:
+    try:
+        if not wa_id:
+            return False
+        # Import here to avoid heavy module imports at top-level
+        from controllers.web_socket import lead_appointment_state  # type: ignore
+        state = lead_appointment_state.get(wa_id) or {}
+        # Only treat as in lead flow if explicit context is set
+        return bool(state) and (state.get("flow_context") == "lead_appointment")
+    except Exception:
+        return False
+
 # Follow-up timing constants (in minutes)
 FOLLOW_UP_1_DELAY_MINUTES = 5  # Time before sending Follow-Up 1
 FOLLOW_UP_2_DELAY_MINUTES = 30  # Time after Follow-Up 1 before sending Follow-Up 2
@@ -115,6 +128,10 @@ def schedule_next_followup(db: Session, *, customer_id, delay_minutes: int = FOL
     if not customer:
         logger.warning(f"Customer {customer_id} not found for scheduling follow-up")
         return
+    # Skip scheduling follow-ups while user is in lead appointment flow
+    if _is_in_lead_appointment_flow(getattr(customer, "wa_id", None)):
+        logger.info(f"[followup_service] Skipping follow-up scheduling for {customer.wa_id} - user in lead appointment flow")
+        return
     # If a Follow-Up 1 wait window is already active, do not overwrite it with generic outbound scheduling
     if stage_label is None and (customer.last_message_type or "").lower() == "follow_up_1_sent" and customer.next_followup_time:
         logger.info(f"Skipping follow-up scheduling for customer {customer_id} - Follow-Up 1 already active")
@@ -154,12 +171,13 @@ def mark_customer_replied(db: Session, *, customer_id, reset_followup_timer: boo
     customer.next_followup_time = None
     customer.last_message_type = None
     
-    # Reset follow-up timer: schedule a new Follow-Up 1 starting from this reply
-    # This ensures if customer replies, the timer restarts from their last interaction
-    if reset_followup_timer:
+    # Reset follow-up timer unless user is in lead appointment flow
+    if reset_followup_timer and not _is_in_lead_appointment_flow(getattr(customer, "wa_id", None)):
         followup_time = datetime.utcnow() + timedelta(minutes=FOLLOW_UP_1_DELAY_MINUTES)
         customer.next_followup_time = followup_time
         logger.info(f"[followup_service] Reset follow-up timer for customer {customer.wa_id} (ID: {customer_id}) - new Follow-Up 1 scheduled at {followup_time} (from last interaction, {FOLLOW_UP_1_DELAY_MINUTES} minutes)")
+    elif reset_followup_timer:
+        logger.info(f"[followup_service] Not scheduling follow-up for {customer.wa_id} - user in lead appointment flow")
     
     db.add(customer)
     try:
@@ -187,6 +205,12 @@ def due_customers_for_followup(db: Session):
     # Follow-Up 1 should ONLY be sent if 2 minutes have passed since last user interaction
     actually_due = []
     for c in due:
+        # Skip users currently in lead appointment flow
+        if _is_in_lead_appointment_flow(getattr(c, "wa_id", None)):
+            logger.info(f"[followup_service] Skipping due follow-up for {c.wa_id} - user in lead appointment flow")
+            c.next_followup_time = None
+            db.add(c)
+            continue
         if c.last_interaction_time is None:
             # No interaction recorded, proceed with follow-up (shouldn't happen normally)
             actually_due.append(c)
@@ -266,6 +290,10 @@ async def send_followup1_interactive(db: Session, *, wa_id: str, from_wa_id: str
     """Send Follow-Up 1 as an interactive Yes/No message.
     This function is self-contained and does not rely on other send helpers.
     """
+    # Guard: do not send follow-ups for users in lead appointment flow
+    if _is_in_lead_appointment_flow(wa_id):
+        logger.info(f"[followup_service] Not sending Follow-Up 1 to {wa_id} - user in lead appointment flow")
+        return
     logger.info(f"Starting Follow-Up 1 send to {wa_id}")
     
     token_obj = whatsapp_service.get_latest_token(db)
@@ -339,6 +367,10 @@ async def send_followup2(db: Session, *, wa_id: str, from_wa_id: str = "91772999
     """Send Follow-Up 2 message to customer.
     This function sends the Follow-Up 2 text message and logs the process.
     """
+    # Guard: do not send follow-ups for users in lead appointment flow
+    if _is_in_lead_appointment_flow(wa_id):
+        logger.info(f"[followup_service] Not sending Follow-Up 2 to {wa_id} - user in lead appointment flow")
+        return
     logger.info(f"Starting Follow-Up 2 send to {wa_id}")
     
     token_obj = whatsapp_service.get_latest_token(db)

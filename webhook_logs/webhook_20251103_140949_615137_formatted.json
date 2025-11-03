@@ -1,0 +1,39 @@
+{
+  "entry": [
+    {
+      "changes": [
+        {
+          "value": {
+            "messages": [
+              {
+                "id": "wamid.TEST123",
+                "from": "918309866859",
+                "timestamp": "1730400000",
+                "type": "interactive",
+                "interactive": {
+                  "type": "button_reply",
+                  "button_reply": {
+                    "id": "followup_yes",
+                    "title": "✅ Yes"
+                  }
+                }
+              }
+            ],
+            "contacts": [
+              {
+                "wa_id": "918309866859",
+                "profile": {
+                  "name": "Test User"
+                }
+              }
+            ],
+            "metadata": {
+              "display_phone_number": "917729992376",
+              "phone_number_id": "367633743092037"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

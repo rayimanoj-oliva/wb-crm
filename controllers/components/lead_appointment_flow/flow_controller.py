@@ -180,6 +180,9 @@ async def handle_text_message(
             if wa_id not in lead_appointment_state:
                 lead_appointment_state[wa_id] = {}
             lead_appointment_state[wa_id]["flow_context"] = "lead_appointment"
+            # Set default Zoho fields for lead appointment flow
+            lead_appointment_state[wa_id]["lead_source"] = "Facebook"
+            lead_appointment_state[wa_id]["language"] = "English"
             
             # Map starting point message to concern for Zoho
             concern_mapping = {

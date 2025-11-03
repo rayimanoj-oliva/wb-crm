@@ -24,40 +24,75 @@ def get_clinics_for_city(city: str) -> List[Dict[str, str]]:
     # Static mapping of cities to clinics
     # In a real implementation, this could be fetched from a database
     clinics_mapping = {
-        "Hyderabad": [
-            {"id": "clinic_hyderabad_banjara", "title": "Banjara Hills"},
-            {"id": "clinic_hyderabad_jubilee", "title": "Jubilee Hills"},
-            {"id": "clinic_hyderabad_hitec", "title": "HITEC City"},
-            {"id": "clinic_hyderabad_secunderabad", "title": "Secunderabad"},
-        ],
-        "Bengaluru": [
-            {"id": "clinic_bengaluru_koramangala", "title": "Koramangala"},
-            {"id": "clinic_bengaluru_indiranagar", "title": "Indiranagar"},
-            {"id": "clinic_bengaluru_whitefield", "title": "Whitefield"},
-            {"id": "clinic_bengaluru_jayanagar", "title": "Jayanagar"},
-        ],
-        "Chennai": [
-            {"id": "clinic_chennai_tnagar", "title": "T. Nagar"},
-            {"id": "clinic_chennai_adyar", "title": "Adyar"},
-            {"id": "clinic_chennai_anna_nagar", "title": "Anna Nagar"},
-            {"id": "clinic_chennai_velachery", "title": "Velachery"},
-        ],
-        "Pune": [
-            {"id": "clinic_pune_koregaon", "title": "Koregaon Park"},
-            {"id": "clinic_pune_baner", "title": "Baner"},
-            {"id": "clinic_pune_hadapsar", "title": "Hadapsar"},
-            {"id": "clinic_pune_viman_nagar", "title": "Viman Nagar"},
-        ],
-        "Kochi": [
-            {"id": "clinic_kochi_kaloor", "title": "Kaloor"},
-            {"id": "clinic_kochi_kakkanad", "title": "Kakkanad"},
-            {"id": "clinic_kochi_edapally", "title": "Edapally"},
-        ],
-        "Other": [
-            {"id": "clinic_other_consultation", "title": "Online Consultation"},
-            {"id": "clinic_other_callback", "title": "Call Back Required"},
-        ]
-    }
+    "Ahmedabad": [ 
+        {"id": "clinic_ahmedabad_cgroad", "title": "CG Road"},
+    ],
+
+    "Bangalore": [
+        {"id": "clinic_bangalore_electroniccity", "title": "Electronic City"},
+        {"id": "clinic_bangalore_hrbr", "title": "HRBR Layout"},
+        {"id": "clinic_bangalore_hsr", "title": "HSR Layout"},
+        {"id": "clinic_bangalore_indiranagar", "title": "Indira Nagar"},
+        {"id": "clinic_bangalore_jayanagar", "title": "Jayanagar"},
+        {"id": "clinic_bangalore_koramangala", "title": "Koramangala"},
+        {"id": "clinic_bangalore_sadashivanagar", "title": "Sadashiva Nagar"},
+        {"id": "clinic_bangalore_whitefield", "title": "Whitefield"},
+        {"id": "clinic_bangalore_yelahanka", "title": "Yelahanka"},
+    ],
+
+    "Chennai": [
+        {"id": "clinic_chennai_adyar", "title": "Adyar"},
+        {"id": "clinic_chennai_alwarpet", "title": "Alwarpet"},
+        {"id": "clinic_chennai_annanagar", "title": "Anna Nagar"},
+        {"id": "clinic_chennai_sholinganallur", "title": "Sholinganallur"},
+    ],
+
+    "Hyderabad": [
+        {"id": "clinic_hyderabad_banjara", "title": "Banjara Hills"},
+        {"id": "clinic_hyderabad_dilsukhnagar", "title": "Dilsukhnagar"},
+        {"id": "clinic_hyderabad_gachibowli", "title": "Gachibowli"},
+        {"id": "clinic_hyderabad_himayatnagar", "title": "Himayatnagar"},
+        {"id": "clinic_hyderabad_jubilee", "title": "Jubilee Hills"},
+        {"id": "clinic_hyderabad_kokapet", "title": "Kokapet"},
+        {"id": "clinic_hyderabad_kukatpally", "title": "Kukatpally"},
+        {"id": "clinic_hyderabad_secunderabad", "title": "Secunderabad"},
+    ],
+
+    "Kochi": [
+        {"id": "clinic_kochi_kadavanthra", "title": "Kadavanthra"},
+    ],
+
+    "Kolkata": [
+        {"id": "clinic_kolkata_jodhpurpark", "title": "Jodhpur Park"},
+        {"id": "clinic_kolkata_parkstreet", "title": "Park Street"},
+        {"id": "clinic_kolkata_saltlake", "title": "Salt Lake"},
+    ],
+
+    "Ludhiana": [
+        {"id": "clinic_ludhiana_sarabhanagar", "title": "Sarabha Nagar"},
+    ],
+
+    "Pune": [
+        {"id": "clinic_pune_aundh", "title": "Aundh"},
+        {"id": "clinic_pune_kalyaninagar", "title": "Kalyani Nagar"},
+        {"id": "clinic_pune_kharadi", "title": "Kharadi"},
+        {"id": "clinic_pune_shivajinagar", "title": "Shivaji Nagar"},
+    ],
+
+    "Vijayawada": [
+        {"id": "clinic_vijayawada_gurunanakcolony", "title": "Guru Nanak Colony Road"},
+    ],
+
+    "Vizag": [
+        {"id": "clinic_vizag_dwarakanagar", "title": "Dwaraka Nagar"},
+    ],
+
+    "Other": [
+        {"id": "clinic_other_consultation", "title": "Online Consultation"},
+        {"id": "clinic_other_callback", "title": "Call Back Required"},
+    ],
+}
+
     
     return clinics_mapping.get(city, [])
 

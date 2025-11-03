@@ -1,0 +1,38 @@
+{
+  "object": "whatsapp_business_account",
+  "entry": [
+    {
+      "id": "917729992376",
+      "changes": [
+        {
+          "field": "messages",
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": {
+              "display_phone_number": "917729992376"
+            },
+            "contacts": [
+              {
+                "wa_id": "918309866859",
+                "profile": {
+                  "name": "Test"
+                }
+              }
+            ],
+            "messages": [
+              {
+                "from": "918309866859",
+                "id": "wamid.test1",
+                "timestamp": "1759070367",
+                "type": "text",
+                "text": {
+                  "body": "Hi, Oliva I want to know more about services in Jublie Hills, Hyderabad clinic"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
