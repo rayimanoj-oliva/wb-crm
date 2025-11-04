@@ -146,10 +146,11 @@ async def send_clinic_location(db: Session, *, wa_id: str, city: str) -> Dict[st
         resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
         
         if resp.status_code == 200:
+            message_id = f"outbound_{datetime.now().timestamp()}"
             try:
                 # Get message ID from response
                 response_data = resp.json()
-                message_id = response_data.get("messages", [{}])[0].get("id", f"outbound_{datetime.now().timestamp()}")
+                message_id = response_data.get("messages", [{}])[0].get("id", message_id)
                 
                 # Get or create customer
                 from services.customer_service import get_or_create_customer
@@ -186,6 +187,13 @@ async def send_clinic_location(db: Session, *, wa_id: str, city: str) -> Dict[st
                 })
             except Exception as e:
                 print(f"[lead_appointment_flow] WARNING - Database save or WebSocket broadcast failed: {e}")
+            # Arm Follow-Up 1 after this outbound prompt in case user stops here
+            try:
+                import asyncio
+                from .follow_up1 import schedule_follow_up1_after_welcome
+                asyncio.create_task(schedule_follow_up1_after_welcome(wa_id, datetime.utcnow()))
+            except Exception:
+                pass
             
             return {"success": True, "message_id": message_id}
         else:

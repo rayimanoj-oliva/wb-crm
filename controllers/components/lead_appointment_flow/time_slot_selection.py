@@ -25,6 +25,13 @@ async def send_time_slot_selection(db: Session, *, wa_id: str) -> Dict[str, Any]
         # Use LEAD APPOINTMENT specific week list functionality
         from controllers.components.interactive_type import send_lead_week_list
         result = await send_lead_week_list(db, wa_id)
+        # Arm Follow-Up 1 after this outbound prompt in case user stops here
+        try:
+            import asyncio
+            from .follow_up1 import schedule_follow_up1_after_welcome
+            asyncio.create_task(schedule_follow_up1_after_welcome(wa_id, datetime.utcnow()))
+        except Exception:
+            pass
         return {"success": result.get("success", False), "result": result}
             
     except Exception as e:

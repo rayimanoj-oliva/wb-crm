@@ -4,6 +4,7 @@ Orchestrates the entire booking process from start to finish
 """
 
 from datetime import datetime
+import asyncio
 from typing import Dict, Any, Optional
 import re
 
@@ -221,6 +222,14 @@ async def handle_text_message(
         
         from .auto_welcome import send_auto_welcome_message
         result = await send_auto_welcome_message(db, wa_id=wa_id)
+        # Schedule Follow-Up 1 after 5 minutes if no reply to auto-welcome
+        try:
+            from .follow_up1 import schedule_follow_up1_after_welcome
+            sent_at = datetime.utcnow()
+            asyncio.create_task(schedule_follow_up1_after_welcome(wa_id, sent_at))
+        except Exception as _e:
+            # Non-fatal if scheduling fails; continue flow
+            pass
         return {"status": "auto_welcome_sent", "result": result}
     
     return {"status": "skipped"}
@@ -263,6 +272,18 @@ async def handle_interactive_response(
             print(f"[lead_appointment_flow] WARNING - Could not mark customer replied for interactive: {e}")
         
         # Route to appropriate handler based on reply_id
+        if reply_id == "followup_yes":
+            # User tapped Yes in Follow-Up 1 → re-trigger auto-welcome template and re-schedule FU1
+            from .auto_welcome import send_auto_welcome_message
+            result = await send_auto_welcome_message(db, wa_id=wa_id)
+            try:
+                from .follow_up1 import schedule_follow_up1_after_welcome
+                sent_at = datetime.utcnow()
+                asyncio.create_task(schedule_follow_up1_after_welcome(wa_id, sent_at))
+            except Exception:
+                pass
+            return {"status": "followup_yes_retriggered", "result": result}
+        
         if reply_id.startswith("yes_book_appointment") or reply_id.startswith("not_now") or reply_id.startswith("book_appointment"):
             # Auto-welcome response (including "Book Appointment" from Not Now flow)
             from .auto_welcome import handle_welcome_response
@@ -528,7 +549,8 @@ async def send_callback_confirmation_interactive(
             "interactive": {
                 "type": "button",
                 "body": {
-                    "text": "Thank you for sharing your preferred location & time.\nWould you like our agent to call you to confirm your appointment?"
+                    "text": 
+"Thank you for sharing your preferred location & time. *Your appointment is not yet confirmed*\nWould you like our agent to call you to confirm your appointment?"
                 },
                 "action": {
                     "buttons": [
@@ -542,10 +564,11 @@ async def send_callback_confirmation_interactive(
         resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
         
         if resp.status_code == 200:
+            message_id = f"outbound_{datetime.now().timestamp()}"
             try:
                 # Get message ID from response
                 response_data = resp.json()
-                message_id = response_data.get("messages", [{}])[0].get("id", f"outbound_{datetime.now().timestamp()}")
+                message_id = response_data.get("messages", [{}])[0].get("id", message_id)
                 
                 # Save outbound message to database
                 from services.message_service import create_message
@@ -556,7 +579,7 @@ async def send_callback_confirmation_interactive(
                     from_wa_id=os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
                     to_wa_id=wa_id,
                     type="interactive",
-                    body="Thank you for sharing your preferred location & time.\nWould you like our agent to call you to confirm your appointment?",
+                    body="Thank you for sharing your preferred location & time. *Your appointment is not yet confirmed*\nWould you like our agent to call you to confirm your appointment?",
                     timestamp=datetime.now(),
                     customer_id=customer.id,
                 )
@@ -568,7 +591,7 @@ async def send_callback_confirmation_interactive(
                     "from": os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
                     "to": wa_id,
                     "type": "interactive",
-                    "message": "Thank you for sharing your preferred location & time.\nWould you like our agent to call you to confirm your appointment?",
+                    "message": "Thank you for sharing your preferred location & time. *Your appointment is not yet confirmed*\nWould you like our agent to call you to confirm your appointment?",
                     "timestamp": datetime.now().isoformat(),
                     "meta": {
                         "kind": "buttons",
@@ -577,6 +600,13 @@ async def send_callback_confirmation_interactive(
                 })
             except Exception as e:
                 print(f"[lead_appointment_flow] WARNING - Database save or WebSocket broadcast failed: {e}")
+            # Arm Follow-Up 1 after this outbound prompt in case user stops here
+            try:
+                import asyncio
+                from .follow_up1 import schedule_follow_up1_after_welcome
+                asyncio.create_task(schedule_follow_up1_after_welcome(wa_id, datetime.utcnow()))
+            except Exception:
+                pass
             
             return {"success": True, "message_id": message_id}
         else:
