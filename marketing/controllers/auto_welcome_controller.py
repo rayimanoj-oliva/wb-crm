@@ -624,5 +624,3 @@ async def verify_auto_webhook(request: Request):
         return PlainTextResponse(content=challenge)
     else:
         raise HTTPException(status_code=403)
-
-

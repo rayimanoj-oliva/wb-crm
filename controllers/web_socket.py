@@ -48,430 +48,16 @@ from controllers.components.number_flows.mr_welcome.flow import run_mr_welcome_n
 from controllers.components.products_flow import run_buy_products_flow
 from marketing.whatsapp_numbers import get_number_config
 
+# Webhook verification token
+VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "default_verify_token")
+
+# Manoj Changes
 from controllers.ws_channel import router
+from controllers.services import *
 
-# In-memory store: { wa_id: True/False }
-awaiting_address_users = {}
-# Track whether we've already nudged the user to use the form to avoid repeats
-address_nudge_sent = {}
-
-# In-memory appointment scheduling state per user
-# Structure: { wa_id: { "date": "YYYY-MM-DD" } }
-appointment_state = {}
-
-# In-memory lead appointment flow state per user
-# Structure: { wa_id: { "selected_city": str, "selected_clinic": str, "custom_date": str, "waiting_for_custom_date": bool, "clinic_id": str } }
-lead_appointment_state = {}
-
-# Flow token storage
-flow_tokens = {}
-
-def generate_flow_token(wa_id: str) -> str:
-    """Generate a unique flow token for a user"""
-    flow_token = str(uuid.uuid4())
-    flow_tokens[wa_id] = flow_token
-    return flow_token
-
-
-# WebSocket endpoint
-@router.websocket("/channel")
-async def websocket_endpoint(websocket: WebSocket):
-    await manager.connect(websocket)
-    try:
-        while True:
-            # Keeping connection alive; log pings occasionally
-            try:
-                _ = await websocket.receive_text()
-            except WebSocketDisconnect:
-                break
-            except RuntimeError:
-                # Happens if we try to receive after disconnect
-                break
-            except Exception:
-                # Ignore non-text frames or transient errors
-                await asyncio.sleep(0.5)
-    except WebSocketDisconnect:
-        pass
-    finally:
-        manager.disconnect(websocket)
-
-VERIFY_TOKEN = "Oliva@123"
-
-# Legacy address text guidance removed per new Provide Address flow
-
-
-# Legacy date list removed. Week/day selection is handled in controllers.components.interactive_type
-
-
-async def _send_address_flow_directly(wa_id: str, db: Session, customer_id=None):
-    """Send smart address selection - check for saved addresses first"""
-    try:
-        # First check if user has saved addresses
-        if customer_id:
-            from services.address_service import get_customer_addresses
-            saved_addresses = get_customer_addresses(db, customer_id)
-            
-            if saved_addresses:
-                # User has saved addresses - show smart selection
-                await _send_smart_address_selection(wa_id, db, saved_addresses, customer_id)
-                return
-        
-        # No saved addresses or customer_id not provided - send address form directly
-        await _send_address_form_directly(wa_id, db, customer_id)
-        
-    except Exception as e:
-        print(f"Error in _send_address_flow_directly: {e}")
-        await send_message_to_waid(wa_id, "❌ Unable to send address form right now. Please try again later.", db)
-
-
-async def _send_smart_address_selection(wa_id: str, db: Session, saved_addresses: list, customer_id):
-    """Send interactive message with saved addresses and options.
-
-    If multiple addresses exist, send a list message where each row selects that address.
-    Also include an action to add a new address.
-    """
-    try:
-        token_entry = get_latest_token(db)
-        if not token_entry or not token_entry.token:
-            await send_message_to_waid(wa_id, "❌ Unable to send address selection right now. Please try again later.", db)
-            return
-
-        access_token = token_entry.token
-        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-        phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
-
-        # Build a list of saved addresses (max 10 per WhatsApp constraints)
-        rows = []
-        for addr in saved_addresses[:10]:
-            title = f"{addr.full_name[:35]}"  # titles are limited; keep concise
-            subtitle = f"{addr.house_street[:60]} | {addr.city} - {addr.pincode}"
-            rows.append({
-                "id": f"use_address_{addr.id}",
-                "title": title,
-                "description": subtitle,
-            })
-
-        # Create interactive list with an extra row to add a new address
-        rows.append({
-            "id": "add_new_address",
-            "title": "➕ Add New Address",
-            "description": "Provide a different delivery address",
-        })
-
-        payload = {
-            "messaging_product": "whatsapp",
-            "to": wa_id,
-            "type": "interactive",
-            "interactive": {
-                "type": "list",
-                "header": {"type": "text", "text": "📍 Choose Delivery Address"},
-                "body": {"text": "Select one of your saved addresses or add a new one."},
-                "footer": {"text": "You can manage addresses anytime."},
-                "action": {
-                    "button": "Select",
-                    "sections": [
-                        {
-                            "title": "Saved Addresses",
-                            "rows": rows
-                        }
-                    ]
-                }
-            }
-        }
-
-        resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
-        if resp.status_code == 200:
-            try:
-                msg_id = resp.json()["messages"][0]["id"]
-                message = MessageCreate(
-                    message_id=msg_id,
-                    from_wa_id=os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
-                    to_wa_id=wa_id,
-                    type="interactive",
-                    body="Address selection sent",
-                    timestamp=datetime.now(),
-                    customer_id=customer_id
-                )
-                message_service.create_message(db, message)
-                db.commit()  # Explicitly commit the transaction
-                
-                await manager.broadcast({
-                    "from": os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
-                    "to": wa_id,
-                    "type": "interactive",
-                    "message": "Address selection sent",
-                    "timestamp": datetime.now().isoformat()
-                })
-                
-            except Exception as e:
-                print(f"Error saving address selection message: {e}")
-        else:
-            print(f"Failed to send address selection: {resp.text}")
-            # Fallback to direct address form
-            await _send_address_form_directly(wa_id, db, customer_id)
-            
-    except Exception as e:
-        print(f"Error in _send_smart_address_selection: {e}")
-        # Fallback to direct address form
-        await _send_address_form_directly(wa_id, db, customer_id)
-
-
-async def _send_address_form_directly(wa_id: str, db: Session, customer_id=None):
-    """Send address collection flow directly (original function)"""
-    try:
-        token_entry = get_latest_token(db)
-        if not token_entry or not token_entry.token:
-            await send_message_to_waid(wa_id, "❌ Unable to send address form right now. Please try again later.", db)
-            return
-
-        access_token = token_entry.token
-        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-        phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
-
-        # Send address flow directly
-        payload = {
-            "messaging_product": "whatsapp",
-            "to": wa_id,
-            "type": "interactive",
-            "interactive": {
-                "type": "flow",
-                "header": {"type": "text", "text": "📍 Address Collection"},
-                "body": {"text": "Please provide your delivery address using the form below."},
-                "footer": {"text": "All fields are required for delivery"},
-                "action": {
-                    "name": "flow",
-                    "parameters": {
-                        "flow_message_version": "3",
-                        "flow_id": "1314521433687006",
-                        "flow_cta": "Provide Address",
-                        "flow_token": generate_flow_token(wa_id)
-                    }
-                }
-            }
-        }
-
-        resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
-        if resp.status_code == 200:
-            try:
-                flow_msg_id = resp.json()["messages"][0]["id"]
-                flow_message = MessageCreate(
-                    message_id=flow_msg_id,
-                    from_wa_id=os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
-                    to_wa_id=wa_id,
-                    type="interactive",
-                    body="Address collection flow sent",
-                    timestamp=datetime.now(),
-                    customer_id=customer_id
-                )
-                message_service.create_message(db, flow_message)
-                db.commit()  # Explicitly commit the transaction
-                
-                await manager.broadcast({
-                    "from": os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
-                    "to": wa_id,
-                    "type": "interactive",
-                    "message": "Address collection flow sent",
-                    "timestamp": datetime.now().isoformat()
-                })
-                
-                # Mark user as awaiting address
-                awaiting_address_users[wa_id] = True
-                address_nudge_sent[wa_id] = False
-                
-            except Exception as e:
-                print(f"Error saving address flow message: {e}")
-        else:
-            print(f"Failed to send address flow: {resp.text}")
-            await send_message_to_waid(wa_id, "❌ Unable to send address form right now. Please try again later.", db)
-    except Exception as e:
-        print(f"Error in _send_address_form_directly: {e}")
-        await send_message_to_waid(wa_id, "❌ Unable to send address form right now. Please try again later.", db)
-
-
-async def send_time_buttons(wa_id: str, db: Session):
-    try:
-        token_entry = get_latest_token(db)
-        if not token_entry or not token_entry.token:
-            await send_message_to_waid(wa_id, "❌ Unable to fetch time slots right now.", db)
-            return {"success": False}
-        access_token = token_entry.token
-        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-        phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
-
-        selected_date = (appointment_state.get(wa_id) or {}).get("date")
-        date_note = f" for {selected_date}" if selected_date else ""
-
-        payload = {
-            "messaging_product": "whatsapp",
-            "to": wa_id,
-            "type": "interactive",
-            "interactive": {
-                "type": "button",
-                "body": {"text": f"Great! Now choose a preferred time slot \u23F0{date_note}"},
-                "action": {
-                    "buttons": [
-                        {"type": "reply", "reply": {"id": "time_10_00", "title": "10:00 AM"}},
-                        {"type": "reply", "reply": {"id": "time_14_00", "title": "2:00 PM"}},
-                        {"type": "reply", "reply": {"id": "time_18_00", "title": "6:00 PM"}}
-                    ]
-                }
-            }
-        }
-
-        resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
-        if resp.status_code == 200:
-            try:
-                display_from = os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376")
-                await manager.broadcast({
-                    "from": display_from,
-                    "to": wa_id,
-                    "type": "interactive",
-                    "message": "Choose a preferred time slot",
-                    "timestamp": datetime.now().isoformat(),
-                    "meta": {"kind": "buttons", "options": ["10:00 AM", "2:00 PM", "6:00 PM"]}
-                })
-            except Exception:
-                pass
-            return {"success": True}
-        else:
-            await send_message_to_waid(wa_id, "❌ Could not send time slots. Please try again.", db)
-            return {"success": False, "error": resp.text}
-    except Exception as e:
-        await send_message_to_waid(wa_id, f"❌ Error sending time slots: {str(e)}", db)
-        return {"success": False, "error": str(e)}
-
-
-async def _confirm_appointment(wa_id: str, db: Session, date_iso: str, time_label: str):
-    try:
-        # Get referrer information for center details
-        center_info = ""
-        try:
-            from services.referrer_service import referrer_service
-            referrer = referrer_service.get_referrer_by_wa_id(db, wa_id)
-            if referrer and referrer.center_name:
-                center_info = f" at {referrer.center_name}, {referrer.location}"
-        except Exception:
-            pass
-        
-        # Prepare confirmation prompt with pre-filled name/phone (no thank-you yet)
-        try:
-            from services.customer_service import get_customer_record_by_wa_id
-            customer = get_customer_record_by_wa_id(db, wa_id)
-            display_name = (customer.name.strip() if customer and isinstance(customer.name, str) else None) or "there"
-        except Exception:
-            display_name = "there"
-        # Derive phone from wa_id as +91XXXXXXXXXX if applicable
-        try:
-            import re as _re
-            digits = _re.sub(r"\D", "", wa_id)
-            last10 = digits[-10:] if len(digits) >= 10 else None
-            display_phone = f"+91{last10}" if last10 and len(last10) == 10 else wa_id
-        except Exception:
-            display_phone = wa_id
-
-        confirm_msg = (
-            f"To help us serve you better, please confirm your contact details:\n*{display_name}*\n*{display_phone}*"
-        )
-        await send_message_to_waid(wa_id, confirm_msg, db)
-
-        # Store selection in state until user confirms Yes/No
-        try:
-            appointment_state[wa_id] = {"date": date_iso, "time": time_label}
-        except Exception:
-            pass
-
-        # Follow-up interactive Yes/No confirmation buttons
-        try:
-            from services.whatsapp_service import get_latest_token
-            from config.constants import get_messages_url
-            token_entry_btn = get_latest_token(db)
-            if token_entry_btn and token_entry_btn.token:
-                access_token_btn = token_entry_btn.token
-                phone_id_btn = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
-                headers_btn = {"Authorization": f"Bearer {access_token_btn}", "Content-Type": "application/json"}
-                payload_btn = {
-                    "messaging_product": "whatsapp",
-                    "to": wa_id,
-                    "type": "interactive",
-                    "interactive": {
-                        "type": "button",
-                        "body": {"text": "Are your name and contact number correct? "},
-                        "action": {
-                            "buttons": [
-                                {"type": "reply", "reply": {"id": "confirm_yes", "title": "Yes"}},
-                                {"type": "reply", "reply": {"id": "confirm_no", "title": "No"}},
-                            ]
-                        },
-                    },
-                }
-                try:
-                    _resp_btn = requests.post(get_messages_url(phone_id_btn), headers=headers_btn, json=payload_btn)
-                    try:
-                        print(f"[ws_webhook] DEBUG - confirm buttons sent phone_id={phone_id_btn} status={_resp_btn.status_code}")
-                    except Exception:
-                        pass
-                except Exception as _e_btn:
-                    print(f"[ws_webhook] ERROR - confirm buttons post failed: {_e_btn}")
-                try:
-                    await manager.broadcast({
-                        "from": "system",
-                        "to": wa_id,
-                        "type": "interactive",
-                        "message": "Are your name and contact number correct? ",
-                        "timestamp": datetime.now().isoformat(),
-                        "meta": {"kind": "buttons", "options": ["Yes", "No"]},
-                    })
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        # Do NOT clear state here; we need it when user presses Yes/No
-        # Broadcast
-        try:
-            await manager.broadcast({
-                "from": "system",
-                "to": wa_id,
-                "type": "system",
-                "message": f"Appointment preference captured: {date_iso} {time_label}",
-                "timestamp": datetime.now().isoformat()
-            })
-        except Exception:
-            pass
-        return {"success": True}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-def _upload_header_image(access_token: str, image_path_or_url: str, phone_id: str) -> str:
-    try:
-        content = None
-        filename = None
-        content_type = None
-
-        # Local file path
-        if os.path.isfile(image_path_or_url):
-            filename = os.path.basename(image_path_or_url)
-            content_type = mimetypes.guess_type(image_path_or_url)[0] or "image/jpeg"
-            with open(image_path_or_url, "rb") as f:
-                content = f.read()
-        else:
-            # Assume URL
-            resp = requests.get(image_path_or_url, timeout=15)
-            if resp.status_code != 200:
-                return None
-            content = resp.content
-            filename = os.path.basename(image_path_or_url.split("?")[0]) or "welcome.jpg"
-            content_type = resp.headers.get("Content-Type") or mimetypes.guess_type(image_path_or_url)[0] or "image/jpeg"
-
-        files = {
-            "file": (filename, content, content_type),
-            "messaging_product": (None, "whatsapp")
-        }
-        up = requests.post(get_media_url(phone_id), headers={"Authorization": f"Bearer {access_token}"}, files=files, timeout=20)
-        if up.status_code == 200:
-            return up.json().get("id")
-    except Exception:
-        return None
-    return None
+from controllers.services.appointments import *
+from controllers.utils.media_upload import *
+from controllers.state.memory import *
 
 @router.post("/webhook")
 async def receive_message(request: Request, db: Session = Depends(get_db)):
@@ -917,41 +503,41 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                 })
                             except Exception:
                                 pass
+                            if resp_dbg.status_code == 200:
+                                # Mark treatment context and send name/phone confirmation via same phone_id
+                                try:
+                                    st = appointment_state.get(wa_id) or {}
+                                    st["flow_context"] = "treatment"
+                                    st["from_treatment_flow"] = True
+                                    st["mr_treatment_sent"] = True
+                                    appointment_state[wa_id] = st
+                                except Exception:
+                                    pass
+                                try:
+                                    # Build confirmation message
+                                    st = appointment_state.get(wa_id) or {}
+                                    if not st.get("contact_confirm_sent"):
+                                        try:
+                                            from services.customer_service import get_customer_record_by_wa_id
+                                            _cust = get_customer_record_by_wa_id(db, wa_id)
+                                            display_name = (_cust.name.strip() if _cust and isinstance(_cust.name, str) else None) or "there"
+                                        except Exception:
+                                            display_name = "there"
+                                        import re as _re
+                                        digits = _re.sub(r"\D", "", wa_id)
+                                        last10 = digits[-10:] if len(digits) >= 10 else None
+                                        display_phone = f"+91{last10}" if last10 and len(last10) == 10 else wa_id
+                                        confirm_msg = (
+                                            f"To help us serve you better, please confirm your contact details:\n*{display_name}*\n*{display_phone}*"
+                                        )
+                                        from utils.whatsapp import send_message_to_waid as _send_text
+                                        await _send_text(wa_id, confirm_msg, db, phone_id_hint=str(phone_id_dbg))
+                                        st["contact_confirm_sent"] = True
+                                        appointment_state[wa_id] = st
+                                except Exception:
+                                    pass
                     except Exception:
                         pass
-                        if resp_dbg.status_code == 200:
-                            # Mark treatment context and send name/phone confirmation via same phone_id
-                            try:
-                                st = appointment_state.get(wa_id) or {}
-                                st["flow_context"] = "treatment"
-                                st["from_treatment_flow"] = True
-                                st["mr_treatment_sent"] = True
-                                appointment_state[wa_id] = st
-                            except Exception:
-                                pass
-                            try:
-                                # Build confirmation message
-                                st = appointment_state.get(wa_id) or {}
-                                if not st.get("contact_confirm_sent"):
-                                    try:
-                                        from services.customer_service import get_customer_record_by_wa_id
-                                        _cust = get_customer_record_by_wa_id(db, wa_id)
-                                        display_name = (_cust.name.strip() if _cust and isinstance(_cust.name, str) else None) or "there"
-                                    except Exception:
-                                        display_name = "there"
-                                    import re as _re
-                                    digits = _re.sub(r"\D", "", wa_id)
-                                    last10 = digits[-10:] if len(digits) >= 10 else None
-                                    display_phone = f"+91{last10}" if last10 and len(last10) == 10 else wa_id
-                                    confirm_msg = (
-                                        f"To help us serve you better, please confirm your contact details:\n*{display_name}*\n*{display_phone}*"
-                                    )
-                                    from utils.whatsapp import send_message_to_waid as _send_text
-                                    await _send_text(wa_id, confirm_msg, db, phone_id_hint=str(phone_id_dbg))
-                                    st["contact_confirm_sent"] = True
-                                    appointment_state[wa_id] = st
-                            except Exception:
-                                pass
                 # Any exceptions inside bootstrap are already handled locally
             handled_text = status_val in {"handled"}
 
