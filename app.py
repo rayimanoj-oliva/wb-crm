@@ -5,7 +5,7 @@ from fastapi import FastAPI, Depends, HTTPException
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from datetime import timedelta
-
+from controllers import ws_channel
 import consumer
 
 # Configure logging to ensure messages appear in server logs
@@ -107,7 +107,7 @@ app.include_router(user_controller.router, prefix="/user")
 app.include_router(auth_controller.router, prefix="/auth")
 app.include_router(customer_controller.router, prefix="/customer")
 app.include_router(web_hook.router, prefix="/wh")
-app.include_router(web_socket.router, prefix="/ws")
+app.include_router(ws_channel.router, prefix="/ws")
 app.include_router(messages_controller.router, prefix="/message")
 app.include_router(whatsapp_controller.router,prefix="/secret")
 app.include_router(order_controller.router,prefix="/orders")

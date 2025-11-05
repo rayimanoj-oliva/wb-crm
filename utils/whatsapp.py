@@ -13,16 +13,56 @@ from schemas.message_schema import MessageCreate
 from services import whatsapp_service, customer_service, message_service
 from services.followup_service import schedule_next_followup
 from utils.ws_manager import manager
+from marketing.whatsapp_numbers import WHATSAPP_NUMBERS
 
-WHATSAPP_API_URL = "https://graph.facebook.com/v22.0/367633743092037/messages"
+def _resolve_credentials(db, *, hint_phone_id: str | None = None, hint_display_number: str | None = None):
+    """Pick the correct token and phone_id for outbound sends.
 
-async def send_message_to_waid(wa_id: str, message_body: str, db, from_wa_id="917729992376", *, schedule_followup: bool = False, stage_label: str | None = None):
+    Preference order:
+    1) Explicit hint_phone_id mapping
+    2) Env WHATSAPP_PHONE_ID mapping
+    3) Single entry in WHATSAPP_NUMBERS
+    4) Fallback to DB token + env WHATSAPP_PHONE_ID
+    """
+    # 1) Explicit phone_id hint
+    if hint_phone_id and isinstance(WHATSAPP_NUMBERS, dict) and hint_phone_id in WHATSAPP_NUMBERS:
+        cfg = WHATSAPP_NUMBERS.get(hint_phone_id) or {}
+        tok = cfg.get("token")
+        if tok:
+            return tok, hint_phone_id
+
+    # 2) Env-configured phone id
+    env_pid = os.getenv("WHATSAPP_PHONE_ID")
+    if env_pid and isinstance(WHATSAPP_NUMBERS, dict) and env_pid in WHATSAPP_NUMBERS:
+        cfg = WHATSAPP_NUMBERS.get(env_pid) or {}
+        tok = cfg.get("token")
+        if tok:
+            return tok, env_pid
+
+    # 3) Single mapping entry
+    try:
+        entries = [(pid, cfg) for pid, cfg in (WHATSAPP_NUMBERS or {}).items() if (cfg or {}).get("token")]
+        if len(entries) == 1:
+            pid, cfg = entries[0]
+            return cfg.get("token"), pid
+    except Exception:
+        pass
+
+    # 4) Fallback to DB token + env phone id
     token_obj = whatsapp_service.get_latest_token(db)
-    if not token_obj:
-        raise HTTPException(status_code=400, detail="Token not available")
+    if token_obj and getattr(token_obj, "token", None):
+        pid_final = (env_pid or os.getenv("WHATSAPP_PHONE_ID", "367633743092037"))
+        return token_obj.token, pid_final
+    raise HTTPException(status_code=400, detail="Token not available")
 
+async def send_message_to_waid(wa_id: str, message_body: str, db, from_wa_id="917729992376", *, schedule_followup: bool = False, stage_label: str | None = None, phone_id_hint: str | None = None):
+    access_token, phone_id = _resolve_credentials(db, hint_phone_id=phone_id_hint)
+    try:
+        print(f"[send_message_to_waid] phone_id={phone_id} wa_id={wa_id} len(body)={len(message_body)}")
+    except Exception:
+        pass
     headers = {
-        "Authorization": f"Bearer {token_obj.token}",
+        "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json"
     }
 
@@ -33,16 +73,38 @@ async def send_message_to_waid(wa_id: str, message_body: str, db, from_wa_id="91
         "text": { "body": message_body }
     }
 
-    res = requests.post(WHATSAPP_API_URL, headers=headers, json=payload)
+    res = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
+    try:
+        j = res.json() if hasattr(res, "json") else None
+        msg_ids = (j.get("messages") if isinstance(j, dict) else None) or []
+        msg_id_preview = [m.get("id") for m in msg_ids]
+        print(f"[send_message_to_waid] result status={res.status_code} phone_id={phone_id} message_ids={msg_id_preview}")
+    except Exception:
+        print(f"[send_message_to_waid] result status={res.status_code} phone_id={phone_id} text={(res.text[:200] if isinstance(res.text, str) else str(res.text))}")
     if res.status_code != 200:
         raise HTTPException(status_code=500, detail=f"Failed to send message: {res.text}")
 
     message_id = res.json()["messages"][0]["id"]
     customer = customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
 
+    # Pick display "from" number consistent with the phone_id we used
+    try:
+        display_from = from_wa_id
+        if isinstance(WHATSAPP_NUMBERS, dict) and phone_id in WHATSAPP_NUMBERS:
+            cfg = WHATSAPP_NUMBERS.get(phone_id) or {}
+            # Extract only digits for consistency with other logs
+            import re as _re
+            digits = _re.sub(r"\D", "", (cfg.get("name") or ""))
+            display_from = digits or from_wa_id
+        else:
+            # fallback to env display
+            display_from = os.getenv("WHATSAPP_DISPLAY_NUMBER", from_wa_id)
+    except Exception:
+        display_from = from_wa_id
+
     message_data = MessageCreate(
         message_id=message_id,
-        from_wa_id=from_wa_id,
+        from_wa_id=display_from,
         to_wa_id=wa_id,
         type="text",
         body=message_body,
@@ -201,13 +263,10 @@ async def send_products_list(wa_id: str, category_id: str = None, subcategory_id
     if res.status_code != 200:
         raise HTTPException(status_code=500, detail=f"Failed to send products: {res.text}")
 
-async def send_location_to_waid(wa_id: str, latitude: float, longitude: float, name: str, address: str, db, from_wa_id="917729992376"):
-    token_obj = whatsapp_service.get_latest_token(db)
-    if not token_obj:
-        raise HTTPException(status_code=400, detail="Token not available")
-
+async def send_location_to_waid(wa_id: str, latitude: float, longitude: float, name: str, address: str, db, from_wa_id="917729992376", phone_id_hint: str | None = None):
+    access_token, phone_id = _resolve_credentials(db, hint_phone_id=phone_id_hint)
     headers = {
-        "Authorization": f"Bearer {token_obj.token}",
+        "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json"
     }
 
@@ -227,7 +286,7 @@ async def send_location_to_waid(wa_id: str, latitude: float, longitude: float, n
         "location": location_data
     }
 
-    res = requests.post(WHATSAPP_API_URL, headers=headers, json=payload)
+    res = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
     if res.status_code != 200:
         raise HTTPException(status_code=500, detail=f"Failed to send location message: {res.text}")
 

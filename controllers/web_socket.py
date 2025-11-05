@@ -24,8 +24,8 @@ from schemas.customer_schema import CustomerCreate
 from schemas.message_schema import MessageCreate
 from models.models import Message
 from utils.whatsapp import send_message_to_waid
-from utils.name_validator import validate_human_name
-from utils.phone_validator import validate_indian_phone
+from marketing.name_validator import validate_human_name
+from marketing.phone_validator import validate_indian_phone
 from services.whatsapp_service import get_latest_token
 from config.constants import get_messages_url, get_media_url
 
@@ -37,106 +37,18 @@ from config.constants import get_messages_url, get_media_url
 # This code only handles the webhook response when users complete the flow.
 from utils.razorpay_utils import create_razorpay_payment_link
 from utils.ws_manager import manager
-
-def debug_webhook_payload(body: Dict[str, Any], raw_body: str = None) -> None:
-    """Enhanced debugging utility for webhook payloads"""
-    try:
-        print(f"[webhook_debug] Payload keys: {list(body.keys())}")
-        
-        if "entry" in body:
-            entry = body["entry"][0] if body["entry"] else {}
-            print(f"[webhook_debug] Entry ID: {entry.get('id', 'N/A')}")
-            
-            if "changes" in entry:
-                change = entry["changes"][0] if entry["changes"] else {}
-                print(f"[webhook_debug] Change field: {change.get('field', 'N/A')}")
-                
-                value = change.get("value", {})
-                print(f"[webhook_debug] Value keys: {list(value.keys())}")
-                
-                if "messages" in value:
-                    messages = value["messages"]
-                    print(f"[webhook_debug] Message count: {len(messages)}")
-                    
-                    for i, msg in enumerate(messages):
-                        print(f"[webhook_debug] Message {i}: type={msg.get('type', 'N/A')}, id={msg.get('id', 'N/A')}")
-                        
-                        if msg.get("type") == "interactive":
-                            interactive = msg.get("interactive", {})
-                            print(f"[webhook_debug] Interactive type: {interactive.get('type', 'N/A')}")
-                            
-                            if interactive.get("type") == "nfm_reply":
-                                nfm = interactive.get("nfm_reply", {})
-                                response_json = nfm.get("response_json", "")
-                                print(f"[webhook_debug] NFM response_json length: {len(response_json)}")
-                                print(f"[webhook_debug] NFM response_json preview: {response_json[:200]}...")
-                                
-                                # Check for truncation indicators
-                                if response_json.endswith('...') or len(response_json) < 50:
-                                    print(f"[webhook_debug] WARNING - Possible truncation detected!")
-                                    
-                                # Validate JSON structure
-                                try:
-                                    parsed = json.loads(response_json)
-                                    print(f"[webhook_debug] NFM parsed keys: {list(parsed.keys()) if isinstance(parsed, dict) else 'Not a dict'}")
-                                    print(f"[webhook_debug] NFM parsed values: {parsed}")
-                                    
-                                    # Check for template variables
-                                    has_template_vars = any("{{" in str(v) and "}}" in str(v) for v in parsed.values())
-                                    if has_template_vars:
-                                        print(f"[webhook_debug] WARNING - Template variables detected in parsed data!")
-                                    
-                                    # Check for empty values
-                                    empty_values = [k for k, v in parsed.items() if not v or (isinstance(v, str) and not v.strip())]
-                                    if empty_values:
-                                        print(f"[webhook_debug] WARNING - Empty values found: {empty_values}")
-                                        
-                                except json.JSONDecodeError as e:
-                                    print(f"[webhook_debug] ERROR - Invalid JSON in NFM response: {e}")
-        
-        if raw_body:
-            print(f"[webhook_debug] Raw body length: {len(raw_body)}")
-            print(f"[webhook_debug] Raw body preview: {raw_body[:300]}...")
-            
-    except Exception as e:
-        print(f"[webhook_debug] ERROR - Debug function failed: {e}")
-
-def debug_flow_data_extraction(flow_payload: Dict[str, Any], extracted_data: Dict[str, Any]) -> None:
-    """Debug flow data extraction process"""
-    try:
-        print(f"[flow_debug] Flow payload keys: {list(flow_payload.keys())}")
-        print(f"[flow_debug] Flow payload values: {flow_payload}")
-        print(f"[flow_debug] Extracted data keys: {list(extracted_data.keys())}")
-        print(f"[flow_debug] Extracted data values: {list(extracted_data.values())}")
-        
-        # Check for common field patterns
-        common_fields = ["name", "phone", "address", "city", "state", "pincode", "zipcode"]
-        found_fields = []
-        for field in common_fields:
-            if any(field.lower() in key.lower() for key in flow_payload.keys()):
-                found_fields.append(field)
-        
-        print(f"[flow_debug] Common fields found in payload: {found_fields}")
-        
-        # Check for nested data structures
-        for key, value in flow_payload.items():
-            if isinstance(value, dict):
-                print(f"[flow_debug] Nested object '{key}': {value}")
-            elif isinstance(value, list):
-                print(f"[flow_debug] Array '{key}': {value}")
-                
-    except Exception as e:
-        print(f"[flow_debug] ERROR - Debug function failed: {e}")
+from controllers.utils.debug_window import debug_webhook_payload,debug_flow_data_extraction
 from utils.shopify_admin import update_variant_price
 from utils.address_validator import analyze_address, format_errors_for_user
 from controllers.components.welcome_flow import run_welcome_flow, trigger_buy_products_from_welcome
-from controllers.components.treament_flow import run_treament_flow, run_treatment_buttons_flow
+from marketing.flows import run_treament_flow, run_treatment_buttons_flow
 from controllers.components.interactive_type import run_interactive_type
 from controllers.components.lead_appointment_flow import run_lead_appointment_flow
+from controllers.components.number_flows.mr_welcome.flow import run_mr_welcome_number_flow
 from controllers.components.products_flow import run_buy_products_flow
+from marketing.whatsapp_numbers import get_number_config
 
-router = APIRouter()
-
+from controllers.ws_channel import router
 
 # In-memory store: { wa_id: True/False }
 awaiting_address_users = {}
@@ -492,7 +404,14 @@ async def _confirm_appointment(wa_id: str, db: Session, date_iso: str, time_labe
                         },
                     },
                 }
-                requests.post(get_messages_url(phone_id_btn), headers=headers_btn, json=payload_btn)
+                try:
+                    _resp_btn = requests.post(get_messages_url(phone_id_btn), headers=headers_btn, json=payload_btn)
+                    try:
+                        print(f"[ws_webhook] DEBUG - confirm buttons sent phone_id={phone_id_btn} status={_resp_btn.status_code}")
+                    except Exception:
+                        pass
+                except Exception as _e_btn:
+                    print(f"[ws_webhook] ERROR - confirm buttons post failed: {_e_btn}")
                 try:
                     await manager.broadcast({
                         "from": "system",
@@ -897,6 +816,32 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     print(f"[lead_appointment_flow] ERROR - Traceback: {traceback.format_exc()}")
                     # Don't fail completely, let other flows try
 
+        # 2️⃣ Ensure mr_welcome is sent FIRST on the dedicated number (one-time per user)
+        try:
+            welcome_pid_env = os.getenv("WELCOME_PHONE_ID") or os.getenv("TREATMENT_FLOW_PHONE_ID")
+            phone_id_meta = (value or {}).get("metadata", {}).get("phone_number_id") if isinstance(value, dict) else None
+            already_welcomed = bool((appointment_state.get(wa_id) or {}).get("mr_welcome_sent"))
+            # Always send mr_welcome on the user's first inbound text (unless already sent)
+            should_send_welcome = not already_welcomed
+            if should_send_welcome:
+                welcome_result = await run_mr_welcome_number_flow(
+                    db,
+                    wa_id=wa_id,
+                    to_wa_id=to_wa_id,
+                    message_id=message_id,
+                    message_type=message_type,
+                    timestamp=timestamp,
+                    customer=customer,
+                    value=value,
+                )
+                if (welcome_result or {}).get("status") == "welcome_sent":
+                    st = appointment_state.get(wa_id) or {}
+                    st["mr_welcome_sent"] = True
+                    appointment_state[wa_id] = st
+                    return welcome_result
+        except Exception:
+            pass
+
         # 3️⃣ AUTO WELCOME VALIDATION - extracted to component function
         if not handled_text and message_type == "text":
             result = await run_treament_flow(
@@ -912,9 +857,102 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 value=value,
                 sender_name=sender_name,
             )
+            # DEBUG: log treatment flow result
+            try:
+                print(f"[ws_webhook] DEBUG - treatment flow result: {result}")
+            except Exception:
+                pass
             status_val = (result or {}).get("status")
             if status_val in {"welcome_sent", "welcome_failed"}:
                 return result
+            # If skipped, bootstrap Treatment Flow via dedicated number (mr_treatment)
+            # BUT do not bootstrap while we're already in the name/phone correction path
+            if status_val == "skipped":
+                _st_ctx = appointment_state.get(wa_id) or {}
+                if not (_st_ctx.get("awaiting_name") or _st_ctx.get("awaiting_phone") or _st_ctx.get("from_treatment_flow")):
+                    try:
+                        import os as _os
+                        from marketing.controllers.auto_welcome_controller import _send_template as _send_tpl  # type: ignore
+                        # Prefer explicit env override; else use dedicated treatment number
+                        phone_id_dbg = _os.getenv("TREATMENT_FLOW_PHONE_ID", "859830643878412")
+                        cfg_dbg = None
+                        try:
+                            cfg_dbg = get_number_config(str(phone_id_dbg))
+                        except Exception:
+                            cfg_dbg = None
+                        access_token_dbg = (cfg_dbg or {}).get("token")
+                        if not access_token_dbg:
+                            # Fallback to DB token + env phone id
+                            t = get_latest_token(db)
+                            access_token_dbg = getattr(t, "token", None)
+                        lang_dbg = _os.getenv("WELCOME_TEMPLATE_LANG", "en_US")
+                        # Idempotency: do not send mr_treatment again if already marked
+                        st_guard = appointment_state.get(wa_id) or {}
+                        if st_guard.get("mr_treatment_sent"):
+                            print(f"[ws_webhook] DEBUG - SKIP mr_treatment: already sent for {wa_id}")
+                        elif access_token_dbg:
+                            print(f"[ws_webhook] DEBUG - BOOTSTRAP Treatment Flow phone_id={phone_id_dbg} template=mr_treatment")
+                            resp_dbg = _send_tpl(
+                                wa_id=wa_id,
+                                template_name="mr_treatment",
+                                access_token=access_token_dbg,
+                                phone_id=str(phone_id_dbg),
+                                components=None,
+                                lang_code=lang_dbg,
+                            )
+                            try:
+                                j = resp_dbg.json()
+                                ids = [m.get("id") for m in (j.get("messages") or [])] if isinstance(j, dict) else None
+                                print(f"[ws_webhook] DEBUG - BOOTSTRAP result status={resp_dbg.status_code} ids={ids}")
+                            except Exception:
+                                print(f"[ws_webhook] DEBUG - BOOTSTRAP result status={resp_dbg.status_code} text={(resp_dbg.text[:200] if hasattr(resp_dbg, 'text') and isinstance(resp_dbg.text, str) else 'n/a')}")
+                            try:
+                                await manager.broadcast({
+                                    "from": to_wa_id,
+                                    "to": wa_id,
+                                    "type": "template" if resp_dbg.status_code == 200 else "template_error",
+                                    "message": "mr_treatment sent" if resp_dbg.status_code == 200 else "mr_treatment failed",
+                                    "meta": {"phone_id": str(phone_id_dbg), "flow": "treatment_bootstrap"},
+                                    **({"status_code": resp_dbg.status_code} if resp_dbg.status_code != 200 else {}),
+                                })
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                        if resp_dbg.status_code == 200:
+                            # Mark treatment context and send name/phone confirmation via same phone_id
+                            try:
+                                st = appointment_state.get(wa_id) or {}
+                                st["flow_context"] = "treatment"
+                                st["from_treatment_flow"] = True
+                                st["mr_treatment_sent"] = True
+                                appointment_state[wa_id] = st
+                            except Exception:
+                                pass
+                            try:
+                                # Build confirmation message
+                                st = appointment_state.get(wa_id) or {}
+                                if not st.get("contact_confirm_sent"):
+                                    try:
+                                        from services.customer_service import get_customer_record_by_wa_id
+                                        _cust = get_customer_record_by_wa_id(db, wa_id)
+                                        display_name = (_cust.name.strip() if _cust and isinstance(_cust.name, str) else None) or "there"
+                                    except Exception:
+                                        display_name = "there"
+                                    import re as _re
+                                    digits = _re.sub(r"\D", "", wa_id)
+                                    last10 = digits[-10:] if len(digits) >= 10 else None
+                                    display_phone = f"+91{last10}" if last10 and len(last10) == 10 else wa_id
+                                    confirm_msg = (
+                                        f"To help us serve you better, please confirm your contact details:\n*{display_name}*\n*{display_phone}*"
+                                    )
+                                    from utils.whatsapp import send_message_to_waid as _send_text
+                                    await _send_text(wa_id, confirm_msg, db, phone_id_hint=str(phone_id_dbg))
+                                    st["contact_confirm_sent"] = True
+                                    appointment_state[wa_id] = st
+                            except Exception:
+                                pass
+                # Any exceptions inside bootstrap are already handled locally
             handled_text = status_val in {"handled"}
 
         # 3️⃣ LEAD-TO-APPOINTMENT FLOW - handle other lead appointment triggers
@@ -1622,9 +1660,10 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             except Exception:
                 pass
 
-            # Step 2 → 3: If user selected Skin/Hair/Body button, save+broadcast reply, then send concerns list
+            # Step 2 → 3: Skin/Hair/Body handling is centralized in controllers.components.treament_flow
+            # Avoid duplicate sends here (was causing duplicate skin_treat_flow and lists)
             try:
-                if i_type == "button_reply" and (reply_id or "").lower() in {"skin", "hair", "body"}:
+                if False and i_type == "button_reply" and (reply_id or "").lower() in {"skin", "hair", "body"}:
                     token_entry2 = get_latest_token(db)
                     if token_entry2 and token_entry2.token:
                         access_token2 = token_entry2.token
@@ -1825,29 +1864,55 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                             _mark_replied(db, customer_id=customer.id)
                         except Exception:
                             pass
-                        from services.whatsapp_service import get_latest_token as _get_token
-                        token_entry2 = _get_token(db)
-                        if token_entry2 and token_entry2.token:
-                            access_token2 = token_entry2.token
-                            phone_id2 = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
-                            lang_code2 = os.getenv("WELCOME_TEMPLATE_LANG", "en_US")
+                        
+                        # Set treatment flow context so subsequent messages use Treatment Flow number
+                        try:
+                            st_fu = appointment_state.get(wa_id) or {}
+                            st_fu["flow_context"] = "treatment"
+                            st_fu["from_treatment_flow"] = True
+                            appointment_state[wa_id] = st_fu
+                        except Exception:
+                            pass
+                        
+                        # Resolve credentials for Treatment Flow number
+                        from marketing.whatsapp_numbers import get_number_config
+                        phone_id_fu = os.getenv("TREATMENT_FLOW_PHONE_ID") or os.getenv("WELCOME_PHONE_ID") or os.getenv("WHATSAPP_PHONE_ID", "859830643878412")
+                        cfg_fu = get_number_config(str(phone_id_fu)) if phone_id_fu else None
+                        access_token_fu = (cfg_fu.get("token") if (cfg_fu and cfg_fu.get("token")) else None)
+                        if not access_token_fu:
+                            from services.whatsapp_service import get_latest_token as _get_token
+                            token_entry_fu = _get_token(db)
+                            if token_entry_fu and token_entry_fu.token:
+                                access_token_fu = token_entry_fu.token
+                        
+                        if access_token_fu:
+                            lang_code_fu = os.getenv("WELCOME_TEMPLATE_LANG", "en_US")
 
-                            # Send mr_welcome template
+                            # Send mr_welcome template from Treatment Flow number
                             from controllers.auto_welcome_controller import _send_template as _send_tpl
-                            body_components2 = [{
+                            body_components_fu = [{
                                 "type": "body",
                                 "parameters": [
                                     {"type": "text", "text": (sender_name or wa_id or "there")}
                                 ]
                             }]
-                            _send_tpl(
+                            resp_fu = _send_tpl(
                                 wa_id=wa_id,
                                 template_name="mr_welcome",
-                                access_token=access_token2,
-                                phone_id=phone_id2,
-                                components=body_components2,
-                                lang_code=lang_code2,
+                                access_token=access_token_fu,
+                                phone_id=str(phone_id_fu),
+                                components=body_components_fu,
+                                lang_code=lang_code_fu,
                             )
+                            
+                            # Mark mr_welcome as sent to prevent duplicates
+                            try:
+                                st_fu_mark = appointment_state.get(wa_id) or {}
+                                if resp_fu.status_code == 200:
+                                    st_fu_mark["mr_welcome_sent"] = True
+                                appointment_state[wa_id] = st_fu_mark
+                            except Exception:
+                                pass
 
                             # Schedule follow-up only for mr_welcome
                             try:
@@ -1856,7 +1921,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                             except Exception:
                                 pass
 
-                            # Send name/phone confirmation prompt
+                            # Send name/phone confirmation prompt from Treatment Flow number
                             try:
                                 from services.customer_service import get_customer_record_by_wa_id
                                 customer_rec = get_customer_record_by_wa_id(db, wa_id)
@@ -1870,30 +1935,26 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                 display_phone = wa_id
 
                             from utils.whatsapp import send_message_to_waid as _send_text
-                            await _send_text(wa_id, f"To help us serve you better, please confirm your contact details:\n*{display_name}*\n*{display_phone}*", db)
+                            await _send_text(wa_id, f"To help us serve you better, please confirm your contact details:\n*{display_name}*\n*{display_phone}*", db, phone_id_hint=str(phone_id_fu))
 
-                            # Send Yes/No buttons for confirmation
-                            token_entry_btn = _get_token(db)
-                            if token_entry_btn and token_entry_btn.token:
-                                access_token_btn = token_entry_btn.token
-                                phone_id_btn = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
-                                headers_btn = {"Authorization": f"Bearer {access_token_btn}", "Content-Type": "application/json"}
-                                payload_btn = {
-                                    "messaging_product": "whatsapp",
-                                    "to": wa_id,
-                                    "type": "interactive",
-                                    "interactive": {
-                                        "type": "button",
-                                        "body": {"text": "Are your name and contact number correct? "},
-                                        "action": {
-                                            "buttons": [
-                                                {"type": "reply", "reply": {"id": "confirm_yes", "title": "Yes"}},
-                                                {"type": "reply", "reply": {"id": "confirm_no", "title": "No"}},
-                                            ]
-                                        },
+                            # Send Yes/No buttons for confirmation from Treatment Flow number
+                            headers_btn = {"Authorization": f"Bearer {access_token_fu}", "Content-Type": "application/json"}
+                            payload_btn = {
+                                "messaging_product": "whatsapp",
+                                "to": wa_id,
+                                "type": "interactive",
+                                "interactive": {
+                                    "type": "button",
+                                    "body": {"text": "Are your name and contact number correct? "},
+                                    "action": {
+                                        "buttons": [
+                                            {"type": "reply", "reply": {"id": "confirm_yes", "title": "Yes"}},
+                                            {"type": "reply", "reply": {"id": "confirm_no", "title": "No"}},
+                                        ]
                                     },
-                                }
-                                requests.post(get_messages_url(phone_id_btn), headers=headers_btn, json=payload_btn)
+                                },
+                            }
+                            requests.post(get_messages_url(str(phone_id_fu)), headers=headers_btn, json=payload_btn)
                         return {"status": "followup_yes_flow_started", "message_id": message_id}
             except Exception:
                 pass
@@ -1976,6 +2037,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         
                         if (norm_btn_id in yes_ids or norm_btn_title in yes_ids):
                             if from_treatment_flow:
+                                # On Yes → proceed to city selection FIRST; mr_treatment will be sent after city selection
                                 try:
                                     from controllers.components.lead_appointment_flow.city_selection import send_city_selection  # type: ignore
                                     result = await send_city_selection(db, wa_id=wa_id)
@@ -2041,7 +2103,10 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                 appointment_state[wa_id] = st
                             except Exception:
                                 pass
-                            await send_message_to_waid(wa_id, "No problem. Let's update your details.\nPlease share your full name first.", db)
+                            # Ensure this corrective message goes from the Treatment Flow number
+                            import os as _os
+                            _pid_hint = str(_os.getenv("TREATMENT_FLOW_PHONE_ID") or _os.getenv("WELCOME_PHONE_ID") or _os.getenv("WHATSAPP_PHONE_ID", "859830643878412"))
+                            await send_message_to_waid(wa_id, "No problem. Let's update your details.\nPlease share your full name first.", db, phone_id_hint=_pid_hint)
                             return {"status": "awaiting_name", "message_id": message_id}
                         else:
                             # Before sending user back, try to recover any existing appointment from DB
@@ -2374,7 +2439,9 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                 st["awaiting_name"] = False
                                 st["awaiting_phone"] = True
                                 appointment_state[wa_id] = st
-                                await send_message_to_waid(wa_id, f"Thanks {st['corrected_name']}! Now please share your number.", db)
+                                import os as _os
+                                _pid_hint2 = str(_os.getenv("TREATMENT_FLOW_PHONE_ID") or _os.getenv("WELCOME_PHONE_ID") or _os.getenv("WHATSAPP_PHONE_ID", "859830643878412"))
+                                await send_message_to_waid(wa_id, f"Thanks {st['corrected_name']}! Now please share your number.", db, phone_id_hint=_pid_hint2)
                                 return {"status": "name_captured_awaiting_phone", "message_id": message_id}
                         elif phone_ok and not name_ok:
                             # Only set awaiting_name if the extracted phone seems valid AND message is short
@@ -2416,10 +2483,14 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                             st["awaiting_name"] = False
                             st["awaiting_phone"] = True
                             appointment_state[wa_id] = st
-                            await send_message_to_waid(wa_id, f"Thanks {st['corrected_name']}! Now please share your number.", db)
+                            import os as _os
+                            _pid_hint_nameok = str(_os.getenv("TREATMENT_FLOW_PHONE_ID") or _os.getenv("WELCOME_PHONE_ID") or _os.getenv("WHATSAPP_PHONE_ID", "859830643878412"))
+                            await send_message_to_waid(wa_id, f"Thanks {st['corrected_name']}! Now please share your number.", db, phone_id_hint=_pid_hint_nameok)
                             return {"status": "name_captured_awaiting_phone", "message_id": message_id}
                         else:
-                            await send_message_to_waid(wa_id, "❌ That doesn't look like a valid name. Please send your full name or first name (letters only).", db)
+                            import os as _os
+                            _pid_hint_badname = str(_os.getenv("TREATMENT_FLOW_PHONE_ID") or _os.getenv("WELCOME_PHONE_ID") or _os.getenv("WHATSAPP_PHONE_ID", "859830643878412"))
+                            await send_message_to_waid(wa_id, "❌ That doesn't look like a valid name. Please send your full name or first name (letters only).", db, phone_id_hint=_pid_hint_badname)
                             return {"status": "invalid_name", "message_id": message_id}
         except Exception:
             pass
@@ -2502,7 +2573,9 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                 pass
                             return {"status": "need_date_first", "message_id": message_id}
                     else:
-                        await send_message_to_waid(wa_id, "❌ That doesn't look like a valid Indian mobile number. Please send exactly 10 digits (or +91XXXXXXXXXX).", db)
+                        import os as _os
+                        _pid_hint_badphone = str(_os.getenv("TREATMENT_FLOW_PHONE_ID") or _os.getenv("WELCOME_PHONE_ID") or _os.getenv("WHATSAPP_PHONE_ID", "859830643878412"))
+                        await send_message_to_waid(wa_id, "❌ That doesn't look like a valid Indian mobile number. Please send exactly 10 digits (or +91XXXXXXXXXX).", db, phone_id_hint=_pid_hint_badphone)
                         return {"status": "invalid_phone", "message_id": message_id}
         except Exception:
             pass
