@@ -26,6 +26,7 @@ async def run_lead_appointment_flow(
     customer: Any,
     interactive: Optional[Dict[str, Any]] = None,
     i_type: Optional[str] = None,
+    phone_number_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Main entry point for the Lead-to-Appointment Booking Flow.
     
@@ -92,7 +93,9 @@ async def run_lead_appointment_flow(
                 interactive=interactive,
                 i_type=i_type,
                 customer=customer,
-                timestamp=timestamp
+                timestamp=timestamp,
+                phone_number_id=phone_number_id,
+                to_wa_id=to_wa_id
             )
         
         return {"status": "skipped"}
@@ -242,7 +245,9 @@ async def handle_interactive_response(
     interactive: Dict[str, Any],
     i_type: str,
     customer: Any,
-    timestamp: datetime
+    timestamp: datetime,
+    phone_number_id: Optional[str] = None,
+    to_wa_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """Handle interactive responses (buttons/lists) in the lead appointment flow."""
     
@@ -295,13 +300,15 @@ async def handle_interactive_response(
             )
         
         elif reply_id.startswith("city_"):
-            # City selection response
+            # City selection response - only handle if this is lead appointment flow number
             from .city_selection import handle_city_selection
             return await handle_city_selection(
                 db=db,
                 wa_id=wa_id,
                 reply_id=reply_id,
-                customer=customer
+                customer=customer,
+                phone_number_id=phone_number_id,
+                to_wa_id=to_wa_id
             )
         
         elif reply_id.startswith("clinic_"):

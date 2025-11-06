@@ -655,6 +655,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 customer=customer,
                 interactive=interactive,
                 i_type=i_type,
+                phone_number_id=phone_number_id_str,
             )
             lead_status = (lead_result or {}).get("status")
             print(f"[ws_webhook] DEBUG - Lead appointment flow returned: status={lead_status}")

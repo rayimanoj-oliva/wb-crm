@@ -251,13 +251,28 @@ async def handle_city_selection(
     reply_id: str, 
     customer: Any
 ) -> Dict[str, Any]:
-    """Handle city selection response.
+    """Handle city selection response for treatment flow.
     
     Args:
         reply_id: City ID like "city_hyderabad", "city_bengaluru", etc.
         
     Returns a status dict.
     """
+    
+    # CRITICAL: Only handle city selection if this is actually a treatment flow
+    # Skip if this is a lead appointment flow number to prevent overlap
+    try:
+        from controllers.components.lead_appointment_flow.config import LEAD_APPOINTMENT_PHONE_ID, LEAD_APPOINTMENT_DISPLAY_LAST10
+        from controllers.web_socket import appointment_state  # type: ignore
+        st_ctx = appointment_state.get(wa_id) or {}
+        flow_ctx = st_ctx.get("flow_context")
+        
+        # If explicitly in lead appointment flow, skip (let lead appointment handler process it)
+        if flow_ctx == "lead_appointment":
+            print(f"[marketing/city_selection] DEBUG - Skipping city selection: in lead appointment flow context")
+            return {"status": "skipped", "reason": "lead_appointment_flow_context"}
+    except Exception as e:
+        print(f"[marketing/city_selection] WARNING - Could not verify flow context: {e}")
     
     # Paging support
     if (reply_id or "").strip().lower() == "city_more":

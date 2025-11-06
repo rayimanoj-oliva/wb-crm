@@ -190,15 +190,56 @@ async def handle_city_selection(
     *, 
     wa_id: str, 
     reply_id: str, 
-    customer: Any
+    customer: Any,
+    phone_number_id: str | None = None,
+    to_wa_id: str | None = None
 ) -> Dict[str, Any]:
     """Handle city selection response.
     
     Args:
         reply_id: City ID like "city_hyderabad", "city_bengaluru", etc.
+        phone_number_id: The phone_number_id from webhook metadata (to verify this is lead appointment flow)
+        to_wa_id: The display phone number (to verify this is lead appointment flow)
         
     Returns a status dict.
     """
+    
+    # CRITICAL: Only handle city selection if this is actually a lead appointment flow number
+    # This prevents overlap with treatment flow city selection
+    is_lead_appointment_number = False
+    try:
+        from .config import LEAD_APPOINTMENT_PHONE_ID
+        if phone_number_id and str(phone_number_id) == str(LEAD_APPOINTMENT_PHONE_ID):
+            is_lead_appointment_number = True
+        elif to_wa_id:
+            # Fallback: check by display phone number
+            import re as _re
+            from .config import LEAD_APPOINTMENT_DISPLAY_LAST10
+            disp_digits = _re.sub(r"\D", "", to_wa_id or "")
+            disp_last10 = disp_digits[-10:] if len(disp_digits) >= 10 else disp_digits
+            if disp_last10 == LEAD_APPOINTMENT_DISPLAY_LAST10:
+                is_lead_appointment_number = True
+        # Also check flow context from state
+        if not is_lead_appointment_number:
+            try:
+                from controllers.web_socket import appointment_state  # type: ignore
+                st_ctx = appointment_state.get(wa_id) or {}
+                flow_ctx = st_ctx.get("flow_context")
+                # If explicitly in treatment flow, skip
+                if flow_ctx == "treatment":
+                    print(f"[lead_appointment_flow] DEBUG - Skipping city selection: in treatment flow context")
+                    return {"status": "skipped", "reason": "treatment_flow_context"}
+                # If explicitly in lead appointment flow, allow
+                if flow_ctx == "lead_appointment":
+                    is_lead_appointment_number = True
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"[lead_appointment_flow] WARNING - Could not verify lead appointment number: {e}")
+    
+    if not is_lead_appointment_number:
+        print(f"[lead_appointment_flow] DEBUG - Skipping city selection: not a lead appointment number (phone_id={phone_number_id}, to_wa_id={to_wa_id})")
+        return {"status": "skipped", "reason": "not_lead_appointment_number"}
     
     # Paging support
     if (reply_id or "").strip().lower() == "city_more":
