@@ -1586,10 +1586,10 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     button_reply = interactive.get("button_reply", {})
                     button_id = (button_reply.get("id", "") or "").strip().lower()
                     if button_id == "followup_yes":
-                        # Clear any pending follow-up timers and reset state so new inactivity starts with Follow-Up 1
+                        # Clear any pending follow-up timers but DON'T reset timer - mr_welcome will schedule a new one
                         try:
                             from services.followup_service import mark_customer_replied as _mark_replied
-                            _mark_replied(db, customer_id=customer.id)
+                            _mark_replied(db, customer_id=customer.id, reset_followup_timer=False)
                         except Exception:
                             pass
                         

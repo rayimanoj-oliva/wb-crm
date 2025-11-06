@@ -115,8 +115,8 @@ def _resolve_marketing_credentials(db: Session, *, wa_id: Optional[str] = None) 
     return token, str(phone_id_pref), display_from
 
 # Follow-up timing constants (in minutes)
-FOLLOW_UP_1_DELAY_MINUTES = 2  # Time before sending Follow-Up 1
-FOLLOW_UP_2_DELAY_MINUTES = 5  # Time after Follow-Up 1 before sending Follow-Up 2
+FOLLOW_UP_1_DELAY_MINUTES = 5  # Time before sending Follow-Up 1
+FOLLOW_UP_2_DELAY_MINUTES = 30  # Time after Follow-Up 1 before sending Follow-Up 2
 
 FOLLOW_UP_1_TEXT = (
     "👋 Hi! Just checking in — are we still connected?\n\n"

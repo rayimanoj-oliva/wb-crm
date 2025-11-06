@@ -222,6 +222,21 @@ async def run_mr_welcome_number_flow(
                     appointment_state[wa_id] = st
                 except Exception:
                     pass
+
+                # Schedule follow-up only for mr_welcome (same as treatment_flow.py)
+                try:
+                    from services.followup_service import schedule_next_followup as _schedule, FOLLOW_UP_1_DELAY_MINUTES
+                    from services.customer_service import get_customer_record_by_wa_id as _get_c
+                    _cust = _get_c(db, wa_id)
+                    if _cust:
+                        _schedule(db, customer_id=_cust.id, delay_minutes=FOLLOW_UP_1_DELAY_MINUTES, stage_label="mr_welcome_sent")
+                        print(f"[mr_welcome_flow] INFO - Scheduled follow-up for customer {_cust.id} (wa_id: {wa_id}) after mr_welcome sent")
+                    else:
+                        print(f"[mr_welcome_flow] WARNING - Could not find customer to schedule follow-up for wa_id: {wa_id}")
+                except Exception as e:
+                    print(f"[mr_welcome_flow] ERROR - Failed to schedule follow-up for {wa_id}: {e}")
+                    import traceback
+                    traceback.print_exc()
             except Exception:
                 pass
             return {"status": "welcome_sent", "message_id": message_id}

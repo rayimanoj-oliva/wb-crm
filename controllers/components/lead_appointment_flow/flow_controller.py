@@ -278,6 +278,29 @@ async def handle_interactive_response(
         
         # Route to appropriate handler based on reply_id
         if reply_id == "followup_yes":
+            # Check if this is a treatment flow number - if so, skip and let marketing handler process it
+            try:
+                from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
+                if phone_number_id and str(phone_number_id) in TREATMENT_FLOW_ALLOWED_PHONE_IDS:
+                    print(f"[lead_appointment_flow] DEBUG - Skipping followup_yes for {wa_id}: treatment flow number {phone_number_id}")
+                    return {"status": "skipped", "reason": "treatment_flow_number"}
+                # Also check by display number
+                if to_wa_id:
+                    import re as _re
+                    from marketing.whatsapp_numbers import WHATSAPP_NUMBERS
+                    disp_digits = _re.sub(r"\D", "", to_wa_id or "")
+                    disp_last10 = disp_digits[-10:] if len(disp_digits) >= 10 else disp_digits
+                    for pid in TREATMENT_FLOW_ALLOWED_PHONE_IDS:
+                        cfg = WHATSAPP_NUMBERS.get(pid) if isinstance(WHATSAPP_NUMBERS, dict) else None
+                        if cfg:
+                            name_digits = _re.sub(r"\D", "", (cfg.get("name") or ""))
+                            name_last10 = name_digits[-10:] if len(name_digits) >= 10 else name_digits
+                            if name_last10 and disp_last10 and name_last10 == disp_last10:
+                                print(f"[lead_appointment_flow] DEBUG - Skipping followup_yes for {wa_id}: treatment flow number (matched by display)")
+                                return {"status": "skipped", "reason": "treatment_flow_number"}
+            except Exception:
+                pass
+            
             # User tapped Yes in Follow-Up 1 → re-trigger auto-welcome template and re-schedule FU1
             from .auto_welcome import send_auto_welcome_message
             result = await send_auto_welcome_message(db, wa_id=wa_id)
