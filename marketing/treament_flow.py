@@ -59,13 +59,96 @@ async def run_treament_flow(
 
         normalized_body = _normalize(body_text)
 
-        # 3) Prefill detection for mr_welcome
+        # 3) Prefill detection for mr_welcome (also trigger on simple greetings like "hi")
         prefill_regexes = [
             r"^hi,?\s*oliva\s+i\s+want\s+to\s+know\s+more\s+about\s+services\s+in\s+[a-z\s]+,\s*[a-z\s]+\s+clinic$",
             r"^hi,?\s*oliva\s+i\s+want\s+to\s+know\s+more\s+about\s+your\s+services$",
+            # greetings
+            r"^hi$",
+            r"^hello$",
+            r"^hlo$",
         ]
         prefill_detected = any(re.match(rx, normalized_body, flags=re.IGNORECASE) for rx in prefill_regexes)
+        
         if prefill_detected:
+            # Restrict treatment flow to only allowed phone numbers
+            from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
+            phone_id_meta = ((value or {}).get("metadata", {}) or {}).get("phone_number_id")
+            
+            # Check if the incoming phone number is allowed for treatment flow
+            is_allowed = False
+            if phone_id_meta and str(phone_id_meta) in TREATMENT_FLOW_ALLOWED_PHONE_IDS:
+                is_allowed = True
+            else:
+                # Also check by display phone number as fallback - compare last 10 digits
+                try:
+                    display_num = ((value or {}).get("metadata", {}) or {}).get("display_phone_number") or to_wa_id or ""
+                    import re as _re
+                    disp_digits = _re.sub(r"\D", "", display_num or "")
+                    # Get last 10 digits of display number (phone number without country code)
+                    disp_last10 = disp_digits[-10:] if len(disp_digits) >= 10 else disp_digits
+                    
+                    for pid in TREATMENT_FLOW_ALLOWED_PHONE_IDS:
+                        cfg = WHATSAPP_NUMBERS.get(pid)
+                        if cfg:
+                            name_digits = _re.sub(r"\D", "", (cfg.get("name") or ""))
+                            # Get last 10 digits of stored phone number
+                            name_last10 = name_digits[-10:] if len(name_digits) >= 10 else name_digits
+                            # Match if last 10 digits are the same
+                            if name_last10 and disp_last10 and name_last10 == disp_last10:
+                                is_allowed = True
+                                break
+                except Exception:
+                    pass
+            
+            # Only proceed if this is an allowed phone number
+            if not is_allowed:
+                display_num = ((value or {}).get("metadata", {}) or {}).get("display_phone_number") or to_wa_id or ""
+                print(f"[treatment_flow] DEBUG - Treatment flow blocked for phone_id: {phone_id_meta}, display_number: {display_num} (not in allowed list)")
+                return {"status": "skipped", "message_id": message_id, "reason": "phone_number_not_allowed"}
+            
+            # Idempotency lock: avoid double mr_welcome when multiple handlers race
+            try:
+                from controllers.web_socket import appointment_state  # type: ignore
+                from datetime import datetime, timedelta
+                st_lock = appointment_state.get(wa_id) or {}
+                if bool(st_lock.get("mr_welcome_sent")):
+                    return {"status": "skipped", "message_id": message_id, "reason": "mr_welcome_already_sent"}
+                ts_str = st_lock.get("mr_welcome_sending_ts")
+                ts_obj = datetime.fromisoformat(ts_str) if isinstance(ts_str, str) else None
+                if ts_obj and (datetime.utcnow() - ts_obj) < timedelta(seconds=10):
+                    return {"status": "skipped", "message_id": message_id, "reason": "mr_welcome_in_progress"}
+                st_lock["mr_welcome_sending_ts"] = datetime.utcnow().isoformat()
+                appointment_state[wa_id] = st_lock
+            except Exception:
+                pass
+
+            # Determine and store the phone_id that triggered this flow
+            flow_phone_id = None
+            if phone_id_meta and str(phone_id_meta) in TREATMENT_FLOW_ALLOWED_PHONE_IDS:
+                flow_phone_id = str(phone_id_meta)
+            else:
+                # Find phone_id by display number match - compare last 10 digits
+                try:
+                    display_num = ((value or {}).get("metadata", {}) or {}).get("display_phone_number") or to_wa_id or ""
+                    import re as _re
+                    disp_digits = _re.sub(r"\D", "", display_num or "")
+                    # Get last 10 digits of display number
+                    disp_last10 = disp_digits[-10:] if len(disp_digits) >= 10 else disp_digits
+                    
+                    for pid in TREATMENT_FLOW_ALLOWED_PHONE_IDS:
+                        cfg = WHATSAPP_NUMBERS.get(pid)
+                        if cfg:
+                            name_digits = _re.sub(r"\D", "", (cfg.get("name") or ""))
+                            # Get last 10 digits of stored phone number
+                            name_last10 = name_digits[-10:] if len(name_digits) >= 10 else name_digits
+                            # Match if last 10 digits are the same
+                            if name_last10 and disp_last10 and name_last10 == disp_last10:
+                                flow_phone_id = str(pid)
+                                break
+                except Exception:
+                    pass
+            
             try:
                 # Extract location and city from the incoming prefill text if present
                 # Expected: "hi oliva i want to know more about services in <location>, <city> clinic"
@@ -79,7 +162,7 @@ async def run_treament_flow(
                 except Exception:
                     pass
 
-                # Persist into state for later lead creation
+                # Persist into state for later lead creation (including the phone_id that triggered this flow)
                 try:
                     from controllers.web_socket import appointment_state, lead_appointment_state  # type: ignore
                     st_prefill = appointment_state.get(wa_id) or {}
@@ -87,6 +170,8 @@ async def run_treament_flow(
                         st_prefill["selected_city"] = extracted_city
                     if extracted_location:
                         st_prefill["selected_location"] = extracted_location
+                    if flow_phone_id:
+                        st_prefill["treatment_flow_phone_id"] = flow_phone_id  # Store the phone_id for this flow
                     appointment_state[wa_id] = st_prefill
                     # Mirror minimal info into lead_appointment_state
                     try:
@@ -101,8 +186,14 @@ async def run_treament_flow(
                 except Exception:
                     pass
 
-                # Resolve credentials (multi-number aware)
+                # Resolve credentials (multi-number aware) - use the phone_id that triggered this flow
                 def _resolve_credentials_for_value() -> tuple[str | None, str | None]:
+                    # First priority: use the phone_id that triggered this flow (stored in flow_phone_id)
+                    if flow_phone_id:
+                        cfg = get_number_config(flow_phone_id)
+                        if cfg and cfg.get("token"):
+                            return cfg.get("token"), flow_phone_id
+                    
                     try:
                         phone_id_meta = ((value or {}).get("metadata", {}) or {}).get("phone_number_id")
                         if phone_id_meta:
@@ -125,10 +216,12 @@ async def run_treament_flow(
                         
                     except Exception:
                         pass
-                    # Final fallback: DB token + env phone id
+                    # Final fallback: DB token + use flow_phone_id if available, else first allowed number
                     t = get_latest_token(db)
                     if t and getattr(t, "token", None):
-                        return t.token, os.getenv("WHATSAPP_PHONE_ID", "859830643878412")
+                        # Use flow_phone_id if available, otherwise use first allowed number
+                        fallback_phone_id = flow_phone_id if flow_phone_id else list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
+                        return t.token, fallback_phone_id
                     return None, None
 
                 access_token_prefill, phone_id_prefill = _resolve_credentials_for_value()
@@ -205,12 +298,13 @@ async def run_treament_flow(
 
                         # Do NOT send mr_treatment here; it will be sent after city selection
 
-                        # Mark context and set treatment flag
+                        # Mark context and set treatment flag; also mark mr_welcome_sent for idempotency
                         try:
                             from controllers.web_socket import appointment_state  # type: ignore
                             st = appointment_state.get(wa_id) or {}
                             st["flow_context"] = "treatment"
                             st["from_treatment_flow"] = True
+                            st["mr_welcome_sent"] = True
                             appointment_state[wa_id] = st
                         except Exception:
                             pass
@@ -345,13 +439,15 @@ async def run_treatment_buttons_flow(
         try:
             # Resolve credentials for template sends during topic handling
             def _resolve_creds_topic() -> tuple[str | None, str | None]:
-                # 1) Force use of dedicated Treatment Flow number if configured
+                # 1) First priority: use the phone_id stored in state from when flow started
                 try:
-                    pref_pid = os.getenv("TREATMENT_FLOW_PHONE_ID") or os.getenv("WELCOME_PHONE_ID")
-                    if pref_pid:
-                        cfg = WHATSAPP_NUMBERS.get(str(pref_pid)) if isinstance(WHATSAPP_NUMBERS, dict) else None
+                    from controllers.web_socket import appointment_state  # type: ignore
+                    st = appointment_state.get(wa_id) or {}
+                    stored_phone_id = st.get("treatment_flow_phone_id")
+                    if stored_phone_id:
+                        cfg = WHATSAPP_NUMBERS.get(str(stored_phone_id)) if isinstance(WHATSAPP_NUMBERS, dict) else None
                         if cfg and cfg.get("token"):
-                            return cfg.get("token"), str(pref_pid)
+                            return cfg.get("token"), str(stored_phone_id)
                 except Exception:
                     pass
                 # 2) Try to infer from display number we are broadcasting as (to_wa_id)
@@ -364,10 +460,22 @@ async def run_treatment_buttons_flow(
                             return cfg.get("token"), str(pid)
                 except Exception:
                     pass
-                # 3) Fallback: DB token + default to marketing number if present, else env WHATSAPP_PHONE_ID
+                # 3) Fallback: DB token + use stored phone_id or first allowed number
                 t = get_latest_token(db)
                 if t and getattr(t, "token", None):
-                    fallback_pid = os.getenv("TREATMENT_FLOW_PHONE_ID") or os.getenv("WELCOME_PHONE_ID") or os.getenv("WHATSAPP_PHONE_ID", "859830643878412")
+                    try:
+                        from controllers.web_socket import appointment_state  # type: ignore
+                        st = appointment_state.get(wa_id) or {}
+                        stored_phone_id = st.get("treatment_flow_phone_id")
+                        if stored_phone_id:
+                            fallback_pid = stored_phone_id
+                        else:
+                            # Use first allowed number as fallback
+                            from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
+                            fallback_pid = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
+                    except Exception:
+                        from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
+                        fallback_pid = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
                     return t.token, str(fallback_pid)
                 return None, None
 
@@ -559,19 +667,21 @@ async def run_treatment_buttons_flow(
             # Resolve credentials to ensure booking_appoint goes from Treatment Flow number
             token_entry_book = get_latest_token(db)
             if token_entry_book and token_entry_book.token:
-                # 1) Prefer dedicated Treatment Flow phone id
-                pref_pid = os.getenv("TREATMENT_FLOW_PHONE_ID") or os.getenv("WELCOME_PHONE_ID")
+                # 1) First priority: use the phone_id stored in state from when flow started
                 access_token_book = None
                 phone_id_book = None
-                if pref_pid:
-                    try:
+                try:
+                    from controllers.web_socket import appointment_state  # type: ignore
+                    st = appointment_state.get(wa_id) or {}
+                    stored_phone_id = st.get("treatment_flow_phone_id")
+                    if stored_phone_id:
                         from marketing.whatsapp_numbers import WHATSAPP_NUMBERS  # type: ignore
-                        cfg_b = (WHATSAPP_NUMBERS or {}).get(str(pref_pid)) if isinstance(WHATSAPP_NUMBERS, dict) else None
-                    except Exception:
-                        cfg_b = None
-                    if cfg_b and cfg_b.get("token"):
-                        access_token_book = cfg_b.get("token")
-                        phone_id_book = str(pref_pid)
+                        cfg_b = (WHATSAPP_NUMBERS or {}).get(str(stored_phone_id)) if isinstance(WHATSAPP_NUMBERS, dict) else None
+                        if cfg_b and cfg_b.get("token"):
+                            access_token_book = cfg_b.get("token")
+                            phone_id_book = str(stored_phone_id)
+                except Exception:
+                    pass
                 # 2) Infer from to_wa_id display number mapping
                 if not access_token_book:
                     try:
@@ -586,10 +696,21 @@ async def run_treatment_buttons_flow(
                                 break
                     except Exception:
                         pass
-                # 3) Fallback: DB token + env phone id preference chain
+                # 3) Fallback: DB token + use stored phone_id or first allowed number
                 if not access_token_book:
                     access_token_book = token_entry_book.token
-                    phone_id_book = os.getenv("TREATMENT_FLOW_PHONE_ID") or os.getenv("WELCOME_PHONE_ID") or os.getenv("WHATSAPP_PHONE_ID", "859830643878412")
+                    try:
+                        from controllers.web_socket import appointment_state  # type: ignore
+                        st = appointment_state.get(wa_id) or {}
+                        stored_phone_id = st.get("treatment_flow_phone_id")
+                        if stored_phone_id:
+                            phone_id_book = stored_phone_id
+                        else:
+                            from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
+                            phone_id_book = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
+                    except Exception:
+                        from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
+                        phone_id_book = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
 
                 lang_code_book = os.getenv("WELCOME_TEMPLATE_LANG", "en_US")
                 from controllers.auto_welcome_controller import _send_template
@@ -620,7 +741,19 @@ async def run_treatment_buttons_flow(
             if token_entry3 and token_entry3.token:
                 access_token3 = token_entry3.token
                 headers3 = {"Authorization": f"Bearer {access_token3}", "Content-Type": "application/json"}
-                phone_id3 = os.getenv("WHATSAPP_PHONE_ID", "859830643878412")
+                # Use stored phone_id from flow start, or fallback to first allowed number
+                try:
+                    from controllers.web_socket import appointment_state  # type: ignore
+                    st = appointment_state.get(wa_id) or {}
+                    stored_phone_id = st.get("treatment_flow_phone_id")
+                    if stored_phone_id:
+                        phone_id3 = stored_phone_id
+                    else:
+                        from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
+                        phone_id3 = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
+                except Exception:
+                    from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
+                    phone_id3 = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
                 payload_buttons = {
                     "messaging_product": "whatsapp",
                     "to": wa_id,
@@ -731,12 +864,17 @@ async def run_appointment_buttons_flow(
                         )
                     except Exception:
                         pass
-                    # Thank you message
+                    # Thank you message - use the phone_id that triggered this flow
+                    stored_phone_id = st.get("treatment_flow_phone_id")
+                    phone_id_hint = stored_phone_id if stored_phone_id else None
+                    if not phone_id_hint:
+                        from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
+                        phone_id_hint = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
                     await send_message_to_waid(
                         wa_id,
                         "✅ Thank you! Our team will contact you shortly to confirm your appointment.",
                         db,
-                        phone_id_hint=str(os.getenv("TREATMENT_FLOW_PHONE_ID") or os.getenv("WELCOME_PHONE_ID") or os.getenv("WHATSAPP_PHONE_ID", "859830643878412")),
+                        phone_id_hint=str(phone_id_hint),
                     )
                     # Stop any follow-ups for completed flow (don't reset timer since flow is complete)
                     try:
@@ -773,11 +911,19 @@ async def run_appointment_buttons_flow(
             or ("request" in normalized_payload and ("call back" in normalized_payload or "callback" in normalized_payload))
         ):
             try:
+                # Use the phone_id that triggered this flow
+                from controllers.web_socket import appointment_state  # type: ignore
+                st_cb = appointment_state.get(wa_id) or {}
+                stored_phone_id_cb = st_cb.get("treatment_flow_phone_id")
+                phone_id_hint_cb = stored_phone_id_cb if stored_phone_id_cb else None
+                if not phone_id_hint_cb:
+                    from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
+                    phone_id_hint_cb = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
                 await send_message_to_waid(
                     wa_id,
                     "📌 Thank you for your interest! One of our team members will contact you shortly to assist further.",
                     db,
-                    phone_id_hint=str(os.getenv("TREATMENT_FLOW_PHONE_ID") or os.getenv("WELCOME_PHONE_ID") or os.getenv("WHATSAPP_PHONE_ID", "859830643878412")),
+                    phone_id_hint=str(phone_id_hint_cb),
                 )
                 # Stop any follow-ups for completed flow (don't reset timer since flow is complete)
                 try:

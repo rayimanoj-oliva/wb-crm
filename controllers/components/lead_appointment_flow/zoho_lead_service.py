@@ -566,7 +566,7 @@ async def create_lead_for_appointment(
             except Exception:
                 lead_source_val = "Facebook"
                 language_val = "English"
-            sub_source_val = "Chats"
+            sub_source_val = "WhatsApp"
 
         result = zoho_lead_service.create_lead(
             first_name=first_name,

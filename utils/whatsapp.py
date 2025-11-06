@@ -15,14 +15,15 @@ from services.followup_service import schedule_next_followup
 from utils.ws_manager import manager
 from marketing.whatsapp_numbers import WHATSAPP_NUMBERS
 
-def _resolve_credentials(db, *, hint_phone_id: str | None = None, hint_display_number: str | None = None):
+def _resolve_credentials(db, *, hint_phone_id: str | None = None, hint_display_number: str | None = None, wa_id: str | None = None):
     """Pick the correct token and phone_id for outbound sends.
 
     Preference order:
     1) Explicit hint_phone_id mapping
-    2) Env WHATSAPP_PHONE_ID mapping
-    3) Single entry in WHATSAPP_NUMBERS
-    4) Fallback to DB token + env WHATSAPP_PHONE_ID
+    2) Stored treatment_flow_phone_id from state (if in treatment flow)
+    3) Env WHATSAPP_PHONE_ID mapping
+    4) Single entry in WHATSAPP_NUMBERS
+    5) Fallback to DB token + env WHATSAPP_PHONE_ID
     """
     # 1) Explicit phone_id hint
     if hint_phone_id and isinstance(WHATSAPP_NUMBERS, dict) and hint_phone_id in WHATSAPP_NUMBERS:
@@ -31,7 +32,21 @@ def _resolve_credentials(db, *, hint_phone_id: str | None = None, hint_display_n
         if tok:
             return tok, hint_phone_id
 
-    # 2) Env-configured phone id
+    # 2) Check stored treatment_flow_phone_id from state (for treatment flow independence)
+    if wa_id:
+        try:
+            from controllers.web_socket import appointment_state  # type: ignore
+            st = appointment_state.get(wa_id) or {}
+            stored_phone_id = st.get("treatment_flow_phone_id")
+            if stored_phone_id and isinstance(WHATSAPP_NUMBERS, dict) and stored_phone_id in WHATSAPP_NUMBERS:
+                cfg = WHATSAPP_NUMBERS.get(stored_phone_id) or {}
+                tok = cfg.get("token")
+                if tok:
+                    return tok, stored_phone_id
+        except Exception:
+            pass
+
+    # 3) Env-configured phone id
     env_pid = os.getenv("WHATSAPP_PHONE_ID")
     if env_pid and isinstance(WHATSAPP_NUMBERS, dict) and env_pid in WHATSAPP_NUMBERS:
         cfg = WHATSAPP_NUMBERS.get(env_pid) or {}
@@ -39,7 +54,7 @@ def _resolve_credentials(db, *, hint_phone_id: str | None = None, hint_display_n
         if tok:
             return tok, env_pid
 
-    # 3) Single mapping entry
+    # 4) Single mapping entry
     try:
         entries = [(pid, cfg) for pid, cfg in (WHATSAPP_NUMBERS or {}).items() if (cfg or {}).get("token")]
         if len(entries) == 1:
@@ -48,7 +63,7 @@ def _resolve_credentials(db, *, hint_phone_id: str | None = None, hint_display_n
     except Exception:
         pass
 
-    # 4) Fallback to DB token + env phone id
+    # 5) Fallback to DB token + env phone id
     token_obj = whatsapp_service.get_latest_token(db)
     if token_obj and getattr(token_obj, "token", None):
         pid_final = (env_pid or os.getenv("WHATSAPP_PHONE_ID", "367633743092037"))
@@ -56,7 +71,7 @@ def _resolve_credentials(db, *, hint_phone_id: str | None = None, hint_display_n
     raise HTTPException(status_code=400, detail="Token not available")
 
 async def send_message_to_waid(wa_id: str, message_body: str, db, from_wa_id="917729992376", *, schedule_followup: bool = False, stage_label: str | None = None, phone_id_hint: str | None = None):
-    access_token, phone_id = _resolve_credentials(db, hint_phone_id=phone_id_hint)
+    access_token, phone_id = _resolve_credentials(db, hint_phone_id=phone_id_hint, wa_id=wa_id)
     try:
         print(f"[send_message_to_waid] phone_id={phone_id} wa_id={wa_id} len(body)={len(message_body)}")
     except Exception:
@@ -264,7 +279,7 @@ async def send_products_list(wa_id: str, category_id: str = None, subcategory_id
         raise HTTPException(status_code=500, detail=f"Failed to send products: {res.text}")
 
 async def send_location_to_waid(wa_id: str, latitude: float, longitude: float, name: str, address: str, db, from_wa_id="917729992376", phone_id_hint: str | None = None):
-    access_token, phone_id = _resolve_credentials(db, hint_phone_id=phone_id_hint)
+    access_token, phone_id = _resolve_credentials(db, hint_phone_id=phone_id_hint, wa_id=wa_id)
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json"

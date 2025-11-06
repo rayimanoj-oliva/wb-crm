@@ -22,6 +22,16 @@ async def send_auto_welcome_message(db: Session, *, wa_id: str) -> Dict[str, Any
     """
     
     try:
+        # Hard gate: do not send oliva_meta_ad when user is in Treatment Flow context
+        try:
+            from controllers.web_socket import appointment_state  # type: ignore
+            st = appointment_state.get(wa_id) or {}
+            if bool(st.get("from_treatment_flow")) or bool(st.get("treatment_flow_phone_id")) or (st.get("flow_context") == "treatment"):
+                print(f"[lead_appointment_flow] INFO - Skipping auto welcome for {wa_id}: in treatment flow context")
+                return {"success": False, "skipped": True, "reason": "in_treatment_flow"}
+        except Exception:
+            pass
+
         token_entry = get_latest_token(db)
         if not token_entry or not token_entry.token:
             await send_message_to_waid(wa_id, "❌ Unable to send welcome message right now.", db)

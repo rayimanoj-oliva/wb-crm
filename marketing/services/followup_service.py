@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, Tuple
 import uuid
 import logging
 import sys
@@ -16,7 +16,7 @@ from schemas.message_schema import MessageCreate
 from schemas.customer_schema import CustomerCreate
 from config.constants import get_messages_url
 from cache.redis_connection import get_redis_client
-from marketing.whatsapp_numbers import get_number_config
+from marketing.whatsapp_numbers import get_number_config, TREATMENT_FLOW_ALLOWED_PHONE_IDS, WHATSAPP_NUMBERS
 
 # Create logger for this module
 logger = logging.getLogger("followup_service")
@@ -48,18 +48,52 @@ def _is_in_lead_appointment_flow(wa_id: Optional[str]) -> bool:
 
 
 # Resolve credentials to always use the Treatment Flow number when available
-def _resolve_marketing_credentials(db: Session) -> tuple[str, str, str]:
-    """Return (access_token, phone_id, display_from_digits)."""
-    # Prefer dedicated marketing/treatment number
-    phone_id_pref = os.getenv("TREATMENT_FLOW_PHONE_ID") or os.getenv("WELCOME_PHONE_ID") or os.getenv("WHATSAPP_PHONE_ID")
-    token = None
+def _resolve_marketing_credentials(db: Session, *, wa_id: Optional[str] = None) -> Tuple[str, str, str]:
+    """
+    Resolve credentials strictly for Treatment Flow numbers, independent per number.
+    Returns (access_token, phone_id, display_from_digits).
+    Preference order:
+      1) phone_id stored in controllers.web_socket.appointment_state[wa_id]["treatment_flow_phone_id"]
+      2) Env TREATMENT_FLOW_PHONE_ID/WELCOME_PHONE_ID if they are in allowed set
+      3) First allowed phone id from mapping
+    """
+    phone_id_pref: Optional[str] = None
     display_from = os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376")
+
+    # 1) Stored phone id from state
+    if wa_id:
+        try:
+            from controllers.web_socket import appointment_state  # type: ignore
+            st = appointment_state.get(wa_id) or {}
+            stored_pid = st.get("treatment_flow_phone_id")
+            if stored_pid and str(stored_pid) in TREATMENT_FLOW_ALLOWED_PHONE_IDS:
+                phone_id_pref = str(stored_pid)
+                logger.debug(f"[_resolve_marketing_credentials] Using stored phone_id {phone_id_pref} for wa_id={wa_id}")
+        except Exception as e:
+            logger.debug(f"[_resolve_marketing_credentials] No stored phone_id for {wa_id}: {e}")
+
+    # 2) Env-configured if allowed
+    if not phone_id_pref:
+        pid_env = os.getenv("TREATMENT_FLOW_PHONE_ID") or os.getenv("WELCOME_PHONE_ID") or os.getenv("WHATSAPP_PHONE_ID")
+        if pid_env and str(pid_env) in TREATMENT_FLOW_ALLOWED_PHONE_IDS:
+            phone_id_pref = str(pid_env)
+            logger.debug(f"[_resolve_marketing_credentials] Using env phone_id {phone_id_pref}")
+
+    # 3) Fallback to first allowed id in mapping
+    if not phone_id_pref:
+        try:
+            phone_id_pref = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
+            logger.debug(f"[_resolve_marketing_credentials] Fallback to first allowed phone_id {phone_id_pref}")
+        except Exception:
+            pass
+
+    # Resolve token + display_from from mapping
+    token: Optional[str] = None
     if phone_id_pref:
         try:
             cfg = get_number_config(str(phone_id_pref))
             if cfg and cfg.get("token"):
                 token = cfg.get("token")
-                # Derive display digits from mapping name
                 try:
                     import re as _re
                     display_from = _re.sub(r"\D", "", (cfg.get("name") or "")) or display_from
@@ -67,19 +101,22 @@ def _resolve_marketing_credentials(db: Session) -> tuple[str, str, str]:
                     pass
         except Exception:
             pass
+
+    # Final fallback: DB token but still force an allowed phone_id
     if not token:
-        # Fallback to DB token + env phone id
         tok = whatsapp_service.get_latest_token(db)
         if not tok:
             raise HTTPException(status_code=400, detail="Token not available")
         token = tok.token
         if not phone_id_pref:
-            phone_id_pref = os.getenv("WHATSAPP_PHONE_ID", "859830643878412")
-    return token, str(phone_id_pref or "859830643878412"), display_from
+            # last resort - pick any allowed or default to known id
+            phone_id_pref = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0] if TREATMENT_FLOW_ALLOWED_PHONE_IDS else os.getenv("WHATSAPP_PHONE_ID", "859830643878412")
+
+    return token, str(phone_id_pref), display_from
 
 # Follow-up timing constants (in minutes)
-FOLLOW_UP_1_DELAY_MINUTES = 5  # Time before sending Follow-Up 1
-FOLLOW_UP_2_DELAY_MINUTES = 30  # Time after Follow-Up 1 before sending Follow-Up 2
+FOLLOW_UP_1_DELAY_MINUTES = 2  # Time before sending Follow-Up 1
+FOLLOW_UP_2_DELAY_MINUTES = 5  # Time after Follow-Up 1 before sending Follow-Up 2
 
 FOLLOW_UP_1_TEXT = (
     "👋 Hi! Just checking in — are we still connected?\n\n"
@@ -329,8 +366,13 @@ async def send_followup1_interactive(db: Session, *, wa_id: str, from_wa_id: str
         return
     logger.info(f"Starting Follow-Up 1 send to {wa_id}")
     
-    # Resolve credentials for Treatment Flow number
-    access_token, phone_id, display_from = _resolve_marketing_credentials(db)
+    # Resolve credentials for Treatment Flow number (independent per wa_id)
+    access_token, phone_id, display_from = _resolve_marketing_credentials(db, wa_id=wa_id)
+
+    # Restrict strictly to allowed numbers
+    if str(phone_id) not in TREATMENT_FLOW_ALLOWED_PHONE_IDS:
+        logger.info(f"[followup_service] Blocked Follow-Up 1 for {wa_id} - phone_id {phone_id} not allowed")
+        return
 
     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
 
@@ -400,8 +442,13 @@ async def send_followup2(db: Session, *, wa_id: str, from_wa_id: str = None):
         return
     logger.info(f"Starting Follow-Up 2 send to {wa_id}")
     
-    # Resolve credentials for Treatment Flow number
-    access_token, phone_id, display_from = _resolve_marketing_credentials(db)
+    # Resolve credentials for Treatment Flow number (independent per wa_id)
+    access_token, phone_id, display_from = _resolve_marketing_credentials(db, wa_id=wa_id)
+
+    # Restrict strictly to allowed numbers
+    if str(phone_id) not in TREATMENT_FLOW_ALLOWED_PHONE_IDS:
+        logger.info(f"[followup_service] Blocked Follow-Up 2 for {wa_id} - phone_id {phone_id} not allowed")
+        return
 
     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
 

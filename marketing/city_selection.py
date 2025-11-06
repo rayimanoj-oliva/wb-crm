@@ -40,19 +40,41 @@ async def send_city_selection(db: Session, *, wa_id: str) -> Dict[str, Any]:
         pass
 
     try:
-        # Resolve credentials: prefer dedicated Treatment Flow number; fallback to legacy token/env
-        phone_id_pref = os.getenv("TREATMENT_FLOW_PHONE_ID") or os.getenv("WHATSAPP_PHONE_ID", "859830643878412")
-        cfg = get_number_config(str(phone_id_pref)) if phone_id_pref else None
-        if cfg and cfg.get("token"):
-            access_token = cfg.get("token")
-            phone_id = str(phone_id_pref)
-        else:
+        # Resolve credentials: use stored treatment_flow_phone_id first, then env, then fallback
+        phone_id = None
+        access_token = None
+        
+        # First priority: Check stored phone_id from treatment flow state
+        try:
+            from controllers.web_socket import appointment_state  # type: ignore
+            st = appointment_state.get(wa_id) or {}
+            stored_phone_id = st.get("treatment_flow_phone_id")
+            if stored_phone_id:
+                cfg = get_number_config(str(stored_phone_id))
+                if cfg and cfg.get("token"):
+                    access_token = cfg.get("token")
+                    phone_id = str(stored_phone_id)
+        except Exception:
+            pass
+        
+        # Second priority: Env-configured treatment flow number
+        if not phone_id:
+            phone_id_pref = os.getenv("TREATMENT_FLOW_PHONE_ID") or os.getenv("WELCOME_PHONE_ID")
+            if phone_id_pref:
+                cfg = get_number_config(str(phone_id_pref)) if phone_id_pref else None
+                if cfg and cfg.get("token"):
+                    access_token = cfg.get("token")
+                    phone_id = str(phone_id_pref)
+        
+        # Final fallback: DB token + first allowed number
+        if not phone_id:
             token_entry = get_latest_token(db)
             if not token_entry or not token_entry.token:
                 await send_message_to_waid(wa_id, "❌ Unable to send city options right now.", db)
                 return {"success": False, "error": "no_token"}
             access_token = token_entry.token
-            phone_id = os.getenv("WHATSAPP_PHONE_ID", "859830643878412")
+            from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
+            phone_id = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
         headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
 
         # Page 1 (exactly 10 rows as requested)
@@ -160,7 +182,21 @@ async def send_city_selection_page2(db: Session, *, wa_id: str) -> Dict[str, Any
 
         access_token = token_entry.token
         headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-        phone_id = os.getenv("WHATSAPP_PHONE_ID", "859830643878412")
+        
+        # Use stored phone_id from treatment flow state, or fallback to first allowed number
+        phone_id = None
+        try:
+            from controllers.web_socket import appointment_state  # type: ignore
+            st = appointment_state.get(wa_id) or {}
+            stored_phone_id = st.get("treatment_flow_phone_id")
+            if stored_phone_id:
+                phone_id = stored_phone_id
+        except Exception:
+            pass
+        
+        if not phone_id:
+            from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
+            phone_id = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
 
         rows_page2 = [
             {"id": "city_vizag", "title": "Vizag"},
@@ -233,7 +269,22 @@ async def handle_city_selection(
     selected_city = city_mapping.get(normalized_reply)
     
     if not selected_city:
-        await send_message_to_waid(wa_id, "❌ Invalid city selection. Please try again.", db)
+        # Use stored phone_id from treatment flow state
+        phone_id_hint = None
+        try:
+            from controllers.web_socket import appointment_state  # type: ignore
+            st = appointment_state.get(wa_id) or {}
+            stored_phone_id = st.get("treatment_flow_phone_id")
+            if stored_phone_id:
+                phone_id_hint = stored_phone_id
+        except Exception:
+            pass
+        
+        if not phone_id_hint:
+            from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
+            phone_id_hint = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
+        
+        await send_message_to_waid(wa_id, "❌ Invalid city selection. Please try again.", db, phone_id_hint=str(phone_id_hint))
         return {"status": "invalid_selection"}
     
     # Store selected city in customer data or session and establish idempotency keys
@@ -291,12 +342,22 @@ async def handle_city_selection(
         except Exception:
             pass
 
-        # Use dedicated marketing number for all follow-ups
+        # Use stored phone_id from treatment flow state, or fallback to first allowed number
+        phone_id_hint = None
         try:
-            _pid_hint = os.getenv("TREATMENT_FLOW_PHONE_ID") or os.getenv("WELCOME_PHONE_ID") or os.getenv("WHATSAPP_PHONE_ID", "859830643878412")
+            from controllers.web_socket import appointment_state  # type: ignore
+            st = appointment_state.get(wa_id) or {}
+            stored_phone_id = st.get("treatment_flow_phone_id")
+            if stored_phone_id:
+                phone_id_hint = stored_phone_id
         except Exception:
-            _pid_hint = os.getenv("WHATSAPP_PHONE_ID", "859830643878412")
-        await send_message_to_waid(wa_id, f"✅ Great! You selected {selected_city}.", db, phone_id_hint=str(_pid_hint))
+            pass
+        
+        if not phone_id_hint:
+            from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
+            phone_id_hint = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
+        
+        await send_message_to_waid(wa_id, f"✅ Great! You selected {selected_city}.", db, phone_id_hint=str(phone_id_hint))
         try:
             # Early exit if already marked sent
             try:
@@ -345,10 +406,31 @@ async def handle_city_selection(
 
             token_entry = get_latest_token(db)
             if token_entry and token_entry.token:
-                # Prefer mapped credentials for Treatment Flow number
-                phone_id = os.getenv("TREATMENT_FLOW_PHONE_ID") or os.getenv("WELCOME_PHONE_ID") or os.getenv("WHATSAPP_PHONE_ID", "859830643878412")
-                cfg_env = get_number_config(str(phone_id)) if phone_id else None
-                access_token = (cfg_env.get("token") if (cfg_env and cfg_env.get("token")) else token_entry.token)
+                # First priority: Use stored phone_id from treatment flow state
+                phone_id = None
+                access_token = None
+                try:
+                    from controllers.web_socket import appointment_state as _appt_state  # type: ignore
+                    _st_appt = _appt_state.get(wa_id) or {}
+                    stored_phone_id = _st_appt.get("treatment_flow_phone_id")
+                    if stored_phone_id:
+                        cfg_env = get_number_config(str(stored_phone_id))
+                        if cfg_env and cfg_env.get("token"):
+                            access_token = cfg_env.get("token")
+                            phone_id = str(stored_phone_id)
+                except Exception:
+                    pass
+                
+                # Second priority: Env-configured treatment flow number
+                if not phone_id:
+                    phone_id = os.getenv("TREATMENT_FLOW_PHONE_ID") or os.getenv("WELCOME_PHONE_ID")
+                    if phone_id:
+                        cfg_env = get_number_config(str(phone_id)) if phone_id else None
+                        access_token = (cfg_env.get("token") if (cfg_env and cfg_env.get("token")) else token_entry.token)
+                    else:
+                        access_token = token_entry.token
+                        from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
+                        phone_id = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
                 # After city selection, send mr_treatment template first unless already sent earlier
                 try:
                     from controllers.web_socket import appointment_state as _appt_state  # type: ignore
@@ -488,8 +570,22 @@ async def handle_city_selection(
 
     # Lead appointment flow: proceed to clinic selection
     else:
-        # Send confirmation message for lead appointment flow
-        await send_message_to_waid(wa_id, f"✅ Great! You selected {selected_city}.", db)
+        # Send confirmation message for lead appointment flow - use stored phone_id
+        phone_id_hint = None
+        try:
+            from controllers.web_socket import appointment_state  # type: ignore
+            st = appointment_state.get(wa_id) or {}
+            stored_phone_id = st.get("treatment_flow_phone_id")
+            if stored_phone_id:
+                phone_id_hint = stored_phone_id
+        except Exception:
+            pass
+        
+        if not phone_id_hint:
+            from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
+            phone_id_hint = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
+        
+        await send_message_to_waid(wa_id, f"✅ Great! You selected {selected_city}.", db, phone_id_hint=str(phone_id_hint))
         
         from .clinic_location import send_clinic_location
         # Normalize city for clinic mapping (e.g., Bangalore -> Bengaluru)

@@ -31,14 +31,8 @@ async def run_welcome_flow(
     Returns {"status": "sent"|"skipped"|"failed", ...}.
     """
 
-    raw = (body_text or "").strip()
-    raw_lower = raw.lower()
-    # Trigger only on standalone greetings, not sentences like "hi oliva I want..."
-    if not (
-        message_type == "text"
-        and re.fullmatch(r"\s*(hi|hello|hlo)[.!]?\s*", raw_lower)
-    ):
-        return {"status": "skipped"}
+    # As requested: do not send welcome_msg template for any text.
+    return {"status": "skipped"}
 
     token_entry = get_latest_token(db)
     if not (token_entry and token_entry.token):

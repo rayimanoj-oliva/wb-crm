@@ -16,6 +16,12 @@ WHATSAPP_NUMBERS = {
     },
 }
 
+# Treatment flow allowed phone IDs - only these two numbers can trigger the treatment flow
+TREATMENT_FLOW_ALLOWED_PHONE_IDS = {
+    "848542381673826",  # +91 82978 82978
+    "859830643878412",  # +91 76176 13030
+}
+
 def get_number_config(phone_id: str) -> dict | None:
     """Return config for a given WhatsApp Business phone_id, if present."""
     return WHATSAPP_NUMBERS.get(phone_id)

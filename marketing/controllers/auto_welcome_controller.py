@@ -438,20 +438,38 @@ async def whatsapp_auto_welcome_webhook(request: Request, db: Session = Depends(
                         pass
 
         # Check if this is the prefill message to send mr_welcome
-        # Known wa.link prefill phrase variants
+        # Known wa.link prefill phrase variants + simple greeting triggers
         allowed_variants = [
             _normalize("Hi, I'm interested in knowing more about your services. Please share details."),
             _normalize("Hi, I'm interested in knowing more about your services. Please share details."),
             _normalize("Hi I'm interested in knowing more about your services. Please share details."),
         ]
+        import re as _re_hi
+        greeting_match = bool(_re_hi.fullmatch(r"\s*(hi|hello|hlo)[.!]?\s*", normalized_body or ""))
         try:
             print("[auto_webhook] normalized_body=", normalized_body)
             print("[auto_webhook] allowed_variants[0]=", allowed_variants[0])
         except Exception:
             pass
 
-        # If this is the prefill message, send mr_welcome and return
-        if normalized_body in allowed_variants:
+        # If this is the prefill message OR a simple greeting, send mr_welcome and return
+        if (normalized_body in allowed_variants) or greeting_match:
+            # Idempotency: skip if treatment flow already sent welcome
+            try:
+                from controllers.web_socket import appointment_state  # type: ignore
+                st_w = appointment_state.get(wa_id) or {}
+                if bool(st_w.get("mr_welcome_sent")):
+                    return {"status": "skipped", "reason": "mr_welcome_already_sent"}
+                # also short-circuit if a send started very recently
+                from datetime import datetime, timedelta
+                ts_str = st_w.get("mr_welcome_sending_ts")
+                ts_obj = datetime.fromisoformat(ts_str) if isinstance(ts_str, str) else None
+                if ts_obj and (datetime.utcnow() - ts_obj) < timedelta(seconds=10):
+                    return {"status": "skipped", "reason": "mr_welcome_in_progress"}
+                st_w["mr_welcome_sending_ts"] = datetime.utcnow().isoformat()
+                appointment_state[wa_id] = st_w
+            except Exception:
+                pass
             print("[auto_webhook] Prefill message detected, sending mr_welcome")
         access_token, phone_id = _resolve_credentials()
         if not access_token:
@@ -532,6 +550,7 @@ async def whatsapp_auto_welcome_webhook(request: Request, db: Session = Depends(
                 st = appointment_state.get(wa_id) or {}
                 st["flow_context"] = "treatment"
                 st["from_treatment_flow"] = True
+                st["mr_welcome_sent"] = True
                 appointment_state[wa_id] = st
             except Exception:
                 pass

@@ -85,10 +85,30 @@ async def run_mr_welcome_number_flow(
         from controllers.auto_welcome_controller import _send_template  # local import to avoid circulars
 
         # Optional: personalize with name if available via a single body param
+        def _extract_profile_name(_value: Optional[Dict[str, Any]]) -> Optional[str]:
+            try:
+                contacts = (_value or {}).get("contacts") or []
+                if isinstance(contacts, list) and contacts:
+                    prof = (contacts[0] or {}).get("profile") or {}
+                    nm = (prof.get("name") or "").strip()
+                    if nm:
+                        return nm
+            except Exception:
+                pass
+            try:
+                prof = (_value or {}).get("profile") or {}
+                nm = (prof.get("name") or "").strip()
+                if nm:
+                    return nm
+            except Exception:
+                pass
+            return None
+
+        name_hint = _extract_profile_name(value) or (getattr(customer, "name", None) or None)
         body_components = [{
             "type": "body",
             "parameters": [
-                {"type": "text", "text": getattr(customer, "name", None) or wa_id or "there"}
+                {"type": "text", "text": name_hint or "there"}
             ],
         }]
 
@@ -128,87 +148,54 @@ async def run_mr_welcome_number_flow(
             pass
 
         if resp.status_code == 200:
-            # After welcome: send confirmation text and Yes/No buttons via the SAME phone_id
+            # After template is sent, immediately send confirmation prompt from the same number.
             try:
+                # Prepare name and phone display
+                display_name = name_hint or getattr(customer, "name", None) or "there"
+                import re as _re
+                digits = _re.sub(r"\D", "", wa_id or "")
+                last10 = digits[-10:] if len(digits) >= 10 else None
+                display_phone = f"+91{last10}" if last10 and len(last10) == 10 else wa_id
+
+                # 1) Send the confirmation text using the same phone_id
+                try:
+                    from utils.whatsapp import send_message_to_waid as _send_text
+                    await _send_text(wa_id, f"To help us serve you better, please confirm your contact details:\n*{display_name}*\n*{display_phone}*", db, phone_id_hint=str(phone_id))
+                except Exception:
+                    pass
+
+                # 2) Send Yes/No buttons for confirmation from the same number
+                try:
+                    headers_btn = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+                    payload_btn = {
+                        "messaging_product": "whatsapp",
+                        "to": wa_id,
+                        "type": "interactive",
+                        "interactive": {
+                            "type": "button",
+                            "body": {"text": "Are your name and contact number correct? "},
+                            "action": {
+                                "buttons": [
+                                    {"type": "reply", "reply": {"id": "confirm_yes", "title": "Yes"}},
+                                    {"type": "reply", "reply": {"id": "confirm_no", "title": "No"}},
+                                ]
+                            },
+                        },
+                    }
+                    requests.post(get_messages_url(str(phone_id)), headers=headers_btn, json=payload_btn)
+                except Exception:
+                    pass
+
+                # Mark state so downstream handlers continue the flow consistently
                 try:
                     from controllers.web_socket import appointment_state  # type: ignore
                     st = appointment_state.get(wa_id) or {}
-                    display_name = getattr(customer, "name", None) or "there"
-                    import re as _re
-                    digits = _re.sub(r"\D", "", wa_id)
-                    last10 = digits[-10:] if len(digits) >= 10 else None
-                    display_phone = f"+91{last10}" if last10 and len(last10) == 10 else wa_id
-                    confirm_msg = (
-                        f"To help us serve you better, please confirm your contact details:\n*{display_name}*\n*{display_phone}*"
-                    )
-                    # Ensure template appears first, then the text, then the buttons
-                    try:
-                        await asyncio.sleep(0.2)
-                    except Exception:
-                        pass
-                    from utils.whatsapp import send_message_to_waid as _send_text
-                    await _send_text(wa_id, confirm_msg, db, phone_id_hint=str(phone_id))
-                    # Broadcast confirm text to websocket for dashboard
-                    try:
-                        await manager.broadcast({
-                            "from": to_wa_id,
-                            "to": wa_id,
-                            "type": "text",
-                            "message": confirm_msg,
-                            "timestamp": datetime.now().isoformat(),
-                        })
-                    except Exception:
-                        pass
-                    st["contact_confirm_sent"] = True
                     st["from_treatment_flow"] = True
                     st["flow_context"] = "treatment"
+                    st["mr_welcome_sent"] = True
+                    st["treatment_flow_phone_id"] = str(phone_id)
+                    st["contact_confirm_sent"] = True
                     appointment_state[wa_id] = st
-                except Exception:
-                    pass
-                headers_btn = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-                payload_btn = {
-                    "messaging_product": "whatsapp",
-                    "to": wa_id,
-                    "type": "interactive",
-                    "interactive": {
-                        "type": "button",
-                        "body": {"text": "Are your name and contact number correct? "},
-                        "action": {
-                            "buttons": [
-                                {"type": "reply", "reply": {"id": "confirm_yes", "title": "Yes"}},
-                                {"type": "reply", "reply": {"id": "confirm_no", "title": "No"}},
-                            ]
-                        },
-                    },
-                }
-                # Try to send interactive buttons (retry once if needed)
-                _btn_ok = False
-                for _i in range(2):
-                    try:
-                        try:
-                            await asyncio.sleep(0.3 if _i == 0 else 0.8)
-                        except Exception:
-                            pass
-                        _resp_btn = requests.post(get_messages_url(phone_id), headers=headers_btn, json=payload_btn)
-                        try:
-                            print(f"[mr_welcome_flow] DEBUG - confirm buttons attempt={_i+1} phone_id={phone_id} status={_resp_btn.status_code}")
-                        except Exception:
-                            pass
-                        if getattr(_resp_btn, "status_code", 0) == 200:
-                            _btn_ok = True
-                            break
-                    except Exception as _e_btn:
-                        print(f"[mr_welcome_flow] ERROR - confirm buttons post failed attempt={_i+1}: {_e_btn}")
-                # Also broadcast to UI so operators see the step even if WA delays
-                try:
-                    await manager.broadcast({
-                        "from": to_wa_id,
-                        "to": wa_id,
-                        "type": "interactive",
-                        "message": "Are your name and contact number correct? ",
-                        "timestamp": datetime.now().isoformat(),
-                        "meta": {"kind": "buttons", "options": ["Yes", "No"], "sent_ok": _btn_ok},
-                    })
                 except Exception:
                     pass
             except Exception:
