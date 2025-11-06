@@ -114,12 +114,8 @@ async def send_clinic_location(db: Session, *, wa_id: str, city: str) -> Dict[st
         headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
         phone_id = str(LEAD_APPOINTMENT_PHONE_ID)
 
-        # Normalize common label differences to mapping keys
-        city_key = city
-        if city.lower().strip() == "bangalore":
-            city_key = "Bengaluru"
-
-        clinics = get_clinics_for_city(city_key)
+        # Use city directly (no normalization - keep Bangalore as Bangalore)
+        clinics = get_clinics_for_city(city)
         
         if not clinics:
             await send_message_to_waid(wa_id, f"❌ No clinics available in {city}. Please select a different city.", db)

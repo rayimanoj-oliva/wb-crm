@@ -243,15 +243,10 @@ async def handle_city_selection(
         print(f"[lead_appointment_flow] WARNING - Could not store city selection: {e}")
     
     # Lead appointment flow only: proceed to clinic selection with dedicated number
-
-    # Lead appointment flow only: proceed to clinic selection with dedicated number
     phone_id_hint = LEAD_APPOINTMENT_PHONE_ID
     await send_message_to_waid(wa_id, f"✅ Great! You selected {selected_city}.", db, phone_id_hint=str(phone_id_hint))
-
+    
     from .clinic_location import send_clinic_location
-    # Normalize city for clinic mapping (e.g., Bangalore -> Bengaluru)
-    city_for_clinic = selected_city
-    if selected_city == "Bangalore":
-        city_for_clinic = "Bengaluru"
-    result = await send_clinic_location(db, wa_id=wa_id, city=city_for_clinic)
+    # Use selected city directly (no normalization needed)
+    result = await send_clinic_location(db, wa_id=wa_id, city=selected_city)
     return {"status": "proceed_to_clinic_location", "city": selected_city, "result": result}
