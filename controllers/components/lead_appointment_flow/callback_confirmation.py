@@ -153,6 +153,11 @@ async def handle_callback_confirmation(
                 from controllers.web_socket import lead_appointment_state
                 if wa_id in lead_appointment_state:
                     del lead_appointment_state[wa_id]
+                # Also clear appointment_state flags to allow new flow start
+                from controllers.web_socket import appointment_state
+                if wa_id in appointment_state:
+                    appointment_state[wa_id].pop("mr_welcome_sent", None)
+                    appointment_state[wa_id].pop("mr_welcome_sending_ts", None)
                 print(f"[lead_appointment_flow] DEBUG - Cleared appointment session data")
             except Exception as e:
                 print(f"[lead_appointment_flow] WARNING - Could not clear session data: {e}")
@@ -195,6 +200,11 @@ async def handle_callback_confirmation(
                 from controllers.web_socket import lead_appointment_state
                 if wa_id in lead_appointment_state:
                     del lead_appointment_state[wa_id]
+                # Also clear appointment_state flags to allow new flow start
+                from controllers.web_socket import appointment_state
+                if wa_id in appointment_state:
+                    appointment_state[wa_id].pop("mr_welcome_sent", None)
+                    appointment_state[wa_id].pop("mr_welcome_sending_ts", None)
                 print(f"[lead_appointment_flow] DEBUG - Cleared appointment session data")
             except Exception as e:
                 print(f"[lead_appointment_flow] WARNING - Could not clear session data: {e}")

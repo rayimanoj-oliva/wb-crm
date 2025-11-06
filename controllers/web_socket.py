@@ -442,6 +442,13 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     print(f"[lead_appointment_flow] DEBUG - Skipping lead flow: not dedicated number (pid={phone_id_meta}, disp={display_num})")
                 else:
                     print(f"[lead_appointment_flow] DEBUG - ✅ Starting point detected on dedicated number! Running lead appointment flow...")
+                    # Clear stale state to allow flow restart
+                    try:
+                        from controllers.state.memory import clear_flow_state_for_restart
+                        clear_flow_state_for_restart(wa_id)
+                        print(f"[lead_appointment_flow] DEBUG - Cleared stale state for new flow start: wa_id={wa_id}")
+                    except Exception as e:
+                        print(f"[lead_appointment_flow] WARNING - Could not clear stale state: {e}")
                     # Lead appointment flow has priority - skip treatment flow for these messages
                     try:
                         lead_result = await run_lead_appointment_flow(

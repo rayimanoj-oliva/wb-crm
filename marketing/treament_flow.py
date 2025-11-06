@@ -71,6 +71,13 @@ async def run_treament_flow(
         prefill_detected = any(re.match(rx, normalized_body, flags=re.IGNORECASE) for rx in prefill_regexes)
         
         if prefill_detected:
+            # Clear stale state to allow flow restart when customer sends a starting point message
+            try:
+                from controllers.state.memory import clear_flow_state_for_restart
+                clear_flow_state_for_restart(wa_id)
+                print(f"[treatment_flow] DEBUG - Cleared stale state for new flow start (prefill detected): wa_id={wa_id}")
+            except Exception as e:
+                print(f"[treatment_flow] WARNING - Could not clear stale state: {e}")
             # Restrict treatment flow to only allowed phone numbers
             from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
             phone_id_meta = ((value or {}).get("metadata", {}) or {}).get("phone_number_id")
@@ -892,6 +899,11 @@ async def run_appointment_buttons_flow(
                     try:
                         if wa_id in appointment_state:
                             appointment_state.pop(wa_id, None)
+                        # Also clear lead_appointment_state if present
+                        from controllers.web_socket import lead_appointment_state  # type: ignore
+                        if wa_id in lead_appointment_state:
+                            lead_appointment_state.pop(wa_id, None)
+                        print(f"[treatment_flow] DEBUG - Cleared all flow state for completed flow: wa_id={wa_id}")
                     except Exception:
                         pass
                     return {"status": "treatment_lead_created"}
@@ -964,6 +976,17 @@ async def run_appointment_buttons_flow(
                 except Exception as e:
                     print(f"[treatment_flow] WARNING - Could not create lead (callback): {e}")
                     
+                # Clear state after callback request
+                try:
+                    if wa_id in appointment_state:
+                        appointment_state.pop(wa_id, None)
+                    # Also clear lead_appointment_state if present
+                    from controllers.web_socket import lead_appointment_state  # type: ignore
+                    if wa_id in lead_appointment_state:
+                        lead_appointment_state.pop(wa_id, None)
+                    print(f"[treatment_flow] DEBUG - Cleared all flow state for callback request: wa_id={wa_id}")
+                except Exception:
+                    pass
             except Exception:
                 pass
             return {"status": "callback_ack"}
