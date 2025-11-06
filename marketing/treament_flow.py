@@ -115,19 +115,25 @@ async def run_treament_flow(
                 return {"status": "skipped", "message_id": message_id, "reason": "phone_number_not_allowed"}
             
             # Idempotency lock: avoid double mr_welcome when multiple handlers race
-            # MODIFIED: Allow flow restart - only prevent duplicate sends within a short time window
+            # Check if mr_welcome was already sent by another handler (e.g., run_mr_welcome_number_flow)
             try:
                 from controllers.web_socket import appointment_state  # type: ignore
                 from datetime import datetime, timedelta
                 st_lock = appointment_state.get(wa_id) or {}
-                # Check if mr_welcome was sent very recently (within 10 seconds) to prevent duplicate sends
-                # But allow restart if it was sent longer ago
+                # First check if mr_welcome was already sent - if so, skip sending again
+                if bool(st_lock.get("mr_welcome_sent")):
+                    # Check timestamp to see if it was sent very recently (within 10 seconds)
+                    ts_str = st_lock.get("mr_welcome_sending_ts")
+                    ts_obj = datetime.fromisoformat(ts_str) if isinstance(ts_str, str) else None
+                    if ts_obj and (datetime.utcnow() - ts_obj) < timedelta(seconds=10):
+                        print(f"[treatment_flow] DEBUG - Skipping duplicate mr_welcome: already sent by another handler (wa_id={wa_id})")
+                        return {"status": "skipped", "message_id": message_id, "reason": "mr_welcome_already_sent"}
+                # Check if mr_welcome is currently being sent (within 10 seconds) to prevent race conditions
                 ts_str = st_lock.get("mr_welcome_sending_ts")
                 ts_obj = datetime.fromisoformat(ts_str) if isinstance(ts_str, str) else None
                 if ts_obj and (datetime.utcnow() - ts_obj) < timedelta(seconds=10):
                     return {"status": "skipped", "message_id": message_id, "reason": "mr_welcome_in_progress"}
-                # Allow restart - clear old state markers if they exist
-                st_lock.pop("mr_welcome_sent", None)
+                # Set sending timestamp to prevent concurrent sends
                 st_lock["mr_welcome_sending_ts"] = datetime.utcnow().isoformat()
                 appointment_state[wa_id] = st_lock
             except Exception:

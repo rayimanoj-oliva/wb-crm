@@ -1871,10 +1871,14 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                             except Exception:
                                 pass
                             await send_message_to_waid(wa_id, thank_you, db)
-                            # Now clear state
+                            # Now clear state completely to allow new flow to start
                             try:
                                 if wa_id in appointment_state:
                                     appointment_state.pop(wa_id, None)
+                                # Also clear lead_appointment_state if present
+                                if wa_id in lead_appointment_state:
+                                    lead_appointment_state.pop(wa_id, None)
+                                print(f"[ws_webhook] DEBUG - Cleared all flow state after appointment confirmation: wa_id={wa_id}")
                             except Exception:
                                 pass
                             return {"status": "appointment_confirmed", "message_id": message_id}
@@ -2236,9 +2240,15 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                             except Exception:
                                 pass
                             # After capturing both, go to city selection
+                            # Use marketing city_selection with phone_id_hint to send from same phone_id that triggered treatment flow
                             try:
-                                from controllers.components.lead_appointment_flow.city_selection import send_city_selection  # type: ignore
-                                result = await send_city_selection(db, wa_id=wa_id)
+                                stored_phone_id = st.get("treatment_flow_phone_id")
+                                phone_id_hint = stored_phone_id if stored_phone_id else None
+                                if not phone_id_hint:
+                                    from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
+                                    phone_id_hint = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
+                                from marketing.city_selection import send_city_selection  # type: ignore
+                                result = await send_city_selection(db, wa_id=wa_id, phone_id_hint=str(phone_id_hint))
                                 return {"status": "proceed_to_city_selection", "message_id": message_id, "result": result}
                             except Exception:
                                 return {"status": "failed_after_details", "message_id": message_id}
@@ -2346,9 +2356,15 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                             except Exception:
                                 pass
                             # After capturing both, go to city selection
+                            # Use marketing city_selection with phone_id_hint to send from same phone_id that triggered treatment flow
                             try:
-                                from controllers.components.lead_appointment_flow.city_selection import send_city_selection  # type: ignore
-                                result = await send_city_selection(db, wa_id=wa_id)
+                                stored_phone_id = st.get("treatment_flow_phone_id")
+                                phone_id_hint = stored_phone_id if stored_phone_id else None
+                                if not phone_id_hint:
+                                    from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
+                                    phone_id_hint = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
+                                from marketing.city_selection import send_city_selection  # type: ignore
+                                result = await send_city_selection(db, wa_id=wa_id, phone_id_hint=str(phone_id_hint))
                                 return {"status": "proceed_to_city_selection", "message_id": message_id, "result": result}
                             except Exception:
                                 return {"status": "failed_after_details", "message_id": message_id}
@@ -2374,10 +2390,14 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                             except Exception:
                                 pass
                             await send_message_to_waid(wa_id, msg, db)
-                            # Clear state after confirmation
+                            # Clear state after confirmation completely to allow new flow to start
                             try:
                                 if wa_id in appointment_state:
                                     appointment_state.pop(wa_id, None)
+                                # Also clear lead_appointment_state if present
+                                if wa_id in lead_appointment_state:
+                                    lead_appointment_state.pop(wa_id, None)
+                                print(f"[ws_webhook] DEBUG - Cleared all flow state after appointment confirmation (with details): wa_id={wa_id}")
                             except Exception:
                                 pass
                             return {"status": "appointment_confirmed_after_details", "message_id": message_id}

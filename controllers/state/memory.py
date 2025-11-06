@@ -38,10 +38,16 @@ def clear_flow_state_for_restart(wa_id: str) -> None:
         # Clear appointment state flags that prevent flow restart
         if wa_id in appointment_state:
             state = appointment_state[wa_id]
-            # Clear mr_welcome_sent flag to allow welcome message to be sent again
+            # Clear all flow-related flags to allow fresh start
             state.pop("mr_welcome_sent", None)
-            # Clear sending timestamp to allow immediate restart
             state.pop("mr_welcome_sending_ts", None)
+            state.pop("contact_confirm_sent", None)
+            state.pop("from_treatment_flow", None)
+            state.pop("flow_context", None)
+            state.pop("awaiting_name", None)
+            state.pop("awaiting_phone", None)
+            state.pop("corrected_name", None)
+            state.pop("corrected_phone", None)
             # If state is empty or only has non-critical fields, clear it entirely
             # Keep only essential fields like treatment_flow_phone_id if needed
             critical_fields = {"treatment_flow_phone_id"}

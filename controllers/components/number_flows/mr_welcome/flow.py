@@ -81,6 +81,30 @@ async def run_mr_welcome_number_flow(
                 pass
             return {"status": "welcome_failed", "message_id": message_id}
 
+        # Idempotency check: prevent duplicate sends if already sent or currently sending
+        try:
+            from controllers.web_socket import appointment_state  # type: ignore
+            from datetime import datetime as _dt, timedelta
+            st_check = appointment_state.get(wa_id) or {}
+            # Check if mr_welcome was already sent
+            if bool(st_check.get("mr_welcome_sent")):
+                ts_str = st_check.get("mr_welcome_sending_ts")
+                ts_obj = _dt.fromisoformat(ts_str) if isinstance(ts_str, str) else None
+                if ts_obj and (_dt.utcnow() - ts_obj) < timedelta(seconds=10):
+                    print(f"[mr_welcome_flow] DEBUG - Skipping duplicate mr_welcome: already sent (wa_id={wa_id})")
+                    return {"status": "welcome_already_sent", "message_id": message_id}
+            # Check if currently being sent (race condition prevention)
+            ts_str = st_check.get("mr_welcome_sending_ts")
+            ts_obj = _dt.fromisoformat(ts_str) if isinstance(ts_str, str) else None
+            if ts_obj and (_dt.utcnow() - ts_obj) < timedelta(seconds=10):
+                print(f"[mr_welcome_flow] DEBUG - Skipping duplicate mr_welcome: currently sending (wa_id={wa_id})")
+                return {"status": "welcome_in_progress", "message_id": message_id}
+            # Set sending timestamp to prevent concurrent sends
+            st_check["mr_welcome_sending_ts"] = _dt.utcnow().isoformat()
+            appointment_state[wa_id] = st_check
+        except Exception:
+            pass
+
         # Use existing helper to send templates consistently
         from controllers.auto_welcome_controller import _send_template  # local import to avoid circulars
 
