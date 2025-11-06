@@ -379,37 +379,51 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             print(f"[lead_appointment_flow] DEBUG - Note: Location inquiry messages (like 'want to know more about services in...') route to TREATMENT flow")
             
             if is_lead_starting_point:
-                print(f"[lead_appointment_flow] DEBUG - ✅ Starting point detected! Running lead appointment flow...")
-                # Lead appointment flow has priority - skip treatment flow for these messages
+                # Restrict lead appointment flow to dedicated number only
                 try:
-                    lead_result = await run_lead_appointment_flow(
-                        db,
-                        wa_id=wa_id,
-                        message_type=message_type,
-                        message_id=message_id,
-                        from_wa_id=from_wa_id,
-                        to_wa_id=to_wa_id,
-                        body_text=body_text,
-                        timestamp=timestamp,
-                        customer=customer,
-                        interactive=interactive,
-                        i_type=i_type,
-                    )
-                    lead_status = (lead_result or {}).get("status")
-                    print(f"[lead_appointment_flow] DEBUG - Lead flow result: status={lead_status}, result={lead_result}")
-                    
-                    if lead_status not in {"skipped", "error"}:
-                        print(f"[lead_appointment_flow] DEBUG - ✅ Lead flow handled successfully, returning result")
-                        return lead_result
-                    else:
-                        print(f"[lead_appointment_flow] DEBUG - ⚠️ Lead flow returned skipped/error: {lead_status}")
-                    
-                    handled_text = lead_status in {"auto_welcome_sent", "proceed_to_city_selection", "proceed_to_clinic_location", "proceed_to_time_slot", "waiting_for_custom_date", "callback_initiated", "lead_created_no_callback", "thank_you_sent", "week_list_sent", "day_list_sent", "time_slots_sent", "times_sent"}
-                except Exception as e:
-                    print(f"[lead_appointment_flow] ERROR - Exception in lead appointment flow: {str(e)}")
-                    import traceback
-                    print(f"[lead_appointment_flow] ERROR - Traceback: {traceback.format_exc()}")
-                    # Don't fail completely, let other flows try
+                    from controllers.components.lead_appointment_flow.config import LEAD_APPOINTMENT_PHONE_ID, LEAD_APPOINTMENT_DISPLAY_LAST10  # type: ignore
+                    phone_id_meta = (value or {}).get("metadata", {}).get("phone_number_id") if isinstance(value, dict) else None
+                    display_num = ((value or {}).get("metadata", {}) or {}).get("display_phone_number") if isinstance(value, dict) else None
+                    import re as _re
+                    disp_digits = _re.sub(r"\D", "", (display_num or to_wa_id or ""))
+                    lead_allowed = (str(phone_id_meta) == str(LEAD_APPOINTMENT_PHONE_ID)) or (disp_digits.endswith(str(LEAD_APPOINTMENT_DISPLAY_LAST10)))
+                except Exception:
+                    lead_allowed = False
+
+                if not lead_allowed:
+                    print(f"[lead_appointment_flow] DEBUG - Skipping lead flow: not dedicated number (pid={phone_id_meta}, disp={display_num})")
+                else:
+                    print(f"[lead_appointment_flow] DEBUG - ✅ Starting point detected on dedicated number! Running lead appointment flow...")
+                    # Lead appointment flow has priority - skip treatment flow for these messages
+                    try:
+                        lead_result = await run_lead_appointment_flow(
+                            db,
+                            wa_id=wa_id,
+                            message_type=message_type,
+                            message_id=message_id,
+                            from_wa_id=from_wa_id,
+                            to_wa_id=to_wa_id,
+                            body_text=body_text,
+                            timestamp=timestamp,
+                            customer=customer,
+                            interactive=interactive,
+                            i_type=i_type,
+                        )
+                        lead_status = (lead_result or {}).get("status")
+                        print(f"[lead_appointment_flow] DEBUG - Lead flow result: status={lead_status}, result={lead_result}")
+                        
+                        if lead_status not in {"skipped", "error"}:
+                            print(f"[lead_appointment_flow] DEBUG - ✅ Lead flow handled successfully, returning result")
+                            return lead_result
+                        else:
+                            print(f"[lead_appointment_flow] DEBUG - ⚠️ Lead flow returned skipped/error: {lead_status}")
+                        
+                        handled_text = lead_status in {"auto_welcome_sent", "proceed_to_city_selection", "proceed_to_clinic_location", "proceed_to_time_slot", "waiting_for_custom_date", "callback_initiated", "lead_created_no_callback", "thank_you_sent", "week_list_sent", "day_list_sent", "time_slots_sent", "times_sent"}
+                    except Exception as e:
+                        print(f"[lead_appointment_flow] ERROR - Exception in lead appointment flow: {str(e)}")
+                        import traceback
+                        print(f"[lead_appointment_flow] ERROR - Traceback: {traceback.format_exc()}")
+                        # Don't fail completely, let other flows try
 
         # 2️⃣ Ensure mr_welcome is sent FIRST on the dedicated number (one-time per user)
         # Only for the two allowed treatment flow numbers: 7617613030 and 8297882978
@@ -1028,7 +1042,22 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         is_in_lead_flow = True
                     
                     if is_in_lead_flow or mapped_id in {"yes_book_appointment", "not_now"}:
-                        print(f"[ws_webhook] DEBUG - Routing to lead appointment flow for '{mapped_id}'")
+                        # Restrict lead appointment flow to dedicated number only
+                        try:
+                            from controllers.components.lead_appointment_flow.config import LEAD_APPOINTMENT_PHONE_ID, LEAD_APPOINTMENT_DISPLAY_LAST10  # type: ignore
+                            phone_id_meta = (value or {}).get("metadata", {}).get("phone_number_id") if isinstance(value, dict) else None
+                            display_num = ((value or {}).get("metadata", {}) or {}).get("display_phone_number") if isinstance(value, dict) else None
+                            import re as _re
+                            disp_digits = _re.sub(r"\D", "", (display_num or to_wa_id or ""))
+                            lead_allowed = (str(phone_id_meta) == str(LEAD_APPOINTMENT_PHONE_ID)) or (disp_digits.endswith(str(LEAD_APPOINTMENT_DISPLAY_LAST10)))
+                        except Exception:
+                            lead_allowed = False
+
+                        if not lead_allowed:
+                            print(f"[ws_webhook] DEBUG - Skipping lead flow (template button) on non-dedicated number (pid={phone_id_meta}, disp={display_num})")
+                            raise Exception("not_lead_number")
+
+                        print(f"[ws_webhook] DEBUG - Routing to lead appointment flow for '{mapped_id}' on dedicated number")
                         lead_result = await run_lead_appointment_flow(
                             db=db,
                             wa_id=wa_id,

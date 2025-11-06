@@ -132,6 +132,18 @@ ZOHO_REFRESH_TOKEN=your_refresh_token
 ### Authentication
 The service uses the existing `utils/zoho_auth.py` for token management. Make sure your refresh token is valid and has the necessary CRM permissions.
 
+### Dedicated number constraint
+
+This Lead-to-Appointment flow is restricted to a single WhatsApp Business number and must not be invoked from other numbers or flows.
+
+- Configuration lives in `controllers/components/lead_appointment_flow/config.py`:
+  - `LEAD_APPOINTMENT_PHONE_ID = "367633743092037"`
+  - `LEAD_APPOINTMENT_DISPLAY_LAST10 = "7729992376"`
+- The webhook router (`controllers/web_socket.py`) gates all lead-appointment triggers (text and template-buttons) to this phone only.
+- Do not reference or import these lead flow files from other flows.
+
+To change the dedicated number, update the constants above; no other code edits are required.
+
 ## Error Handling
 
 The service includes comprehensive error handling:

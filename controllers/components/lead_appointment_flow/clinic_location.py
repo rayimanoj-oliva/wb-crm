@@ -13,6 +13,7 @@ from services.whatsapp_service import get_latest_token
 from config.constants import get_messages_url
 from utils.whatsapp import send_message_to_waid
 from utils.ws_manager import manager
+from .config import LEAD_APPOINTMENT_PHONE_ID, LEAD_APPOINTMENT_DISPLAY_LAST10
 
 
 def get_clinics_for_city(city: str) -> List[Dict[str, str]]:
@@ -111,7 +112,7 @@ async def send_clinic_location(db: Session, *, wa_id: str, city: str) -> Dict[st
 
         access_token = token_entry.token
         headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-        phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+        phone_id = str(LEAD_APPOINTMENT_PHONE_ID)
 
         # Normalize common label differences to mapping keys
         city_key = city
@@ -163,7 +164,7 @@ async def send_clinic_location(db: Session, *, wa_id: str, city: str) -> Dict[st
                 
                 outbound_message = MessageCreate(
                     message_id=message_id,
-                    from_wa_id=os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                    from_wa_id=("91" + LEAD_APPOINTMENT_DISPLAY_LAST10),
                     to_wa_id=wa_id,
                     type="interactive",
                     body=f"Great! Please choose your preferred clinic location in {city}.",
@@ -175,7 +176,7 @@ async def send_clinic_location(db: Session, *, wa_id: str, city: str) -> Dict[st
                 
                 # Broadcast to WebSocket
                 await manager.broadcast({
-                    "from": os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                    "from": ("91" + LEAD_APPOINTMENT_DISPLAY_LAST10),
                     "to": wa_id,
                     "type": "interactive",
                     "message": f"Great! Please choose your preferred clinic location in {city}.",
