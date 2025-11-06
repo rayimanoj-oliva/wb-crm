@@ -111,7 +111,10 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             print(f"[ws_webhook] DEBUG - Skipping status update webhook (alternative structure)")
             return {"status": "ok", "message": "Status update ignored"}
         
-        # Handle different payload structures
+        # Handle different payload structures and extract phone_number_id early
+        phone_number_id = None
+        value = None
+        
         if "entry" in body:
             # Standard WhatsApp Business API webhook structure
             print(f"[ws_webhook] DEBUG - Using standard webhook structure")
@@ -129,14 +132,23 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             sender_name = contact["profile"]["name"]
             from_wa_id = message["from"]
             to_wa_id = value["metadata"]["display_phone_number"]
+            
+            # Extract phone_number_id from metadata
+            phone_number_id = value.get("metadata", {}).get("phone_number_id")
+            print(f"[ws_webhook] DEBUG - phone_number_id from metadata: {phone_number_id}")
 
             # EARLY: treatment-only marketing handler for the two numbers
             try:
                 from marketing.controllers.web_socket_marketing import handle_marketing_event  # type: ignore
                 mk_res = await handle_marketing_event(db, value=value)
-                if (mk_res or {}).get("status") in {"welcome_restart", "handled"}:
+                mk_status = (mk_res or {}).get("status")
+                if mk_status in {"welcome_restart", "handled"}:
+                    print(f"[ws_webhook] DEBUG - Marketing handler returned early with status={mk_status}")
                     return mk_res
-            except Exception:
+                elif mk_status == "ignored":
+                    print(f"[ws_webhook] DEBUG - Marketing handler deferred (status=ignored), continuing to main handler")
+            except Exception as e:
+                print(f"[ws_webhook] WARNING - Marketing handler exception: {e}")
                 pass
         else:
             # Alternative payload structure (direct structure)
@@ -154,7 +166,43 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             sender_name = contact["profile"]["name"]
             from_wa_id = message["from"]
             to_wa_id = body.get("phone_number_id", "367633743092037")
-            print(f"[ws_webhook] DEBUG - phone_number_id: {to_wa_id}")
+            phone_number_id = body.get("phone_number_id")
+            print(f"[ws_webhook] DEBUG - phone_number_id from body: {phone_number_id}")
+        
+        # =============================================================================
+        # EARLY ROUTING BASED ON phone_number_id
+        # =============================================================================
+        # Route messages to appropriate flow handlers based on the receiving phone number
+        phone_number_id_str = str(phone_number_id) if phone_number_id else None
+        print(f"[ws_webhook] DEBUG - Routing decision: phone_number_id={phone_number_id_str}")
+        
+        # Import flow identifiers
+        try:
+            from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
+            from controllers.components.lead_appointment_flow.config import LEAD_APPOINTMENT_PHONE_ID
+        except Exception as e:
+            print(f"[ws_webhook] WARNING - Could not import flow configs: {e}")
+            TREATMENT_FLOW_ALLOWED_PHONE_IDS = set()
+            LEAD_APPOINTMENT_PHONE_ID = None
+        
+        # Determine flow context based on phone_number_id
+        is_treatment_flow_number = phone_number_id_str in TREATMENT_FLOW_ALLOWED_PHONE_IDS if phone_number_id_str else False
+        is_lead_appointment_number = phone_number_id_str == str(LEAD_APPOINTMENT_PHONE_ID) if (phone_number_id_str and LEAD_APPOINTMENT_PHONE_ID) else False
+        
+        print(f"[ws_webhook] DEBUG - Flow routing: is_treatment={is_treatment_flow_number}, is_lead_appointment={is_lead_appointment_number}")
+        
+        # Store flow context in state for downstream handlers
+        try:
+            st_route = appointment_state.get(wa_id) or {}
+            if is_treatment_flow_number:
+                st_route["flow_context"] = "treatment"
+                st_route["from_treatment_flow"] = True
+                st_route["treatment_flow_phone_id"] = phone_number_id_str
+            elif is_lead_appointment_number:
+                st_route["flow_context"] = "lead_appointment"
+            appointment_state[wa_id] = st_route
+        except Exception:
+            pass
         timestamp = datetime.fromtimestamp(int(message["timestamp"]))
         message_type = message["type"]
         message_id = message["id"]
@@ -569,6 +617,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                     if name_last10_g and disp_last10_g and name_last10_g == disp_last10_g:
                                         allowed_num = True
                                         break
+                        print(f"[ws_webhook] DEBUG - City selection routing check: rid={rid_norm} pid={pid_meta_g} disp={disp_num_g} allowed={allowed_num}")
                         if allowed_num:
                             print(f"[ws_webhook] DEBUG - Routing treatment city reply (rid={rid_norm}) to marketing handler")
                             try:
@@ -579,15 +628,21 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                     reply_id=rid_guard,
                                     customer=customer
                                 )
-                                if (city_result or {}).get("status") not in {"skipped", "error"}:
+                                city_status = (city_result or {}).get("status")
+                                print(f"[ws_webhook] DEBUG - Treatment city handler returned: status={city_status}")
+                                if city_status not in {"skipped", "error"}:
                                     return city_result
                             except Exception as e:
                                 print(f"[ws_webhook] ERROR - Failed to handle treatment city: {e}")
                                 import traceback
                                 traceback.print_exc()
                             return {"status": "treatment_city_handled"}
-            except Exception:
+                        else:
+                            print(f"[ws_webhook] DEBUG - City selection NOT on treatment number, routing to lead flow")
+            except Exception as e:
+                print(f"[ws_webhook] WARNING - City routing guard exception: {e}")
                 pass
+            print(f"[ws_webhook] DEBUG - Attempting lead appointment flow for wa_id={wa_id} message_type={message_type}")
             lead_result = await run_lead_appointment_flow(
                 db,
                 wa_id=wa_id,
@@ -602,9 +657,12 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 i_type=i_type,
             )
             lead_status = (lead_result or {}).get("status")
+            print(f"[ws_webhook] DEBUG - Lead appointment flow returned: status={lead_status}")
             if lead_status not in {"skipped", "error"}:
+                print(f"[ws_webhook] DEBUG - Lead appointment flow handled successfully, returning")
                 return lead_result
             handled_text = lead_status in {"auto_welcome_sent", "proceed_to_city_selection", "proceed_to_clinic_location", "proceed_to_time_slot", "waiting_for_custom_date", "callback_initiated", "lead_created_no_callback", "thank_you_sent", "week_list_sent", "day_list_sent", "time_slots_sent", "times_sent"}
+            print(f"[ws_webhook] DEBUG - After lead flow: handled_text={handled_text}")
 
         # Manual date-time fallback parsing before other generic text handling
         if message_type == "text" and not handled_text:
@@ -742,12 +800,18 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
 
             # Always broadcast to WebSocket (even if already saved)
             if not handled_text:  # Only broadcast if not already handled by treatment flow
+                # Determine flow context for broadcast metadata
+                flow_context = "treatment" if is_treatment_flow_number else ("lead_appointment" if is_lead_appointment_number else "unknown")
                 await manager.broadcast({
-                    "from": from_wa_id,
-                    "to": to_wa_id,
+                    "from": wa_id,  # Customer's WA ID
+                    "to": to_wa_id,  # Business number
                     "type": "text",
                     "message": body_text,
-                    "timestamp": timestamp.isoformat()
+                    "timestamp": timestamp.isoformat(),
+                    "meta": {
+                        "flow": flow_context,
+                        "action": "customer_message"
+                    }
                 })
 
             # Catalog link is sent only on explicit button clicks; no text keyword trigger
@@ -1235,6 +1299,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     await send_message_to_waid(wa_id, "❌ There was an error processing your form. Please try again.", db)
                     return {"status": "parse_error", "message_id": message_id}
             # Delegate interactive handling to component
+            print(f"[ws_webhook] DEBUG - Routing to interactive_type handler: i_type={i_type} wa_id={wa_id} to_wa_id={to_wa_id}")
             result_interactive = await run_interactive_type(
                 db,
                 message=message,
@@ -1247,8 +1312,10 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 wa_id=wa_id,
                 customer=customer,
             )
-            print(f"[ws_webhook] DEBUG - Interactive result: {result_interactive}")
-            if (result_interactive or {}).get("status") != "skipped":
+            interactive_status = (result_interactive or {}).get("status")
+            print(f"[ws_webhook] DEBUG - Interactive handler returned: status={interactive_status}")
+            if interactive_status != "skipped":
+                print(f"[ws_webhook] DEBUG - Interactive handler processed message, returning")
                 return result_interactive
             
             # Handle other interactive types (buttons, lists)
@@ -1283,12 +1350,19 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     )
                     message_service.create_message(db, msg_interactive_any)
                     db.commit()  # Explicitly commit the transaction
+                    # Determine flow context for broadcast metadata
+                    flow_context = "treatment" if is_treatment_flow_number else ("lead_appointment" if is_lead_appointment_number else "unknown")
                     await manager.broadcast({
-                        "from": from_wa_id,
-                        "to": to_wa_id,
+                        "from": wa_id,  # Customer's WA ID
+                        "to": to_wa_id,  # Business number
                         "type": "interactive",
                         "message": reply_text_any,
                         "timestamp": timestamp.isoformat(),
+                        "meta": {
+                            "flow": flow_context,
+                            "action": "customer_message",
+                            "interactive_type": i_type
+                        }
                     })
                     interactive_broadcasted = True
                     
