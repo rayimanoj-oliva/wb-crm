@@ -109,6 +109,14 @@ async def handle_marketing_event(db: Session, *, value: Dict[str, Any]) -> Dict[
                 )
                 return {"status": "welcome_restart", **(res or {})}
 
+        # For all other interactive types (e.g., city list replies), do not handle here;
+        # allow main webhook to process via interactive_type_clean.
+        try:
+            print(f"[ws_marketing] DEBUG - Ignoring interactive type='{interactive.get('type')}' for wa_id={wa_id} to route via main handler")
+        except Exception:
+            pass
+        return {"status": "ignored", "reason": "defer_interactive_to_main"}
+
     # Record last interaction to drive follow-up timers for both treatment numbers
     try:
         from services import customer_service
@@ -120,22 +128,30 @@ async def handle_marketing_event(db: Session, *, value: Dict[str, Any]) -> Dict[
     except Exception:
         pass
 
-    # 2) Delegate to treatment text prefill validator (single source to send mr_welcome on text)
-    body_text = (message.get(message_type, {}) or {}).get("body", "") if isinstance(message.get(message_type, {}), dict) else ""
-    res2 = await run_treament_flow(
-        db,
-        message_type=message_type,
-        message_id=message_id,
-        from_wa_id=from_wa_id,
-        to_wa_id=to_wa_id,
-        body_text=body_text,
-        timestamp=datetime_from_ts(timestamp),
-        customer=None,
-        wa_id=wa_id,
-        value=value,
-        sender_name=(contact.get("profile") or {}).get("name"),
-    )
-    return {"status": "handled", **(res2 or {})}
+    # 2) Delegate to treatment text prefill validator ONLY for text messages
+    if message_type == "text":
+        body_text = (message.get(message_type, {}) or {}).get("body", "") if isinstance(message.get(message_type, {}), dict) else ""
+        res2 = await run_treament_flow(
+            db,
+            message_type=message_type,
+            message_id=message_id,
+            from_wa_id=from_wa_id,
+            to_wa_id=to_wa_id,
+            body_text=body_text,
+            timestamp=datetime_from_ts(timestamp),
+            customer=None,
+            wa_id=wa_id,
+            value=value,
+            sender_name=(contact.get("profile") or {}).get("name"),
+        )
+        try:
+            print(f"[ws_marketing] DEBUG - handled text in marketing handler for wa_id={wa_id}")
+        except Exception:
+            pass
+        return {"status": "handled", **(res2 or {})}
+
+    # Non-text messages fall through to main handler
+    return {"status": "ignored", "reason": "non_text_interactive_deferred"}
 
 
 def datetime_from_ts(ts: Any):

@@ -77,6 +77,51 @@ async def run_interactive_type(
             except Exception as e:
                 print(f"[interactive_type_clean] WARNING - Could not mark customer replied for interactive: {e}")
 
+            # Route city selection to treatment city handler when in treatment context or coming from treatment numbers
+            try:
+                norm_id = (reply_id or "").strip().lower()
+                if norm_id.startswith("city_"):
+                    # Check treatment context or treatment numbers
+                    is_treatment = False
+                    try:
+                        from controllers.web_socket import appointment_state  # type: ignore
+                        st_ctx = appointment_state.get(wa_id) or {}
+                        is_treatment = (st_ctx.get("flow_context") == "treatment")
+                    except Exception:
+                        is_treatment = False
+                    if not is_treatment:
+                        try:
+                            # fallback by number check
+                            from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS, WHATSAPP_NUMBERS  # type: ignore
+                            import re as _re
+                            disp_digits = _re.sub(r"\D", "", to_wa_id or "")
+                            for pid, cfg in (WHATSAPP_NUMBERS or {}).items():
+                                if pid in TREATMENT_FLOW_ALLOWED_PHONE_IDS:
+                                    name_digits = _re.sub(r"\D", "", (cfg.get("name") or ""))
+                                    if name_digits and name_digits.endswith(disp_digits):
+                                        is_treatment = True
+                                        break
+                        except Exception:
+                            pass
+                    if is_treatment:
+                        # Debug log to trace routing decision and number context
+                        try:
+                            from controllers.web_socket import appointment_state  # type: ignore
+                            st_debug = appointment_state.get(wa_id) or {}
+                            stored_pid = st_debug.get("treatment_flow_phone_id")
+                            print(f"[interactive_type_clean] ROUTE city -> treatment | wa_id={wa_id} to_wa_id={to_wa_id} stored_pid={stored_pid} reply_id={norm_id}")
+                        except Exception:
+                            print(f"[interactive_type_clean] ROUTE city -> treatment | wa_id={wa_id} to_wa_id={to_wa_id} reply_id={norm_id}")
+                        from marketing.city_selection import handle_city_selection  # type: ignore
+                        res_city = await handle_city_selection(db, wa_id=wa_id, reply_id=norm_id, customer=customer)
+                        if (res_city or {}).get("status") in {"treatment_topics_sent", "topics_already_sent", "topics_already_sent_recently", "failed_to_send_topics"}:
+                            return res_city
+                    else:
+                        # Explicitly log that city routing is skipped (likely lead flow)
+                        print(f"[interactive_type_clean] SKIP treatment city route | wa_id={wa_id} to_wa_id={to_wa_id} reply_id={norm_id}")
+            except Exception:
+                pass
+
             # Delegate Skin/Hair/Body and related list selections to component flow
             from controllers.components.treament_flow import run_treatment_buttons_flow  # local import to avoid cycles
             flow_result = await run_treatment_buttons_flow(

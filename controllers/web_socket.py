@@ -42,7 +42,7 @@ from utils.shopify_admin import update_variant_price
 from utils.address_validator import analyze_address, format_errors_for_user
 from controllers.components.welcome_flow import run_welcome_flow, trigger_buy_products_from_welcome
 from marketing.flows import run_treament_flow, run_treatment_buttons_flow
-from controllers.components.interactive_type import run_interactive_type
+from controllers.components.interactive_type_clean import run_interactive_type
 from controllers.components.lead_appointment_flow import run_lead_appointment_flow
 from controllers.components.number_flows.mr_welcome.flow import run_mr_welcome_number_flow
 from controllers.components.products_flow import run_buy_products_flow
@@ -541,6 +541,53 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
 
         # 3️⃣ LEAD-TO-APPOINTMENT FLOW - handle other lead appointment triggers
         if not handled_text:
+            # Guard: do not route treatment city selections into lead flow
+            try:
+                if message_type == "interactive" and i_type in {"list_reply", "button_reply"}:
+                    rid_guard = None
+                    try:
+                        rid_guard = (interactive.get("list_reply", {}) or {}).get("id") if i_type == "list_reply" else (interactive.get("button_reply", {}) or {}).get("id")
+                    except Exception:
+                        rid_guard = None
+                    rid_norm = (rid_guard or "").strip().lower()
+                    if rid_norm.startswith("city_"):
+                        # Confirm this came on a treatment number
+                        from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS, WHATSAPP_NUMBERS as _MAP
+                        import re as _re
+                        pid_meta_g = (value or {}).get("metadata", {}).get("phone_number_id") if isinstance(value, dict) else None
+                        allowed_num = False
+                        if pid_meta_g and str(pid_meta_g) in TREATMENT_FLOW_ALLOWED_PHONE_IDS:
+                            allowed_num = True
+                        else:
+                            disp_num_g = ((value or {}).get("metadata", {}) or {}).get("display_phone_number") or to_wa_id or ""
+                            disp_digits_g = _re.sub(r"\D", "", disp_num_g or "")
+                            disp_last10_g = disp_digits_g[-10:] if len(disp_digits_g) >= 10 else disp_digits_g
+                            for _pid, _cfg in (_MAP or {}).items():
+                                if _pid in TREATMENT_FLOW_ALLOWED_PHONE_IDS:
+                                    name_digits_g = _re.sub(r"\D", "", (_cfg.get("name") or ""))
+                                    name_last10_g = name_digits_g[-10:] if len(name_digits_g) >= 10 else name_digits_g
+                                    if name_last10_g and disp_last10_g and name_last10_g == disp_last10_g:
+                                        allowed_num = True
+                                        break
+                        if allowed_num:
+                            print(f"[ws_webhook] DEBUG - Routing treatment city reply (rid={rid_norm}) to marketing handler")
+                            try:
+                                from marketing.city_selection import handle_city_selection  # type: ignore
+                                city_result = await handle_city_selection(
+                                    db,
+                                    wa_id=wa_id,
+                                    reply_id=rid_guard,
+                                    customer=customer
+                                )
+                                if (city_result or {}).get("status") not in {"skipped", "error"}:
+                                    return city_result
+                            except Exception as e:
+                                print(f"[ws_webhook] ERROR - Failed to handle treatment city: {e}")
+                                import traceback
+                                traceback.print_exc()
+                            return {"status": "treatment_city_handled"}
+            except Exception:
+                pass
             lead_result = await run_lead_appointment_flow(
                 db,
                 wa_id=wa_id,
@@ -1688,9 +1735,33 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         if (norm_btn_id in yes_ids or norm_btn_title in yes_ids):
                             if from_treatment_flow:
                                 # On Yes → proceed to city selection FIRST; mr_treatment will be sent after city selection
+                                # Resolve phone_id from stored state or webhook metadata
+                                phone_id_confirm = None
                                 try:
-                                    from controllers.components.lead_appointment_flow.city_selection import send_city_selection  # type: ignore
-                                    result = await send_city_selection(db, wa_id=wa_id)
+                                    # First priority: stored treatment_flow_phone_id
+                                    phone_id_confirm = st.get("treatment_flow_phone_id")
+                                    if phone_id_confirm:
+                                        phone_id_confirm = str(phone_id_confirm)
+                                    # Second priority: webhook metadata phone_number_id
+                                    if not phone_id_confirm:
+                                        try:
+                                            from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
+                                            phone_id_meta = (value or {}).get("metadata", {}).get("phone_number_id") if isinstance(value, dict) else None
+                                            if phone_id_meta and str(phone_id_meta) in TREATMENT_FLOW_ALLOWED_PHONE_IDS:
+                                                phone_id_confirm = str(phone_id_meta)
+                                        except Exception:
+                                            pass
+                                    # Third priority: first allowed treatment flow number
+                                    if not phone_id_confirm:
+                                        from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
+                                        phone_id_confirm = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
+                                except Exception:
+                                    from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
+                                    phone_id_confirm = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
+                                
+                                try:
+                                    from marketing.city_selection import send_city_selection  # type: ignore
+                                    result = await send_city_selection(db, wa_id=wa_id, phone_id_hint=phone_id_confirm)
                                     return {"status": "proceed_to_city_selection", "message_id": message_id, "result": result}
                                 except Exception as e:
                                     print(f"[treatment_flow] WARNING - Could not send city selection: {e}")

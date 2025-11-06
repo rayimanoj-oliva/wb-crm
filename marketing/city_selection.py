@@ -17,7 +17,7 @@ from utils.ws_manager import manager
 from marketing.whatsapp_numbers import get_number_config
 
 
-async def send_city_selection(db: Session, *, wa_id: str) -> Dict[str, Any]:
+async def send_city_selection(db: Session, *, wa_id: str, phone_id_hint: str | None = None) -> Dict[str, Any]:
     """Send city selection with quick replies.
     
     Returns a status dict.
@@ -40,24 +40,32 @@ async def send_city_selection(db: Session, *, wa_id: str) -> Dict[str, Any]:
         pass
 
     try:
-        # Resolve credentials: use stored treatment_flow_phone_id first, then env, then fallback
-        phone_id = None
+        # Resolve credentials: prefer explicit hint, then stored treatment_flow_phone_id, then env, then fallback
+        phone_id = (str(phone_id_hint) if phone_id_hint else None)
         access_token = None
         
-        # First priority: Check stored phone_id from treatment flow state
-        try:
-            from controllers.web_socket import appointment_state  # type: ignore
-            st = appointment_state.get(wa_id) or {}
-            stored_phone_id = st.get("treatment_flow_phone_id")
-            if stored_phone_id:
-                cfg = get_number_config(str(stored_phone_id))
-                if cfg and cfg.get("token"):
-                    access_token = cfg.get("token")
-                    phone_id = str(stored_phone_id)
-        except Exception:
-            pass
+        # First priority: use provided phone_id_hint
+        if phone_id:
+            cfg = get_number_config(str(phone_id))
+            if cfg and cfg.get("token"):
+                access_token = cfg.get("token")
+            else:
+                phone_id = None
+        # Second priority: Check stored phone_id from treatment flow state
+        if not phone_id:
+            try:
+                from controllers.web_socket import appointment_state  # type: ignore
+                st = appointment_state.get(wa_id) or {}
+                stored_phone_id = st.get("treatment_flow_phone_id")
+                if stored_phone_id:
+                    cfg = get_number_config(str(stored_phone_id))
+                    if cfg and cfg.get("token"):
+                        access_token = cfg.get("token")
+                        phone_id = str(stored_phone_id)
+            except Exception:
+                pass
         
-        # Second priority: Env-configured treatment flow number
+        # Third priority: Env-configured treatment flow number
         if not phone_id:
             phone_id_pref = os.getenv("TREATMENT_FLOW_PHONE_ID") or os.getenv("WELCOME_PHONE_ID")
             if phone_id_pref:
@@ -75,6 +83,10 @@ async def send_city_selection(db: Session, *, wa_id: str) -> Dict[str, Any]:
             access_token = token_entry.token
             from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
             phone_id = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
+        try:
+            print(f"[city_selection] INFO - send_city_selection phone_id={phone_id} wa_id={wa_id}")
+        except Exception:
+            pass
         headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
 
         # Page 1 (exactly 10 rows as requested)
@@ -292,10 +304,27 @@ async def handle_city_selection(
         from controllers.web_socket import lead_appointment_state, appointment_state
         if wa_id not in lead_appointment_state:
             lead_appointment_state[wa_id] = {}
-        # Hard idempotency: if this same reply_id already handled and topics were sent, skip
+        # Soft idempotency: only skip if same reply_id AND topics were sent AND mr_treatment was sent (within last 60s)
         last_city_reply = lead_appointment_state[wa_id].get("last_city_reply_id")
-        if last_city_reply == (reply_id or "").strip().lower() and lead_appointment_state[wa_id].get("treatment_topics_sent"):
-            return {"status": "city_already_handled", "city": selected_city}
+        topics_sent = lead_appointment_state[wa_id].get("treatment_topics_sent")
+        if last_city_reply == (reply_id or "").strip().lower() and topics_sent:
+            # Check if mr_treatment was actually sent
+            try:
+                from controllers.web_socket import appointment_state as _appt_check
+                mr_sent = bool((_appt_check.get(wa_id) or {}).get("mr_treatment_sent"))
+                if mr_sent:
+                    # Check timestamp - only block if sent very recently (within 60 seconds)
+                    topics_ts = lead_appointment_state[wa_id].get("topics_sent_ts")
+                    if topics_ts:
+                        try:
+                            from datetime import datetime as _dt_check
+                            ts_obj = _dt_check.fromisoformat(topics_ts) if isinstance(topics_ts, str) else None
+                            if ts_obj and (_dt_check.now() - ts_obj).total_seconds() < 60:
+                                return {"status": "city_already_handled", "city": selected_city}
+                        except Exception:
+                            pass
+            except Exception:
+                pass
 
         lead_appointment_state[wa_id]["last_city_reply_id"] = (reply_id or "").strip().lower()
         lead_appointment_state[wa_id]["selected_city"] = selected_city
@@ -357,17 +386,33 @@ async def handle_city_selection(
             from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
             phone_id_hint = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
         
-        await send_message_to_waid(wa_id, f"✅ Great! You selected {selected_city}.", db, phone_id_hint=str(phone_id_hint))
         try:
-            # Early exit if already marked sent
+            print(f"[city_selection] INFO - treatment city handled wa_id={wa_id} city={selected_city} phone_id_hint={phone_id_hint}")
+        except Exception:
+            pass
+        try:
+            # Early exit only if topics were sent AND mr_treatment was sent (within last 60s)
             try:
-                from controllers.web_socket import lead_appointment_state as _lead_state_early
+                from controllers.web_socket import lead_appointment_state as _lead_state_early, appointment_state as _appt_early
                 st_early = _lead_state_early.get(wa_id) or {}
-                if st_early.get("treatment_topics_sent"):
-                    # release lock and exit
-                    st_early["treatment_topics_lock"] = False
-                    _lead_state_early[wa_id] = st_early
-                    return {"status": "topics_already_sent", "city": selected_city}
+                topics_sent_early = st_early.get("treatment_topics_sent")
+                if topics_sent_early:
+                    # Check if mr_treatment was actually sent
+                    mr_sent_early = bool((_appt_early.get(wa_id) or {}).get("mr_treatment_sent"))
+                    if mr_sent_early:
+                        # Check timestamp - only block if sent very recently
+                        topics_ts_early = st_early.get("topics_sent_ts")
+                        if topics_ts_early:
+                            try:
+                                from datetime import datetime as _dt_early
+                                ts_obj_early = _dt_early.fromisoformat(topics_ts_early) if isinstance(topics_ts_early, str) else None
+                                if ts_obj_early and (_dt_early.now() - ts_obj_early).total_seconds() < 60:
+                                    # release lock and exit
+                                    st_early["treatment_topics_lock"] = False
+                                    _lead_state_early[wa_id] = st_early
+                                    return {"status": "topics_already_sent", "city": selected_city}
+                            except Exception:
+                                pass
             except Exception:
                 pass
 
@@ -404,89 +449,16 @@ async def handle_city_selection(
             except Exception:
                 skip_template = False
 
-            token_entry = get_latest_token(db)
-            if token_entry and token_entry.token:
-                # First priority: Use stored phone_id from treatment flow state
-                phone_id = None
-                access_token = None
-                try:
-                    from controllers.web_socket import appointment_state as _appt_state  # type: ignore
-                    _st_appt = _appt_state.get(wa_id) or {}
-                    stored_phone_id = _st_appt.get("treatment_flow_phone_id")
-                    if stored_phone_id:
-                        cfg_env = get_number_config(str(stored_phone_id))
-                        if cfg_env and cfg_env.get("token"):
-                            access_token = cfg_env.get("token")
-                            phone_id = str(stored_phone_id)
-                except Exception:
-                    pass
-                
-                # Second priority: Env-configured treatment flow number
-                if not phone_id:
-                    phone_id = os.getenv("TREATMENT_FLOW_PHONE_ID") or os.getenv("WELCOME_PHONE_ID")
-                    if phone_id:
-                        cfg_env = get_number_config(str(phone_id)) if phone_id else None
-                        access_token = (cfg_env.get("token") if (cfg_env and cfg_env.get("token")) else token_entry.token)
-                    else:
-                        access_token = token_entry.token
-                        from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
-                        phone_id = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
-                # After city selection, send mr_treatment template first unless already sent earlier
-                try:
-                    from controllers.web_socket import appointment_state as _appt_state  # type: ignore
-                    _st_appt = _appt_state.get(wa_id) or {}
-                    already_sent_tpl = bool(_st_appt.get("mr_treatment_sent"))
-                except Exception:
-                    already_sent_tpl = False
-                # Do NOT send mr_treatment here; only send concern buttons after city selection
-                if False:
-                    try:
-                        from controllers.auto_welcome_controller import _send_template as _tpl
-                        lang_code = os.getenv("WELCOME_TEMPLATE_LANG", "en_US")
-                        resp_tpl = _tpl(
-                            wa_id=wa_id,
-                            template_name="mr_treatment",
-                            access_token=access_token,
-                            phone_id=phone_id,
-                            components=None,
-                            lang_code=lang_code,
-                        )
-                        # Set flag immediately after sending to prevent duplicates
-                        if resp_tpl.status_code == 200:
-                            try:
-                                from controllers.web_socket import appointment_state as _appt_state_mark  # type: ignore
-                                _st_mark = _appt_state_mark.get(wa_id) or {}
-                                _st_mark["mr_treatment_sent"] = True
-                                _appt_state_mark[wa_id] = _st_mark
-                                print(f"[city_selection] DEBUG - Set mr_treatment_sent flag for {wa_id}")
-                            except Exception:
-                                pass
-                        try:
-                            # Derive display from mapping for this phone_id
-                            import re as _re
-                            _cfg = get_number_config(str(phone_id))
-                            _display_from = _re.sub(r"\D", "", (_cfg.get("name") or "")) if _cfg else os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376")
-                            await manager.broadcast({
-                                "from": _display_from,
-                                "to": wa_id,
-                                "type": "template" if resp_tpl.status_code == 200 else "template_error",
-                                "message": "mr_treatment sent" if resp_tpl.status_code == 200 else "mr_treatment failed",
-                                "timestamp": datetime.now().isoformat(),
-                            })
-                        except Exception:
-                            pass
-                    except Exception as _e:
-                        try:
-                            print(f"[city_selection] WARNING - mr_treatment send failed: {_e}")
-                        except Exception:
-                            pass
-                else:
-                    print(f"[city_selection] DEBUG - SKIP mr_treatment: already sent for {wa_id}")
-                # Then send concern buttons
+            # Use reusable interactive senders sourced from whatsapp_numbers
+            try:
+                from marketing.interactive import send_mr_treatment, send_concern_buttons, send_next_actions  # type: ignore
+                # 1. Send confirmation message first
+                await send_message_to_waid(wa_id, f"✅ Great! You selected {selected_city}.", db, phone_id_hint=str(phone_id_hint))
+                # 2. Then send mr_treatment template
+                _ = send_mr_treatment(db, wa_id=wa_id, phone_id_hint=str(phone_id_hint))
                 try:
                     from controllers.web_socket import lead_appointment_state as _lead_state_mark
                     st_mark = _lead_state_mark.get(wa_id) or {}
-                    # If already marked sent, avoid sending again
                     if st_mark.get("treatment_topics_sent"):
                         st_mark["treatment_topics_lock"] = False
                         _lead_state_mark[wa_id] = st_mark
@@ -496,49 +468,23 @@ async def handle_city_selection(
                     _lead_state_mark[wa_id] = st_mark
                 except Exception:
                     pass
-                headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-                payload_btn = {
-                    "messaging_product": "whatsapp",
-                    "to": wa_id,
-                    "type": "interactive",
-                    "interactive": {
-                        "type": "button",
-                        "body": {"text": "Please choose your area of concern:"},
-                        "action": {
-                            "buttons": [
-                                {"type": "reply", "reply": {"id": "skin", "title": "Skin"}},
-                                {"type": "reply", "reply": {"id": "hair", "title": "Hair"}},
-                                {"type": "reply", "reply": {"id": "body", "title": "Body"}},
-                            ]
-                        },
-                    },
-                }
-                import requests as _req
-                from config.constants import get_messages_url as _gm
+                # 3. Then send concern buttons (only if not already sent)
                 try:
-                    _resp_btn = _req.post(_gm(phone_id), headers=headers, json=payload_btn)
-                    try:
-                        print(f"[city_selection] DEBUG - concern buttons sent phone_id={phone_id} status={_resp_btn.status_code}")
-                    except Exception:
-                        pass
-                except Exception as _e_btn:
-                    print(f"[city_selection] ERROR - concern buttons post failed: {_e_btn}")
-                # Broadcast to websocket for dashboard visibility
-                try:
-                    import re as _re
-                    _cfg2 = get_number_config(str(phone_id))
-                    _display_from2 = _re.sub(r"\D", "", (_cfg2.get("name") or "")) if _cfg2 else os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376")
-                    await manager.broadcast({
-                        "from": _display_from2,
-                        "to": wa_id,
-                        "type": "interactive",
-                        "message": "Please choose your area of concern:",
-                        "timestamp": datetime.now().isoformat(),
-                        "meta": {"kind": "buttons", "options": ["Skin", "Hair", "Body"]}
-                    })
+                    from controllers.web_socket import appointment_state as _appt_concern
+                    st_concern = _appt_concern.get(wa_id) or {}
+                    concern_sent = bool(st_concern.get("concern_buttons_sent"))
+                    if not concern_sent:
+                        _ = send_concern_buttons(db, wa_id=wa_id, phone_id_hint=str(phone_id_hint))
+                    else:
+                        print(f"[city_selection] DEBUG - Skipping concern buttons (already sent via template)")
                 except Exception:
-                    pass
-                # release lock
+                    _ = send_concern_buttons(db, wa_id=wa_id, phone_id_hint=str(phone_id_hint))
+                # 4. Finally send next actions
+                _ = send_next_actions(db, wa_id=wa_id, phone_id_hint=str(phone_id_hint))
+            except Exception as _e_int:
+                print(f"[city_selection] WARNING - interactive senders failed: {_e_int}")
+            
+            # release lock
                 try:
                     from controllers.web_socket import lead_appointment_state as _lead_unlock
                     st_unlock = _lead_unlock.get(wa_id) or {}
@@ -568,29 +514,5 @@ async def handle_city_selection(
                 pass
         return {"status": "failed_to_send_topics", "city": selected_city}
 
-    # Lead appointment flow: proceed to clinic selection
-    else:
-        # Send confirmation message for lead appointment flow - use stored phone_id
-        phone_id_hint = None
-        try:
-            from controllers.web_socket import appointment_state  # type: ignore
-            st = appointment_state.get(wa_id) or {}
-            stored_phone_id = st.get("treatment_flow_phone_id")
-            if stored_phone_id:
-                phone_id_hint = stored_phone_id
-        except Exception:
-            pass
-        
-        if not phone_id_hint:
-            from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
-            phone_id_hint = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
-        
-        await send_message_to_waid(wa_id, f"✅ Great! You selected {selected_city}.", db, phone_id_hint=str(phone_id_hint))
-        
-        from .clinic_location import send_clinic_location
-        # Normalize city for clinic mapping (e.g., Bangalore -> Bengaluru)
-        city_for_clinic = selected_city
-        if selected_city == "Bangalore":
-            city_for_clinic = "Bengaluru"
-        result = await send_clinic_location(db, wa_id=wa_id, city=city_for_clinic)
-        return {"status": "proceed_to_clinic_location", "city": selected_city, "result": result}
+    # Non-treatment contexts are not handled in marketing flow
+    return {"status": "ignored_non_treatment", "city": selected_city}

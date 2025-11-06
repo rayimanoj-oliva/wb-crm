@@ -231,10 +231,20 @@ async def handle_city_selection(
         from controllers.web_socket import lead_appointment_state, appointment_state
         if wa_id not in lead_appointment_state:
             lead_appointment_state[wa_id] = {}
-        # Hard idempotency: if this same reply_id already handled and topics were sent, skip
+        # Soft idempotency: only skip if same reply_id AND clinic location was sent recently (within last 60s)
         last_city_reply = lead_appointment_state[wa_id].get("last_city_reply_id")
-        if last_city_reply == (reply_id or "").strip().lower() and lead_appointment_state[wa_id].get("treatment_topics_sent"):
-            return {"status": "city_already_handled", "city": selected_city}
+        clinic_sent = lead_appointment_state[wa_id].get("clinic_location_sent")
+        if last_city_reply == (reply_id or "").strip().lower() and clinic_sent:
+            # Check timestamp - only block if sent very recently
+            clinic_ts = lead_appointment_state[wa_id].get("clinic_location_sent_ts")
+            if clinic_ts:
+                try:
+                    from datetime import datetime as _dt_check
+                    ts_obj = _dt_check.fromisoformat(clinic_ts) if isinstance(clinic_ts, str) else None
+                    if ts_obj and (_dt_check.now() - ts_obj).total_seconds() < 60:
+                        return {"status": "city_already_handled", "city": selected_city}
+                except Exception:
+                    pass
 
         lead_appointment_state[wa_id]["last_city_reply_id"] = (reply_id or "").strip().lower()
         lead_appointment_state[wa_id]["selected_city"] = selected_city

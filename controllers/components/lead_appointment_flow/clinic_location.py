@@ -170,6 +170,16 @@ async def send_clinic_location(db: Session, *, wa_id: str, city: str) -> Dict[st
                 create_message(db, outbound_message)
                 print(f"[lead_appointment_flow] DEBUG - Clinic location message saved to database: {message_id}")
                 
+                # Mark clinic location as sent for idempotency
+                try:
+                    from controllers.web_socket import lead_appointment_state
+                    if wa_id not in lead_appointment_state:
+                        lead_appointment_state[wa_id] = {}
+                    lead_appointment_state[wa_id]["clinic_location_sent"] = True
+                    lead_appointment_state[wa_id]["clinic_location_sent_ts"] = datetime.now().isoformat()
+                except Exception:
+                    pass
+                
                 # Broadcast to WebSocket
                 await manager.broadcast({
                     "from": ("91" + LEAD_APPOINTMENT_DISPLAY_LAST10),
