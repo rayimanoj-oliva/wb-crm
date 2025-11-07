@@ -12,9 +12,9 @@ def _normalize_indian_phone(text: str | None) -> str | None:
     last10 = digits[-10:]
     if len(last10) != 10:
         return None
-    # Basic Indian mobile validity: commonly starts with 6/7/8/9 (soft check)
-    if not re.match(r"[6-9]", last10[0]):
-        pass
+    # Must start with 6, 7, 8, or 9
+    if not re.match(r"^[6-9]", last10):
+        return None
     return "+91" + last10
 
 
@@ -34,6 +34,7 @@ def validate_indian_phone(text: str) -> dict[str, object]:
 Rules:
 - Must be exactly 10 digits (Indian mobile).
 - Allow +91 prefix or separators, but final result must be +91XXXXXXXXXX (10 digits).
+- Must start with 6, 7, 8, or 9.
 
 Return ONLY JSON: {"valid": true|false, "phone": string|null, "reason": string}."""
             data = {
