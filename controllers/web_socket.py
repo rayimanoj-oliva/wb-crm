@@ -1346,6 +1346,13 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             interactive_broadcasted = False
             try:
                 if i_type in {"button_reply", "list_reply"}:
+                    # Clear any pending interactive since user responded
+                    try:
+                        st_clear = appointment_state.get(wa_id) or {}
+                        st_clear.pop("pending_interactive", None)
+                        appointment_state[wa_id] = st_clear
+                    except Exception:
+                        pass
                     reply_text_any = (title or reply_id or "[Interactive Reply]")
                     msg_interactive_any = MessageCreate(
                         message_id=message_id,
@@ -1815,6 +1822,12 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         from_treatment_flow = st.get("from_treatment_flow", False)
                         
                         if (norm_btn_id in yes_ids or norm_btn_title in yes_ids):
+                            # Clear any pending interactive once user acts
+                            try:
+                                st.pop("pending_interactive", None)
+                                appointment_state[wa_id] = st
+                            except Exception:
+                                pass
                             if from_treatment_flow:
                                 # On Yes → proceed to city selection FIRST; mr_treatment will be sent after city selection
                                 # Resolve phone_id from stored state or webhook metadata
@@ -1907,6 +1920,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                 st.pop("awaiting_phone", None)
                                 st.pop("corrected_name", None)
                                 st.pop("corrected_phone", None)
+                                st.pop("pending_interactive", None)
                                 appointment_state[wa_id] = st
                             except Exception:
                                 pass
@@ -2286,6 +2300,196 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         except Exception:
             pass
         
+        # If free-text arrives while we are expecting an interactive reply, resend that interactive
+        try:
+            if message_type == "text":
+                st = appointment_state.get(wa_id) or {}
+                awaiting_details = bool(st.get("awaiting_name") or st.get("awaiting_phone"))
+                pend = st.get("pending_interactive") or {}
+                pend_kind = pend.get("kind") if isinstance(pend, dict) else None
+                # Throttle: only resend if at least 10s passed since prompt and not already resent
+                from datetime import datetime as _dt
+                pend_ts = None
+                try:
+                    pend_ts = _dt.fromisoformat(pend.get("ts")) if isinstance(pend.get("ts"), str) else None
+                except Exception:
+                    pend_ts = None
+                resend_done = bool(pend.get("resend_done")) if isinstance(pend, dict) else True
+                ok_to_resend = bool(pend_kind and not awaiting_details and not resend_done and pend_ts and (_dt.utcnow() - pend_ts).total_seconds() >= 10)
+                if ok_to_resend:
+                    # Schedule a delayed resend (12s) to avoid immediate duplication; abort if state changes
+                    async def _delayed_resend_interactive():
+                        try:
+                            await asyncio.sleep(4)
+                            st_now = appointment_state.get(wa_id) or {}
+                            pnow = st_now.get("pending_interactive") or {}
+                            if not isinstance(pnow, dict) or pnow.get("resend_done") or pnow.get("kind") != pend_kind:
+                                return
+                            if bool(st_now.get("awaiting_name") or st_now.get("awaiting_phone")):
+                                return
+                            # Resolve phone_id to resend from the same number
+                            try:
+                                stored_phone_id = st_now.get("treatment_flow_phone_id")
+                                phone_id_hint = stored_phone_id if stored_phone_id else None
+                                if not phone_id_hint:
+                                    from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
+                                    phone_id_hint = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
+                            except Exception:
+                                from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
+                                phone_id_hint = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
+                            # Gentle clarification
+                            await send_message_to_waid(wa_id, "We didn't quite get that. Please choose an option below.", db, phone_id_hint=str(phone_id_hint))
+                            # Resend based on kind
+                            try:
+                                from services.whatsapp_service import get_latest_token as _get_tok
+                                from config.constants import get_messages_url as _get_url
+                                import requests as _req
+                                from marketing.city_selection import send_city_selection as _send_city
+                                from marketing.interactive import send_concern_buttons as _send_concern, send_next_actions as _send_next
+                                tok = _get_tok(db)
+                                if tok and tok.token:
+                                    headers_r = {"Authorization": f"Bearer {tok.token}", "Content-Type": "application/json"}
+                                    pid = str(phone_id_hint)
+                                    if pend_kind == "confirm_contact":
+                                        payload_btn = {
+                                            "messaging_product": "whatsapp",
+                                            "to": wa_id,
+                                            "type": "interactive",
+                                            "interactive": {
+                                                "type": "button",
+                                                "body": {"text": "Are your name and contact number correct? "},
+                                                "action": {"buttons": [
+                                                    {"type": "reply", "reply": {"id": "confirm_yes", "title": "Yes"}},
+                                                    {"type": "reply", "reply": {"id": "confirm_no", "title": "No"}}
+                                                ]}
+                                            }
+                                        }
+                                        _req.post(_get_url(pid), headers=headers_r, json=payload_btn)
+                                    elif pend_kind == "skin_concern_list":
+                                        payload_list = {
+                                            "messaging_product": "whatsapp",
+                                            "to": wa_id,
+                                            "type": "interactive",
+                                            "interactive": {
+                                                "type": "list",
+                                                "body": {"text": "Please select your Skin concern:"},
+                                                "action": {"button": "Select Concern", "sections": [{
+                                                    "title": "Skin Concerns",
+                                                    "rows": [
+                                                        {"id": "acne", "title": "Acne / Acne Scars"},
+                                                        {"id": "pigmentation", "title": "Pigmentation & Uneven Skin Tone"},
+                                                        {"id": "antiaging", "title": "Anti-Aging & Skin Rejuvenation"},
+                                                        {"id": "dandruff", "title": "Dandruff & Scalp Care"},
+                                                        {"id": "other_skin", "title": "Other Skin Concerns"}
+                                                    ]
+                                                }]}
+                                            }
+                                        }
+                                        _req.post(_get_url(pid), headers=headers_r, json=payload_list)
+                                    elif pend_kind == "treatment_concerns":
+                                        await _send_concern(db, wa_id=wa_id, phone_id_hint=str(phone_id_hint))
+                                    elif pend_kind == "city_selection":
+                                        await _send_city(db, wa_id=wa_id, phone_id_hint=str(phone_id_hint))
+                                    elif pend_kind == "next_actions":
+                                        payload_buttons = {
+                                            "messaging_product": "whatsapp",
+                                            "to": wa_id,
+                                            "type": "interactive",
+                                            "interactive": {
+                                                "type": "button",
+                                                "body": {"text": "Please choose one of the following options:"},
+                                                "action": {"buttons": [
+                                                    {"type": "reply", "reply": {"id": "book_appointment", "title": "\ud83d\udcc5 \ud83d\udcc5 Book an Appointment"}},
+                                                    {"type": "reply", "reply": {"id": "request_callback", "title": "\ud83d\udcde \ud83d\udcde Request a Call Back"}}
+                                                ]}
+                                            }
+                                        }
+                                        _req.post(_get_url(pid), headers=headers_r, json=payload_buttons)
+                            except Exception:
+                                pass
+                            # Mark one-time resend done
+                            try:
+                                st_update = appointment_state.get(wa_id) or {}
+                                p = st_update.get("pending_interactive") or {}
+                                if isinstance(p, dict):
+                                    p["resend_done"] = True
+                                    st_update["pending_interactive"] = p
+                                    appointment_state[wa_id] = st_update
+                            except Exception:
+                                pass
+                        except Exception:
+                            pass
+                    asyncio.create_task(_delayed_resend_interactive())
+                    return {"status": "scheduled_resend_interactive", "message_id": message_id}
+        except Exception:
+            pass
+
+        # If free-text arrives and last outbound was a template in treatment flow, resend that template once
+        try:
+            if message_type == "text":
+                st = appointment_state.get(wa_id) or {}
+                flow_ctx = st.get("flow_context")
+                if flow_ctx == "treatment":
+                    pt = st.get("pending_template") or {}
+                    tpl_name = pt.get("name") if isinstance(pt, dict) else None
+                    from datetime import datetime as _dt
+                    tpl_ts = None
+                    try:
+                        tpl_ts = _dt.fromisoformat(pt.get("ts")) if isinstance(pt.get("ts"), str) else None
+                    except Exception:
+                        tpl_ts = None
+                    resend_done = bool(pt.get("resend_done")) if isinstance(pt, dict) else True
+                    ok_to_resend_tpl = bool(tpl_name and not resend_done and tpl_ts and (_dt.utcnow() - tpl_ts).total_seconds() >= 10)
+                    if ok_to_resend_tpl:
+                        async def _delayed_resend_template():
+                            try:
+                                await asyncio.sleep(4)
+                                st_now = appointment_state.get(wa_id) or {}
+                                pt_now = st_now.get("pending_template") or {}
+                                if not isinstance(pt_now, dict) or pt_now.get("resend_done") or pt_now.get("name") != tpl_name:
+                                    return
+                                try:
+                                    stored_phone_id = st_now.get("treatment_flow_phone_id")
+                                    phone_id_hint = stored_phone_id if stored_phone_id else None
+                                    if not phone_id_hint:
+                                        from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
+                                        phone_id_hint = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
+                                except Exception:
+                                    from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
+                                    phone_id_hint = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
+                                # Resend template
+                                try:
+                                    from controllers.auto_welcome_controller import _send_template as _send_tpl
+                                    from services.whatsapp_service import get_latest_token as _get_tok
+                                    tok = _get_tok(db)
+                                    if tok and tok.token:
+                                        _send_tpl(
+                                            wa_id=wa_id,
+                                            template_name=str(tpl_name),
+                                            access_token=tok.token,
+                                            phone_id=str(phone_id_hint),
+                                            components=None,
+                                            lang_code=os.getenv("WELCOME_TEMPLATE_LANG", "en_US"),
+                                        )
+                                except Exception:
+                                    pass
+                                # Mark one-time resend done
+                                try:
+                                    st2 = appointment_state.get(wa_id) or {}
+                                    p = st2.get("pending_template") or {}
+                                    if isinstance(p, dict):
+                                        p["resend_done"] = True
+                                        st2["pending_template"] = p
+                                        appointment_state[wa_id] = st2
+                                except Exception:
+                                    pass
+                            except Exception:
+                                pass
+                        asyncio.create_task(_delayed_resend_template())
+                        return {"status": "scheduled_resend_template", "message_id": message_id}
+        except Exception:
+            pass
+
         # Handle text while awaiting_name using OpenAI-backed validator
         try:
             if message_type == "text":

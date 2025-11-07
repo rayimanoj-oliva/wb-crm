@@ -160,6 +160,15 @@ async def send_city_selection(db: Session, *, wa_id: str, phone_id_hint: str | N
                     "timestamp": datetime.now().isoformat(),
                     "meta": {"kind": "list", "section": "Available Cities"}
                 })
+                # Track pending interactive for resend if user types free text
+                try:
+                    from controllers.web_socket import appointment_state as _appt_state  # type: ignore
+                    stp = _appt_state.get(wa_id) or {}
+                    from datetime import datetime as _dt
+                    stp["pending_interactive"] = {"kind": "city_selection", "ts": _dt.utcnow().isoformat(), "resend_done": False}
+                    _appt_state[wa_id] = stp
+                except Exception:
+                    pass
             except Exception as e:
                 print(f"[lead_appointment_flow] WARNING - Database save or WebSocket broadcast failed: {e}")
             # Arm Follow-Up 1 after this outbound prompt in case user stops here
@@ -364,6 +373,16 @@ async def handle_city_selection(
 
     # Treatment flow: after city, send mr_treatment (once) then ask concern (Skin/Hair/Body)
     if context == "treatment":
+        # Clear any pending city prompt before moving forward
+        try:
+            from controllers.web_socket import appointment_state as _appt_clear
+            stc = _appt_clear.get(wa_id) or {}
+            pend = stc.get("pending_interactive") or {}
+            if isinstance(pend, dict) and pend.get("kind") == "city_selection":
+                stc.pop("pending_interactive", None)
+                _appt_clear[wa_id] = stc
+        except Exception:
+            pass
         # Strong re-entrancy lock: prevent duplicate sends if handler is invoked twice concurrently or reprocessed
         try:
             from controllers.web_socket import lead_appointment_state as _lead_lock  # type: ignore

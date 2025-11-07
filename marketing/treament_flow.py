@@ -318,6 +318,15 @@ async def run_treament_flow(
                             })
                         except Exception:
                             pass
+                        # Track template as pending for one-time resend on free text
+                        try:
+                            from controllers.web_socket import appointment_state as _appt_state  # type: ignore
+                            from datetime import datetime as _dt
+                            stp = _appt_state.get(wa_id) or {}
+                            stp["pending_template"] = {"name": "mr_welcome", "ts": _dt.utcnow().isoformat(), "resend_done": False}
+                            _appt_state[wa_id] = stp
+                        except Exception:
+                            pass
                         # Schedule follow-up only for mr_welcome
                         try:
                             from services.followup_service import schedule_next_followup as _schedule, FOLLOW_UP_1_DELAY_MINUTES
@@ -399,6 +408,15 @@ async def run_treament_flow(
                                         pass
                                 except Exception as _e_btn:
                                     print(f"[treatment_flow] ERROR - confirm buttons post failed: {_e_btn}")
+                                # Remember pending interactive so free text can trigger a resend
+                                try:
+                                    from controllers.web_socket import appointment_state as _appt_state  # type: ignore
+                                    stp = _appt_state.get(wa_id) or {}
+                                    from datetime import datetime as _dt
+                                    stp["pending_interactive"] = {"kind": "confirm_contact", "ts": _dt.utcnow().isoformat(), "resend_done": False}
+                                    _appt_state[wa_id] = stp
+                                except Exception:
+                                    pass
                                 # Broadcast Yes/No buttons to websocket UI
                                 try:
                                     await manager.broadcast({
@@ -533,6 +551,15 @@ async def run_treatment_buttons_flow(
                         })
                     except Exception:
                         pass
+                    try:
+                        if resp_skin.status_code == 200:
+                            from controllers.web_socket import appointment_state as _appt_state  # type: ignore
+                            from datetime import datetime as _dt
+                            stp = _appt_state.get(wa_id) or {}
+                            stp["pending_template"] = {"name": "skin_treat_flow", "ts": _dt.utcnow().isoformat(), "resend_done": False}
+                            _appt_state[wa_id] = stp
+                    except Exception:
+                        pass
 
                     headers2 = {"Authorization": f"Bearer {access_token2}", "Content-Type": "application/json"}
                     payload_list = {
@@ -589,6 +616,15 @@ async def run_treatment_buttons_flow(
                                 "timestamp": datetime.now().isoformat(),
                                 "meta": {"kind": "list", "section": f"{topic.title()} Treatments"}
                             })
+                            # Remember pending interactive for resend on free text
+                            try:
+                                from controllers.web_socket import appointment_state as _appt_state  # type: ignore
+                                stp = _appt_state.get(wa_id) or {}
+                                from datetime import datetime as _dt
+                                stp["pending_interactive"] = {"kind": "skin_concern_list", "ts": _dt.utcnow().isoformat(), "resend_done": False}
+                                _appt_state[wa_id] = stp
+                            except Exception:
+                                pass
                         except Exception as e:
                             print(f"[treatment_flow] WARNING - Database save or WebSocket broadcast failed: {e}")
                     return {"status": "list_sent", "message_id": message_id}
@@ -605,6 +641,15 @@ async def run_treatment_buttons_flow(
                         })
                     except Exception:
                         pass
+                    try:
+                        if resp_hair.status_code == 200:
+                            from controllers.web_socket import appointment_state as _appt_state  # type: ignore
+                            from datetime import datetime as _dt
+                            stp = _appt_state.get(wa_id) or {}
+                            stp["pending_template"] = {"name": "hair_treat_flow", "ts": _dt.utcnow().isoformat(), "resend_done": False}
+                            _appt_state[wa_id] = stp
+                    except Exception:
+                        pass
                     return {"status": "hair_template_sent", "message_id": message_id}
 
                 if topic == "body":
@@ -617,6 +662,15 @@ async def run_treatment_buttons_flow(
                             "message": "body_treat_flow sent" if resp_body.status_code == 200 else "body_treat_flow failed",
                             **({"status_code": resp_body.status_code} if resp_body.status_code != 200 else {}),
                         })
+                    except Exception:
+                        pass
+                    try:
+                        if resp_body.status_code == 200:
+                            from controllers.web_socket import appointment_state as _appt_state  # type: ignore
+                            from datetime import datetime as _dt
+                            stp = _appt_state.get(wa_id) or {}
+                            stp["pending_template"] = {"name": "body_treat_flow", "ts": _dt.utcnow().isoformat(), "resend_done": False}
+                            _appt_state[wa_id] = stp
                     except Exception:
                         pass
                     return {"status": "body_template_sent", "message_id": message_id}
@@ -769,6 +823,15 @@ async def run_treatment_buttons_flow(
                     })
                 except Exception:
                     pass
+                try:
+                    if resp_book.status_code == 200:
+                        from controllers.web_socket import appointment_state as _appt_state  # type: ignore
+                        from datetime import datetime as _dt
+                        stp = _appt_state.get(wa_id) or {}
+                        stp["pending_template"] = {"name": "booking_appoint", "ts": _dt.utcnow().isoformat(), "resend_done": False}
+                        _appt_state[wa_id] = stp
+                except Exception:
+                    pass
                 # Do NOT send thank-you here; send it only after the user clicks "Book an Appointment"
         except Exception:
             pass
@@ -807,6 +870,15 @@ async def run_treatment_buttons_flow(
                     },
                 }
                 requests.post(get_messages_url(phone_id3), headers=headers3, json=payload_buttons)
+                # Track pending next actions buttons
+                try:
+                    from controllers.web_socket import appointment_state as _appt_state  # type: ignore
+                    stp = _appt_state.get(wa_id) or {}
+                    from datetime import datetime as _dt
+                    stp["pending_interactive"] = {"kind": "next_actions", "ts": _dt.utcnow().isoformat(), "resend_done": False}
+                    _appt_state[wa_id] = stp
+                except Exception:
+                    pass
                 return {"status": "next_actions_sent", "message_id": message_id}
         except Exception:
             pass
