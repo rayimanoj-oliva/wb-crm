@@ -59,16 +59,8 @@ async def run_treament_flow(
 
         normalized_body = _normalize(body_text)
 
-        # 3) Prefill detection for mr_welcome (also trigger on simple greetings like "hi")
-        prefill_regexes = [
-            r"^hi,?\s*oliva\s+i\s+want\s+to\s+know\s+more\s+about\s+services\s+in\s+[a-z\s]+,\s*[a-z\s]+\s+clinic$",
-            r"^hi,?\s*oliva\s+i\s+want\s+to\s+know\s+more\s+about\s+your\s+services$",
-            # greetings
-            r"^hi$",
-            r"^hello$",
-            r"^hlo$",
-        ]
-        prefill_detected = any(re.match(rx, normalized_body, flags=re.IGNORECASE) for rx in prefill_regexes)
+        # 3) Prefill detection for mr_welcome (accept any message to trigger the template)
+        prefill_detected = bool(normalized_body and normalized_body.strip())
         
         if prefill_detected:
             # Clear stale state to allow flow restart when customer sends a starting point message
