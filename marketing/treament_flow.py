@@ -411,6 +411,14 @@ async def run_treament_flow(
                                     })
                                 except Exception:
                                     pass
+                                # Mark that we are awaiting an interactive response
+                                try:
+                                    from controllers.web_socket import appointment_state as _appt_state  # type: ignore
+                                    st_expect = _appt_state.get(wa_id) or {}
+                                    st_expect["treatment_expect_interactive"] = "contact_confirmation"
+                                    _appt_state[wa_id] = st_expect
+                                except Exception:
+                                    pass
                         except Exception as e:
                             print(f"[treatment_flow] WARNING - Could not send confirmation: {e}")
 
@@ -461,6 +469,14 @@ async def run_treatment_buttons_flow(
     btn_payload: str | None = None,
 ) -> Dict[str, Any]:
     """Handle Skin/Hair/Body treatment topic buttons and list selections."""
+    # Clear any pending interactive expectation now that we received a structured reply
+    try:
+        from controllers.web_socket import appointment_state as _appt_state  # type: ignore
+        st_clear = _appt_state.get(wa_id) or {}
+        st_clear.pop("treatment_expect_interactive", None)
+        _appt_state[wa_id] = st_clear
+    except Exception:
+        pass
     # Strongest possible check: don't process any treatment action if this is a catalog/buy flow.
     catalog_triggers = {"buy_products", "buy product", "buy products", "show catalogue", "catalogue", "catalog", "browse products"}
     for val in (btn_id, btn_text, btn_payload):
@@ -533,6 +549,14 @@ async def run_treatment_buttons_flow(
                         })
                     except Exception:
                         pass
+                    if resp_skin.status_code == 200:
+                        try:
+                            from controllers.web_socket import appointment_state as _appt_state  # type: ignore
+                            st_expect = _appt_state.get(wa_id) or {}
+                            st_expect["treatment_expect_interactive"] = "skin_treat_flow"
+                            _appt_state[wa_id] = st_expect
+                        except Exception:
+                            pass
 
                     headers2 = {"Authorization": f"Bearer {access_token2}", "Content-Type": "application/json"}
                     payload_list = {
@@ -591,6 +615,14 @@ async def run_treatment_buttons_flow(
                             })
                         except Exception as e:
                             print(f"[treatment_flow] WARNING - Database save or WebSocket broadcast failed: {e}")
+                        # Expect a list reply next
+                        try:
+                            from controllers.web_socket import appointment_state as _appt_state  # type: ignore
+                            st_expect = _appt_state.get(wa_id) or {}
+                            st_expect["treatment_expect_interactive"] = "concern_list"
+                            _appt_state[wa_id] = st_expect
+                        except Exception:
+                            pass
                     return {"status": "list_sent", "message_id": message_id}
 
                 if topic == "hair":
@@ -605,6 +637,14 @@ async def run_treatment_buttons_flow(
                         })
                     except Exception:
                         pass
+                    if resp_hair.status_code == 200:
+                        try:
+                            from controllers.web_socket import appointment_state as _appt_state  # type: ignore
+                            st_expect = _appt_state.get(wa_id) or {}
+                            st_expect["treatment_expect_interactive"] = "hair_treat_flow"
+                            _appt_state[wa_id] = st_expect
+                        except Exception:
+                            pass
                     return {"status": "hair_template_sent", "message_id": message_id}
 
                 if topic == "body":
@@ -619,6 +659,14 @@ async def run_treatment_buttons_flow(
                         })
                     except Exception:
                         pass
+                    if resp_body.status_code == 200:
+                        try:
+                            from controllers.web_socket import appointment_state as _appt_state  # type: ignore
+                            st_expect = _appt_state.get(wa_id) or {}
+                            st_expect["treatment_expect_interactive"] = "body_treat_flow"
+                            _appt_state[wa_id] = st_expect
+                        except Exception:
+                            pass
                     return {"status": "body_template_sent", "message_id": message_id}
         except Exception:
             pass
@@ -807,6 +855,13 @@ async def run_treatment_buttons_flow(
                     },
                 }
                 requests.post(get_messages_url(phone_id3), headers=headers3, json=payload_buttons)
+                try:
+                    from controllers.web_socket import appointment_state as _appt_state  # type: ignore
+                    st_expect = _appt_state.get(wa_id) or {}
+                    st_expect["treatment_expect_interactive"] = "next_actions"
+                    _appt_state[wa_id] = st_expect
+                except Exception:
+                    pass
                 return {"status": "next_actions_sent", "message_id": message_id}
         except Exception:
             pass

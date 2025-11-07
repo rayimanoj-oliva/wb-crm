@@ -162,6 +162,13 @@ async def send_city_selection(db: Session, *, wa_id: str, phone_id_hint: str | N
                 })
             except Exception as e:
                 print(f"[lead_appointment_flow] WARNING - Database save or WebSocket broadcast failed: {e}")
+            try:
+                from controllers.web_socket import appointment_state as _appt_state  # type: ignore
+                st_expect = _appt_state.get(wa_id) or {}
+                st_expect["treatment_expect_interactive"] = "city_selection"
+                _appt_state[wa_id] = st_expect
+            except Exception:
+                pass
             # Arm Follow-Up 1 after this outbound prompt in case user stops here
             try:
                 import asyncio
@@ -259,6 +266,15 @@ async def handle_city_selection(
     Returns a status dict.
     """
     
+    # Clear interactive expectation since user responded
+    try:
+        from controllers.web_socket import appointment_state as _appt_state  # type: ignore
+        st_clear = _appt_state.get(wa_id) or {}
+        st_clear.pop("treatment_expect_interactive", None)
+        _appt_state[wa_id] = st_clear
+    except Exception:
+        pass
+
     # CRITICAL: Only handle city selection if this is actually a treatment flow
     # Skip if this is a lead appointment flow number to prevent overlap
     try:

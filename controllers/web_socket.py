@@ -806,6 +806,54 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 except Exception:
                     pass
 
+            # If treatment flow expects an interactive response, gently prompt the user
+            if not waiting_details:
+                try:
+                    st_expect = appointment_state.get(wa_id) or {}
+                    expect_marker = st_expect.get("treatment_expect_interactive")
+                    flow_ctx = st_expect.get("flow_context")
+                except Exception:
+                    st_expect = {}
+                    expect_marker = None
+                    flow_ctx = None
+
+                if expect_marker and flow_ctx == "treatment":
+                    phone_id_hint = st_expect.get("treatment_flow_phone_id")
+                    if not phone_id_hint:
+                        try:
+                            from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
+                            phone_id_hint = (list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0] if TREATMENT_FLOW_ALLOWED_PHONE_IDS else None)
+                        except Exception:
+                            phone_id_hint = None
+
+                    await send_message_to_waid(
+                        wa_id,
+                        "We didn't quite get that.\n\nPlease select an above option.",
+                        db,
+                        phone_id_hint=(str(phone_id_hint) if phone_id_hint else None),
+                    )
+
+                    # Broadcast the inbound text for agent visibility
+                    try:
+                        flow_context = "treatment" if is_treatment_flow_number else ("lead_appointment" if is_lead_appointment_number else "unknown")
+                        await manager.broadcast({
+                            "from": wa_id,
+                            "to": to_wa_id,
+                            "type": "text",
+                            "message": body_text,
+                            "timestamp": timestamp.isoformat(),
+                            "meta": {
+                                "flow": flow_context,
+                                "action": "customer_message",
+                                "flag": "interactive_prompt"
+                            }
+                        })
+                    except Exception:
+                        pass
+
+                    handled_text = True
+                    return {"status": "treatment_interactive_prompted", "message_id": message_id}
+
             # Always broadcast to WebSocket (even if already saved)
             if not handled_text:  # Only broadcast if not already handled by treatment flow
                 # Determine flow context for broadcast metadata

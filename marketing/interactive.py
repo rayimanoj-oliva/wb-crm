@@ -103,6 +103,8 @@ def send_mr_treatment(
             # If mr_treatment template contains concern buttons, mark them as sent
             # (Note: This assumes the template has buttons; adjust if template structure differs)
             st["concern_buttons_sent"] = True
+            # Flag that we're awaiting interaction from the template itself
+            st["treatment_expect_interactive"] = "mr_treatment_template"
             appointment_state[wa_id] = st
         except Exception:
             pass
@@ -165,6 +167,7 @@ def send_concern_buttons(
             from controllers.web_socket import appointment_state  # type: ignore
             st = appointment_state.get(wa_id) or {}
             st["concern_buttons_sent"] = True
+            st["treatment_expect_interactive"] = "concern_buttons"
             appointment_state[wa_id] = st
         except Exception:
             pass
@@ -220,6 +223,14 @@ def send_next_actions(
         },
     }
     resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
+    if resp.status_code == 200:
+        try:
+            from controllers.web_socket import appointment_state  # type: ignore
+            st = appointment_state.get(wa_id) or {}
+            st["treatment_expect_interactive"] = "next_actions"
+            appointment_state[wa_id] = st
+        except Exception:
+            pass
     try:
         awaitable = manager.broadcast({
             "from": _display_from_for_phone_id(phone_id),
