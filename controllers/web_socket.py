@@ -2210,12 +2210,22 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         # Don't validate as name/phone, let the normal flow handle it
                         pass
                     else:
-                        # Only validate if message looks like it might be name/phone input
-                        # Must be relatively short and not contain request words
-                        name_res = validate_human_name(body_text)
-                        phone_res = validate_indian_phone(body_text)
-                        name_ok = bool(name_res.get("valid")) and bool(name_res.get("name"))
-                        phone_ok = bool(phone_res.get("valid")) and bool(phone_res.get("phone"))
+                        # Only validate if we are explicitly awaiting details (set after confirm_no)
+                        # and the message looks like it might be name/phone input.
+                        try:
+                            st = appointment_state.get(wa_id) or {}
+                        except Exception:
+                            st = {}
+                        awaiting_details = bool(st.get("awaiting_name") or st.get("awaiting_phone"))
+                        if not awaiting_details:
+                            # Not in details collection mode; ignore free-text here
+                            pass
+                        else:
+                            # Must be relatively short and not contain request words
+                            name_res = validate_human_name(body_text)
+                            phone_res = validate_indian_phone(body_text)
+                            name_ok = bool(name_res.get("valid")) and bool(name_res.get("name"))
+                            phone_ok = bool(phone_res.get("valid")) and bool(phone_res.get("phone"))
                         if name_ok and phone_ok:
                             st["corrected_name"] = name_res.get("name").strip()
                             st["corrected_phone"] = phone_res.get("phone")
@@ -2252,7 +2262,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                 return {"status": "proceed_to_city_selection", "message_id": message_id, "result": result}
                             except Exception:
                                 return {"status": "failed_after_details", "message_id": message_id}
-                        elif name_ok and not phone_ok:
+                        elif awaiting_details and name_ok and not phone_ok:
                             # Only set awaiting_phone if the extracted name seems valid AND message is short (likely just a name)
                             # Don't trigger if message is long/conversational
                             if len(body_text.strip().split()) <= 5:
@@ -2264,7 +2274,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                 _pid_hint2 = str(_os.getenv("TREATMENT_FLOW_PHONE_ID") or _os.getenv("WELCOME_PHONE_ID") or _os.getenv("WHATSAPP_PHONE_ID", "859830643878412"))
                                 await send_message_to_waid(wa_id, f"Thanks {st['corrected_name']}! Now please share your number.", db, phone_id_hint=_pid_hint2)
                                 return {"status": "name_captured_awaiting_phone", "message_id": message_id}
-                        elif phone_ok and not name_ok:
+                        elif awaiting_details and phone_ok and not name_ok:
                             # Only set awaiting_name if the extracted phone seems valid AND message is short
                             if len(body_text.strip().split()) <= 5:
                                 st["corrected_phone"] = phone_res.get("phone")

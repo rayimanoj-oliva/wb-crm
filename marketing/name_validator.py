@@ -62,8 +62,28 @@ def _looks_like_human_name(name: str | None) -> bool:
 
     # Common placeholders/brand words blacklist
     blacklist = {
-        "test", "testing", "asdf", "qwerty", "user", "customer", "name",
-        "unknown", "oliva", "clinic", "abc", "demo", "sample"
+        # Generic placeholders / test data
+    "test", "testing", "demo", "sample", "name", "customer", "client",
+    "user", "visitor", "guest", "unknown", "none", "na", "n/a", "abc",
+    "abcd", "qwerty", "asdf", "asdfgh", "asdfghjkl",
+
+    # Random greetings or filler text
+    "hi", "hello", "hey", "hii", "heyy", "hola", "yo", "sup",
+    "good", "morning", "afternoon", "evening", "night",
+
+    # Polite replies (not names)
+    "ok", "okay", "okie", "kk", "k", "thanks", "thank", "thankyou",
+    "thank you", "tq", "thx", "ty", "tnx",
+
+    # Bot / spammy words
+    "bot", "robot", "ai", "admin", "support", "help", "testuser",
+    "anonymous", "system", "automation", "sampledata",
+
+    # Brand or generic business names to avoid false “person” classification
+    "oliva", "clinic", "company", "organization", "firm", "office",
+
+    # Random noise patterns
+    "xyz", "xyzabc", "abcdxyz", "zzz", "dummy", "null", "blank", "noneofthese"
     }
     if lowered in blacklist:
         return False
