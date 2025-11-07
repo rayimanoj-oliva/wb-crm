@@ -454,6 +454,35 @@ async def whatsapp_auto_welcome_webhook(request: Request, db: Session = Depends(
 
         # If this is the prefill message OR a simple greeting, send mr_welcome and return
         if (normalized_body in allowed_variants) or greeting_match:
+            # Allow marketing web_socket handler to own greetings on treatment numbers to avoid duplicates
+            try:
+                from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS, WHATSAPP_NUMBERS  # type: ignore
+                phone_id_meta_str = str(phone_id_meta) if phone_id_meta else None
+                should_defer_to_marketing = False
+                if phone_id_meta_str and phone_id_meta_str in TREATMENT_FLOW_ALLOWED_PHONE_IDS:
+                    should_defer_to_marketing = True
+                else:
+                    # fallback: compare last-10 digits of display number with configured names (which hold numbers)
+                    import re as _re_digits
+                    disp_digits = _re_digits.sub(r"\D", "", (value.get("metadata", {}) or {}).get("display_phone_number") or (to_wa_id or ""))
+                    disp_last10 = disp_digits[-10:] if len(disp_digits) >= 10 else disp_digits
+                    if disp_last10:
+                        for pid, cfg in (WHATSAPP_NUMBERS or {}).items():
+                            if pid in TREATMENT_FLOW_ALLOWED_PHONE_IDS:
+                                name_digits = _re_digits.sub(r"\D", "", (cfg.get("name") or ""))
+                                name_last10 = name_digits[-10:] if len(name_digits) >= 10 else name_digits
+                                if name_last10 and name_last10 == disp_last10:
+                                    should_defer_to_marketing = True
+                                    break
+
+                if should_defer_to_marketing:
+                    try:
+                        print("[auto_webhook] Greeting handled by marketing handler; skipping duplicate template")
+                    except Exception:
+                        pass
+                    return {"status": "skipped", "reason": "marketing_handler_greeting"}
+            except Exception:
+                pass
             # Idempotency: skip if treatment flow already sent welcome
             try:
                 from controllers.web_socket import appointment_state  # type: ignore

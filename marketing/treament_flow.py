@@ -71,6 +71,27 @@ async def run_treament_flow(
         prefill_detected = any(re.match(rx, normalized_body, flags=re.IGNORECASE) for rx in prefill_regexes)
         
         if prefill_detected:
+            # If mr_welcome was already dispatched very recently by the dedicated number handler, skip to avoid duplicates
+            skip_prefill_restart = False
+            try:
+                from controllers.web_socket import appointment_state  # type: ignore
+                from datetime import datetime as _dt, timedelta as _td
+                st_existing = appointment_state.get(wa_id) or {}
+                ts_str_existing = st_existing.get("mr_welcome_sending_ts")
+                ts_obj_existing = _dt.fromisoformat(ts_str_existing) if isinstance(ts_str_existing, str) else None
+                recently_sent = bool(ts_obj_existing and (_dt.utcnow() - ts_obj_existing) < _td(seconds=30))
+                if bool(st_existing.get("mr_welcome_sent")) or recently_sent:
+                    skip_prefill_restart = True
+            except Exception:
+                skip_prefill_restart = False
+
+            if skip_prefill_restart:
+                try:
+                    print(f"[treatment_flow] DEBUG - Prefill skipped because mr_welcome already handled (wa_id={wa_id})")
+                except Exception:
+                    pass
+                return {"status": "skipped", "message_id": message_id, "reason": "mr_welcome_already_sent"}
+
             # Clear stale state to allow flow restart when customer sends a starting point message
             try:
                 from controllers.state.memory import clear_flow_state_for_restart
