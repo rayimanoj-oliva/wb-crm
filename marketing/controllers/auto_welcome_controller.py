@@ -629,15 +629,6 @@ async def whatsapp_auto_welcome_webhook(request: Request, db: Session = Depends(
                             pass
                     except Exception as _e_btn:
                         print(f"[auto_webhook] ERROR - confirm buttons post failed: {_e_btn}")
-                    # Track pending interactive so free-text can trigger resend
-                    try:
-                        from controllers.web_socket import appointment_state  # type: ignore
-                        stp = appointment_state.get(wa_id) or {}
-                        from datetime import datetime as _dt
-                        stp["pending_interactive"] = {"kind": "confirm_contact", "ts": _dt.utcnow().isoformat(), "resend_done": False}
-                        appointment_state[wa_id] = stp
-                    except Exception:
-                        pass
                     # Broadcast Yes/No buttons to websocket UI
                     try:
                         await manager.broadcast({

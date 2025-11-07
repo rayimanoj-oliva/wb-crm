@@ -103,9 +103,6 @@ def send_mr_treatment(
             # If mr_treatment template contains concern buttons, mark them as sent
             # (Note: This assumes the template has buttons; adjust if template structure differs)
             st["concern_buttons_sent"] = True
-            # Track pending template for one-time resend on free text
-            from datetime import datetime as _dt
-            st["pending_template"] = {"name": "mr_treatment", "ts": _dt.utcnow().isoformat(), "resend_done": False}
             appointment_state[wa_id] = st
         except Exception:
             pass
@@ -168,9 +165,6 @@ def send_concern_buttons(
             from controllers.web_socket import appointment_state  # type: ignore
             st = appointment_state.get(wa_id) or {}
             st["concern_buttons_sent"] = True
-            # Remember pending interactive so we can resend on free text
-            from datetime import datetime as _dt
-            st["pending_interactive"] = {"kind": "treatment_concerns", "ts": _dt.utcnow().isoformat(), "resend_done": False}
             appointment_state[wa_id] = st
         except Exception:
             pass
@@ -226,15 +220,6 @@ def send_next_actions(
         },
     }
     resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
-    if resp.status_code == 200:
-        try:
-            from controllers.web_socket import appointment_state  # type: ignore
-            st = appointment_state.get(wa_id) or {}
-            from datetime import datetime as _dt
-            st["pending_interactive"] = {"kind": "next_actions", "ts": _dt.utcnow().isoformat(), "resend_done": False}
-            appointment_state[wa_id] = st
-        except Exception:
-            pass
     try:
         awaitable = manager.broadcast({
             "from": _display_from_for_phone_id(phone_id),
@@ -257,5 +242,4 @@ def send_next_actions(
     except Exception:
         pass
     return {"success": resp.status_code == 200, "status_code": resp.status_code}
-
 
