@@ -149,6 +149,20 @@ async def trigger_zoho_lead_creation(
             clinic = appointment_details.get("selected_clinic", "Unknown") if appointment_details else "Unknown"
             appointment_date = appointment_details.get("custom_date", "Not specified") if appointment_details else "Not specified"
         
+        # Check if this is a treatment flow context
+        is_treatment_flow = False
+        try:
+            from controllers.web_socket import appointment_state
+            appt_state = appointment_state.get(wa_id, {})
+            is_treatment_flow = (
+                bool(appt_state.get("from_treatment_flow")) or 
+                appt_state.get("flow_context") == "treatment" or
+                bool(appt_state.get("treatment_flow_phone_id"))
+            )
+            print(f"[lead_appointment_flow] DEBUG - Is treatment flow: {is_treatment_flow}")
+        except Exception as e:
+            print(f"[lead_appointment_flow] WARNING - Could not check treatment flow context: {e}")
+        
         # Create lead description
         description_parts = [
             f"Lead from WhatsApp Lead-to-Appointment Flow",
@@ -181,6 +195,14 @@ async def trigger_zoho_lead_creation(
             first_name_val = ""
             last_name_val = "Customer"
 
+        # Set Lead Source and Sub Source based on flow type
+        if is_treatment_flow:
+            lead_source_val = "Business Listing"
+            sub_source_val = "WhatsApp"
+        else:
+            lead_source_val = "WhatsApp Lead-to-Appointment Flow"
+            sub_source_val = None
+
         # Simplified lead data without custom fields to avoid API errors
         lead_data = {
             "data": [
@@ -189,7 +211,7 @@ async def trigger_zoho_lead_creation(
                     "Last_Name": last_name_val,
                     "Phone": phone_number,
                     "Email": getattr(customer, 'email', '') or '',
-                    "Lead_Source": "WhatsApp Lead-to-Appointment Flow",
+                    "Lead_Source": lead_source_val,
                     "Lead_Status": lead_status,
                     "Company": "Oliva Skin & Hair Clinic",
                     "Description": " | ".join(description_parts),
@@ -197,6 +219,10 @@ async def trigger_zoho_lead_creation(
                 }
             ]
         }
+        
+        # Add Sub_Source only if it's set (for treatment flow)
+        if sub_source_val:
+            lead_data["data"][0]["Sub_Source"] = sub_source_val
         
         print(f"[lead_appointment_flow] DEBUG - Lead data prepared: {lead_data}")
         

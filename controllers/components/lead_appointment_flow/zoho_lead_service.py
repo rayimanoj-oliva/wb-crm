@@ -552,6 +552,21 @@ async def create_lead_for_appointment(
             flow_type = (appointment_details or {}).get("flow_type")
         except Exception:
             flow_type = None
+        
+        # If flow_type is not set in appointment_details, check appointment_state
+        if not flow_type:
+            try:
+                from controllers.web_socket import appointment_state
+                appt_state = appointment_state.get(wa_id, {})
+                if (
+                    bool(appt_state.get("from_treatment_flow")) or 
+                    appt_state.get("flow_context") == "treatment" or
+                    bool(appt_state.get("treatment_flow_phone_id"))
+                ):
+                    flow_type = "treatment_flow"
+                    print(f"[LEAD APPOINTMENT FLOW] Detected treatment flow from appointment_state")
+            except Exception as e:
+                print(f"[LEAD APPOINTMENT FLOW] Could not check appointment_state: {e}")
 
         if flow_type == "treatment_flow":
             # Treatment flow
