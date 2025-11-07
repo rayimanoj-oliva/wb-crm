@@ -63,7 +63,10 @@ async def send_follow_up2(db: Session, *, wa_id: str, from_wa_id: str = "9177299
 
 
 async def schedule_follow_up2_after_follow_up1(wa_id: str, fu1_sent_at: datetime) -> None:
-    """Wait 30 minutes after Follow-Up 1, then send Follow-Up 2 if no reply since FU1."""
+    """Wait FOLLOW_UP_2_DELAY_MINUTES after Follow-Up 1, then send Follow-Up 2 if no reply since FU1.
+    
+    If this is part of the "Not Now" follow-up sequence, create the lead after sending Follow-Up 2.
+    """
     try:
         await asyncio.sleep(FOLLOW_UP_2_DELAY_MINUTES * 60)
 
@@ -71,11 +74,16 @@ async def schedule_follow_up2_after_follow_up1(wa_id: str, fu1_sent_at: datetime
         try:
             db = SessionLocal()
 
-            # Ensure user remains in lead appointment flow
+            # Check if user is in "Not Now" follow-up sequence
+            is_not_now_sequence = False
             try:
                 from controllers.web_socket import lead_appointment_state  # type: ignore
                 state = (lead_appointment_state.get(wa_id) or {})
-                if state.get("flow_context") != "lead_appointment":
+                is_not_now_sequence = state.get("not_now_followup_sequence", False)
+                
+                # For "Not Now" sequence, we still need to check the flag
+                # For regular flow, check flow_context
+                if not is_not_now_sequence and state.get("flow_context") != "lead_appointment":
                     return
             except Exception:
                 return
@@ -88,7 +96,38 @@ async def schedule_follow_up2_after_follow_up1(wa_id: str, fu1_sent_at: datetime
             if cust.last_interaction_time and cust.last_interaction_time > fu1_sent_at:
                 return
 
+            # Send Follow-Up 2
             await send_follow_up2(db, wa_id=wa_id)
+
+            # If this is part of "Not Now" follow-up sequence, create the lead after sending Follow-Up 2
+            if is_not_now_sequence:
+                try:
+                    from .zoho_lead_service import handle_termination_event
+                    appointment_details = {}
+                    try:
+                        from controllers.web_socket import lead_appointment_state  # type: ignore
+                        appointment_details = lead_appointment_state.get(wa_id, {})
+                    except Exception:
+                        pass
+                    
+                    await handle_termination_event(
+                        db=db,
+                        wa_id=wa_id,
+                        customer=cust,
+                        termination_reason="not_right_now",
+                        appointment_details=appointment_details
+                    )
+                    print(f"[lead_appointment_flow] DEBUG - Lead created after Follow-Up 2 in 'Not Now' sequence")
+                    
+                    # Clear the "Not Now" follow-up sequence flag
+                    try:
+                        from controllers.web_socket import lead_appointment_state  # type: ignore
+                        if wa_id in lead_appointment_state:
+                            lead_appointment_state[wa_id].pop("not_now_followup_sequence", None)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    print(f"[lead_appointment_flow] WARNING - Could not create lead after Follow-Up 2: {e}")
 
         finally:
             if db:

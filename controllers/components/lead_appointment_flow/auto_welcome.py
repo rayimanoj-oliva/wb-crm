@@ -151,10 +151,12 @@ async def handle_welcome_response(
             if wa_id not in lead_appointment_state:
                 lead_appointment_state[wa_id] = {}
             lead_appointment_state[wa_id]["flow_context"] = "lead_appointment"
+            # Clear "Not Now" follow-up sequence flag since user wants to book now
+            lead_appointment_state[wa_id].pop("not_now_followup_sequence", None)
             # Set default Zoho fields for lead appointment flow
             lead_appointment_state[wa_id]["lead_source"] = "Facebook"
             lead_appointment_state[wa_id]["language"] = "English"
-            print(f"[lead_appointment_flow] DEBUG - Initialized lead appointment state for {wa_id}")
+            print(f"[lead_appointment_flow] DEBUG - Initialized lead appointment state for {wa_id}, cleared 'Not Now' follow-up sequence")
         except Exception as e:
             print(f"[lead_appointment_flow] WARNING - Could not initialize lead appointment state: {e}")
         
@@ -236,19 +238,26 @@ async def send_not_now_followup(db: Session, *, wa_id: str, customer: Any) -> Di
                     }
                 })
                 
-                # Create a Zoho lead immediately with current details and NO_CALLBACK status
+                # Mark that we're in "Not Now" follow-up sequence
                 try:
-                    from .zoho_lead_service import handle_termination_event
-                    await handle_termination_event(
-                        db=db,
-                        wa_id=wa_id,
-                        customer=customer,
-                        termination_reason="not_right_now",
-                        appointment_details={}
-                    )
-                    print(f"[lead_appointment_flow] DEBUG - Lead created on 'Not Now' click (template path)")
+                    from controllers.web_socket import lead_appointment_state
+                    if wa_id not in lead_appointment_state:
+                        lead_appointment_state[wa_id] = {}
+                    lead_appointment_state[wa_id]["not_now_followup_sequence"] = True
+                    lead_appointment_state[wa_id]["flow_context"] = "lead_appointment"
+                    print(f"[lead_appointment_flow] DEBUG - Marked 'Not Now' follow-up sequence for {wa_id}")
                 except Exception as e:
-                    print(f"[lead_appointment_flow] WARNING - Could not create lead on 'Not Now': {e}")
+                    print(f"[lead_appointment_flow] WARNING - Could not mark 'Not Now' follow-up sequence: {e}")
+                
+                # Schedule Follow-Up 1 after sending "Not Now" message
+                try:
+                    import asyncio
+                    from .follow_up1 import schedule_follow_up1_after_not_now
+                    sent_at = datetime.now()
+                    asyncio.create_task(schedule_follow_up1_after_not_now(wa_id, sent_at))
+                    print(f"[lead_appointment_flow] DEBUG - Scheduled Follow-Up 1 after 'Not Now' message")
+                except Exception as e:
+                    print(f"[lead_appointment_flow] WARNING - Could not schedule Follow-Up 1: {e}")
             except Exception as e:
                 print(f"[lead_appointment_flow] WARNING - Database save or WebSocket broadcast failed: {e}")
             

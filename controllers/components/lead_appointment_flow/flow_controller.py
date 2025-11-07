@@ -302,6 +302,15 @@ async def handle_interactive_response(
                 pass
             
             # User tapped Yes in Follow-Up 1 → re-trigger auto-welcome template and re-schedule FU1
+            # Clear "Not Now" follow-up sequence flag since user is engaging again
+            try:
+                from controllers.web_socket import lead_appointment_state
+                if wa_id in lead_appointment_state:
+                    lead_appointment_state[wa_id].pop("not_now_followup_sequence", None)
+                    print(f"[lead_appointment_flow] DEBUG - Cleared 'Not Now' follow-up sequence for {wa_id} after followup_yes")
+            except Exception:
+                pass
+            
             from .auto_welcome import send_auto_welcome_message
             result = await send_auto_welcome_message(db, wa_id=wa_id)
             try:

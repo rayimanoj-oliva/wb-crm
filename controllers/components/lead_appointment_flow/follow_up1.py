@@ -126,3 +126,58 @@ async def schedule_follow_up1_after_welcome(wa_id: str, sent_at: datetime) -> No
         return
 
 
+async def schedule_follow_up1_after_not_now(wa_id: str, sent_at: datetime) -> None:
+    """Wait FOLLOW_UP_1_DELAY_MINUTES after 'Not Now' message, then send Follow-Up 1.
+
+    This is specifically for the 'Not Now' follow-up sequence.
+    After sending Follow-Up 1, it will schedule Follow-Up 2, which will then create the lead.
+    """
+    try:
+        await asyncio.sleep(FOLLOW_UP_1_DELAY_MINUTES * 60)
+
+        # Open a fresh DB session inside the scheduled task
+        db: Optional[Session] = None
+        try:
+            db = SessionLocal()
+
+            # Ensure user is still in "Not Now" follow-up sequence
+            try:
+                from controllers.web_socket import lead_appointment_state  # type: ignore
+                state = (lead_appointment_state.get(wa_id) or {})
+                if not state.get("not_now_followup_sequence"):
+                    return
+            except Exception:
+                # If state can't be checked, be conservative and skip
+                return
+
+            cust = customer_service.get_customer_record_by_wa_id(db, wa_id)
+            if not cust:
+                return
+
+            # If user interacted after "Not Now" message, skip sending follow-up
+            if cust.last_interaction_time and cust.last_interaction_time > sent_at:
+                return
+
+            # Send Follow-Up 1 now
+            await send_follow_up1(db, wa_id=wa_id)
+
+            # Chain Follow-Up 2 scheduling (after FU1 if still no reply)
+            # Follow-Up 2 will create the lead after sending
+            try:
+                from .follow_up2 import schedule_follow_up2_after_follow_up1
+                fu1_sent_at = datetime.utcnow()
+                asyncio.create_task(schedule_follow_up2_after_follow_up1(wa_id, fu1_sent_at))
+            except Exception:
+                pass
+
+        finally:
+            if db:
+                try:
+                    db.close()
+                except Exception:
+                    pass
+    except Exception:
+        # Swallow exceptions to avoid crashing background task
+        return
+
+
