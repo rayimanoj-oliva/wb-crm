@@ -14,7 +14,7 @@ from schemas.message_schema import MessageCreate
 from config.constants import get_messages_url
 
 
-FOLLOW_UP_2_DELAY_MINUTES = 3
+FOLLOW_UP_2_DELAY_MINUTES = 30
 FOLLOW_UP_2_TEXT = (
     "No problem! You can reach out anytime to schedule your appointment.\n\n"
     "✅ 8 lakh+ clients have trusted Oliva & experienced visible transformation\n\n"

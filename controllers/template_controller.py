@@ -24,8 +24,11 @@ def create_template(template: TemplateStructure, db: Session = Depends(get_db)):
     try:
         response = send_template_to_facebook(template.root, db)
         return {"status": "success", "facebook_response": response}
+    except HTTPException:
+        # Re-raise HTTPException to preserve status code and detail
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 @router.delete("/")
 def delete_template(template_name: str, db: Session = Depends(get_db)):

@@ -102,7 +102,18 @@ def send_template_to_facebook(payload: Dict[str, Any], db: Session) -> Dict[str,
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
     response = requests.post(TEMPLATE_API_URL, json=payload, headers=headers)
-    response.raise_for_status()
+    
+    # Better error handling to capture Facebook's actual error message
+    if response.status_code != 200:
+        try:
+            error_detail = response.json()
+        except Exception:
+            error_detail = {"error": response.text or f"HTTP {response.status_code}"}
+        raise HTTPException(
+            status_code=response.status_code,
+            detail=f"Facebook API Error: {error_detail}"
+        )
+    
     result = response.json()
 
     # Persist to DB as well
