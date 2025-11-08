@@ -745,7 +745,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 try:
                     from services.followup_service import mark_customer_replied as _mark_replied
                     from models.models import Customer
-                    from datetime import datetime as dt, timedelta
+                    # datetime and timedelta are already imported at module level
                     
                     # Refresh customer object to get latest state
                     db.refresh(customer)
@@ -807,17 +807,67 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     pass
 
             # If treatment flow expects an interactive response, gently prompt the user
-            if not waiting_details:
+            # BUT: Only send error AFTER buttons are sent (contact_confirm_sent), not when template is first sent
+            # AND: Only send error for text messages, not for button clicks (interactive messages)
+            # Skip error check entirely if this message might trigger welcome flow (to prevent race conditions)
+            if not waiting_details and message_type == "text":
                 try:
                     st_expect = appointment_state.get(wa_id) or {}
                     expect_marker = st_expect.get("treatment_expect_interactive")
                     flow_ctx = st_expect.get("flow_context")
+                    contact_confirm_sent = bool(st_expect.get("contact_confirm_sent"))
+                    mr_welcome_sent = bool(st_expect.get("mr_welcome_sent"))
+                    # Store buttons_just_sent value BEFORE clearing it
+                    buttons_just_sent = bool(st_expect.get("buttons_just_sent"))
+                    # Check if buttons were just sent (within last 3 seconds) using timestamp for more reliable check
+                    buttons_sent_ts = st_expect.get("buttons_sent_timestamp")
+                    buttons_recently_sent = False
+                    if buttons_sent_ts:
+                        try:
+                            # datetime and timedelta are already imported at module level
+                            ts_obj = datetime.fromisoformat(buttons_sent_ts) if isinstance(buttons_sent_ts, str) else None
+                            if ts_obj:
+                                time_diff = datetime.utcnow() - ts_obj
+                                if time_diff < timedelta(seconds=3):
+                                    buttons_recently_sent = True
+                        except Exception:
+                            pass
+                    # Check if welcome template was just sent (within last few seconds) - if so, skip error
+                    welcome_sending_ts = st_expect.get("mr_welcome_sending_ts")
+                    is_welcome_just_sent = False
+                    if welcome_sending_ts:
+                        try:
+                            # datetime and timedelta are already imported at module level
+                            ts_obj = datetime.fromisoformat(welcome_sending_ts) if isinstance(welcome_sending_ts, str) else None
+                            if ts_obj and (datetime.utcnow() - ts_obj) < timedelta(seconds=5):
+                                is_welcome_just_sent = True
+                        except Exception:
+                            pass
+                    # Clear the buttons_just_sent flag after storing value to allow error on subsequent messages
+                    if buttons_just_sent:
+                        try:
+                            st_expect.pop("buttons_just_sent", None)
+                            appointment_state[wa_id] = st_expect
+                        except Exception:
+                            pass
                 except Exception:
                     st_expect = {}
                     expect_marker = None
                     flow_ctx = None
+                    contact_confirm_sent = False
+                    mr_welcome_sent = False
+                    buttons_just_sent = False
+                    is_welcome_just_sent = False
 
-                if expect_marker and flow_ctx == "treatment":
+                # Only send error message if:
+                # 1. Buttons were already sent (contact_confirm_sent)
+                # 2. Welcome template was already sent (mr_welcome_sent) - ensures it's not the initial template send
+                # 3. This is a text message (not a button click)
+                # 4. Buttons were NOT just sent (prevents error with initial template) - check both flag and timestamp
+                # 5. Welcome template was NOT just sent (prevents error during initial template send)
+                # Note: buttons_just_sent value is stored before clearing, so this check uses the original value
+                # Use timestamp check (buttons_recently_sent) as primary check, with flag as backup
+                if expect_marker and flow_ctx == "treatment" and contact_confirm_sent and mr_welcome_sent and not buttons_recently_sent and not buttons_just_sent and not is_welcome_just_sent:
                     phone_id_hint = st_expect.get("treatment_flow_phone_id")
                     if not phone_id_hint:
                         try:
@@ -1782,6 +1832,21 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                 },
                             }
                             requests.post(get_messages_url(str(phone_id_fu)), headers=headers_btn, json=payload_btn)
+                            
+                            # Set treatment_expect_interactive flag after buttons are sent
+                            # This ensures error message is sent only when user types free text AFTER buttons are shown
+                            # Also set a flag to indicate buttons were just sent, to prevent error in same request
+                            # Use timestamp to track when buttons were sent (more reliable than boolean flag)
+                            try:
+                                # datetime is already imported at module level
+                                st_btn = appointment_state.get(wa_id) or {}
+                                st_btn["treatment_expect_interactive"] = "contact_confirmation"
+                                st_btn["flow_context"] = "treatment"
+                                st_btn["buttons_just_sent"] = True  # Flag to prevent error in same request
+                                st_btn["buttons_sent_timestamp"] = datetime.utcnow().isoformat()  # Timestamp for more reliable check
+                                appointment_state[wa_id] = st_btn
+                            except Exception:
+                                pass
                         return {"status": "followup_yes_flow_started", "message_id": message_id}
             except Exception:
                 pass
@@ -1861,6 +1926,14 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         # Check if this is from treatment flow
                         st = appointment_state.get(wa_id) or {}
                         from_treatment_flow = st.get("from_treatment_flow", False)
+                        
+                        # Clear treatment_expect_interactive flag when user clicks Yes/No button
+                        # This prevents error message from being sent for button clicks
+                        try:
+                            st.pop("treatment_expect_interactive", None)
+                            appointment_state[wa_id] = st
+                        except Exception:
+                            pass
                         
                         if (norm_btn_id in yes_ids or norm_btn_title in yes_ids):
                             if from_treatment_flow:
