@@ -651,7 +651,7 @@ async def create_lead_for_appointment(
                         mobile=phone_number,
                         city=city,
             location=(location if 'location' in locals() else None),
-                        lead_source="Business Listing",
+                        lead_source=lead_source_val,
                         company="Oliva Skin & Hair Clinic",
                         wa_id=wa_id,
                         customer_id=getattr(customer, 'id', None),
@@ -665,7 +665,7 @@ async def create_lead_for_appointment(
                         treatment_name=final_selected_concern,
                         zoho_mapped_concern=final_mapped_concern,
                         primary_concern=final_mapped_concern or final_selected_concern,
-                        sub_source="Chats"
+                        sub_source=sub_source_val
                     )
                     db.add(new_lead)
                     db.commit()
