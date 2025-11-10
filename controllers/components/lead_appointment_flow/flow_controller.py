@@ -284,7 +284,7 @@ async def handle_interactive_response(
         # Only an explicit Yes should trigger auto-call; any Not now/No must not
         yes_titles = {"yes", "yes, call me", "yes call me"}
         no_titles = {"not right now", "no", "no, keep details", "not now"}
-        if norm_id == "yes_callback" or norm_title in yes_titles:
+        if norm_id.startswith("yes_callback") or norm_title in yes_titles:
             return await handle_yes_callback(db, wa_id=wa_id, customer=customer)
         if norm_id.startswith("no_callback") or norm_title in no_titles or norm_id.startswith("not_now"):
             return await handle_no_callback_not_now(db, wa_id=wa_id, customer=customer)
