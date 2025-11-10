@@ -41,8 +41,7 @@ class ZohoLeadService:
         appointment_details: Optional[Dict[str, Any]] = None,
         sub_source: str = "Chats",
         unsubscribed_mode: Optional[str] = None,
-        converted: bool = False,
-        triggers: Optional[List[str]] = None
+        converted: bool = False
     ) -> Dict[str, Any]:
         """Prepare lead data according to Zoho CRM API structure"""
         
@@ -158,9 +157,9 @@ class ZohoLeadService:
                     "$converted": converted
                 }
             ],
-            "trigger": triggers if triggers is not None else [
+            "trigger": [
                 "approval",
-                "workflow",
+                "workflow", 
                 "blueprint"
             ]
         }
@@ -182,8 +181,7 @@ class ZohoLeadService:
         appointment_details: Optional[Dict[str, Any]] = None,
         sub_source: str = "Chats",
         unsubscribed_mode: Optional[str] = None,
-        converted: bool = False,
-        triggers: Optional[List[str]] = None
+        converted: bool = False
     ) -> Dict[str, Any]:
         """Create a lead in Zoho CRM"""
         
@@ -219,8 +217,7 @@ class ZohoLeadService:
                 appointment_details=appointment_details,
                 sub_source=sub_source,
                 unsubscribed_mode=unsubscribed_mode,
-                converted=converted,
-                triggers=triggers
+                converted=converted
             )
             
             print(f"📦 [ZOHO LEAD CREATION] Prepared lead data:")
@@ -330,8 +327,7 @@ async def create_lead_for_appointment(
     customer: Any,
     appointment_details: Optional[Dict[str, Any]] = None,
     lead_status: str = "PENDING",
-    appointment_preference: Optional[str] = None,
-    skip_workflows: bool = False
+    appointment_preference: Optional[str] = None
 ) -> Dict[str, Any]:
     """Create a lead in Zoho CRM for appointment booking flow.
     
@@ -614,7 +610,7 @@ async def create_lead_for_appointment(
                 **({"corrected_phone": appointment_details.get("corrected_phone")} if appointment_details.get("corrected_phone") else {}),
             },
             sub_source=sub_source_val,
-            triggers=None if not skip_workflows else []
+            
         )
         
         if result["success"]:
@@ -727,8 +723,7 @@ async def create_lead_for_dropoff(
             customer=customer,
             appointment_details=appointment_details,
             lead_status="NO_CALLBACK",
-            appointment_preference=f"Dropped off at: {dropoff_point}",
-            skip_workflows=True
+            appointment_preference=f"Dropped off at: {dropoff_point}"
         )
         
         # Clear session data
@@ -848,8 +843,7 @@ async def handle_termination_event(
             customer=customer,
             appointment_details=appointment_details,
             lead_status="NO_CALLBACK",
-            appointment_preference=f"Termination: {termination_reason}",
-            skip_workflows=True
+            appointment_preference=f"Termination: {termination_reason}"
         )
         
         if lead_result["success"]:
