@@ -14,7 +14,7 @@ from schemas.message_schema import MessageCreate
 from config.constants import get_messages_url
 
 
-FOLLOW_UP_2_DELAY_MINUTES = 30
+FOLLOW_UP_2_DELAY_MINUTES = 3
 FOLLOW_UP_2_TEXT = (
     "No problem! You can reach out anytime to schedule your appointment.\n\n"
     "✅ 8 lakh+ clients have trusted Oliva & experienced visible transformation\n\n"
@@ -109,7 +109,7 @@ async def schedule_follow_up2_after_follow_up1(wa_id: str, fu1_sent_at: datetime
                         appointment_details = lead_appointment_state.get(wa_id, {})
                     except Exception:
                         pass
-                    
+
                     await handle_termination_event(
                         db=db,
                         wa_id=wa_id,
@@ -118,7 +118,7 @@ async def schedule_follow_up2_after_follow_up1(wa_id: str, fu1_sent_at: datetime
                         appointment_details=appointment_details
                     )
                     print(f"[lead_appointment_flow] DEBUG - Lead created after Follow-Up 2 in 'Not Now' sequence")
-                    
+
                     # Clear the "Not Now" follow-up sequence flag
                     try:
                         from controllers.web_socket import lead_appointment_state  # type: ignore
@@ -128,6 +128,27 @@ async def schedule_follow_up2_after_follow_up1(wa_id: str, fu1_sent_at: datetime
                         pass
                 except Exception as e:
                     print(f"[lead_appointment_flow] WARNING - Could not create lead after Follow-Up 2: {e}")
+            else:
+                # Normal flow (not "Not Now" sequence): create a follow-up lead after FU2 with NO auto-dial
+                try:
+                    from .zoho_lead_service import handle_termination_event
+                    appointment_details = {}
+                    try:
+                        from controllers.web_socket import lead_appointment_state  # type: ignore
+                        appointment_details = lead_appointment_state.get(wa_id, {})
+                    except Exception:
+                        pass
+
+                    await handle_termination_event(
+                        db=db,
+                        wa_id=wa_id,
+                        customer=cust,
+                        termination_reason="no_reply_after_fu2",
+                        appointment_details=appointment_details
+                    )
+                    print(f"[lead_appointment_flow] DEBUG - Lead created after Follow-Up 2 (normal flow, no auto-dial)")
+                except Exception as e:
+                    print(f"[lead_appointment_flow] WARNING - Could not create lead after FU2 (normal flow): {e}")
 
         finally:
             if db:
