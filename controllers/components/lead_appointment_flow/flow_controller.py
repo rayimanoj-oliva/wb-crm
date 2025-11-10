@@ -266,6 +266,10 @@ async def handle_interactive_response(
         
         print(f"[lead_appointment_flow] DEBUG - Handling interactive response: {reply_id} - {reply_title}")
         print(f"[lead_appointment_flow] DEBUG - Reply ID analysis: starts_with_time={reply_id.startswith('time_')}, count_underscores={reply_id.count('_')}, split_length={len(reply_id.split('_'))}")
+
+        # Normalize for defensive routing (some providers occasionally swap IDs/titles)
+        norm_id = (reply_id or "").strip().lower()
+        norm_title = (reply_title or "").strip().lower()
         
         # Mark customer as replied for ANY interactive response in lead appointment flow
         # This ensures follow-up timer resets from user's last interaction
@@ -276,6 +280,15 @@ async def handle_interactive_response(
         except Exception as e:
             print(f"[lead_appointment_flow] WARNING - Could not mark customer replied for interactive: {e}")
         
+        # Route to appropriate handler based on reply content (defensive checks first)
+        # Only an explicit Yes should trigger auto-call; any Not now/No must not
+        yes_titles = {"yes", "yes, call me", "yes call me"}
+        no_titles = {"not right now", "no", "no, keep details", "not now"}
+        if norm_id == "yes_callback" or norm_title in yes_titles:
+            return await handle_yes_callback(db, wa_id=wa_id, customer=customer)
+        if norm_id.startswith("no_callback") or norm_title in no_titles or norm_id.startswith("not_now"):
+            return await handle_no_callback_not_now(db, wa_id=wa_id, customer=customer)
+
         # Route to appropriate handler based on reply_id
         if reply_id == "followup_yes":
             # Check if this is a treatment flow number - if so, skip and let marketing handler process it
