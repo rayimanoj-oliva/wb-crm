@@ -353,6 +353,30 @@ class InventoryLog(Base):
 
 
 # ------------------------------
+# Flow Logs (Treatment + Lead Appointment)
+# ------------------------------
+
+class FlowLog(Base):
+    __tablename__ = "flow_logs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    # Required columns for reporting
+    wa_id = Column(String(64), nullable=True, index=True)
+    name = Column(String(255), nullable=True)  # customer name if available
+    flow_type = Column(String(50), nullable=False)  # "treatment" | "lead_appointment"
+    step = Column(String(100), nullable=True)       # last step reached or "result"
+    status_code = Column(Integer, nullable=True)    # API status/result code
+    description = Column(Text, nullable=True)       # human-friendly description
+
+    # For sorting/filtering
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    def __repr__(self):
+        return f"<FlowLog(id={self.id}, wa_id='{self.wa_id}', flow_type='{self.flow_type}', step='{self.step}', status_code={self.status_code})>"
+
+
+# ------------------------------
 # Address Management
 # ------------------------------
 

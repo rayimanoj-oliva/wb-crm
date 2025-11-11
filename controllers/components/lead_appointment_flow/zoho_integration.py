@@ -135,6 +135,62 @@ async def trigger_zoho_lead_creation(
                 phone_number = f"91{phone_number}"
             print(f"[lead_appointment_flow] DEBUG - Using WA ID as phone: {phone_number}")
         
+        # De-duplication: Check local DB first, then Zoho
+        try:
+            from models.models import Lead as _Lead
+            from sqlalchemy import or_, func
+
+            def _digits_only(val: str | None) -> str:
+                try:
+                    import re as _re
+                    return _re.sub(r"\D", "", val or "")
+                except Exception:
+                    return val or ""
+
+            phone_digits = _digits_only(phone_number)
+            last10 = phone_digits[-10:] if len(phone_digits) >= 10 else phone_digits
+
+            phone_variants = {
+                phone_digits,
+                last10 if len(last10) == 10 else "",
+                f"+{phone_digits}" if phone_digits else "",
+                f"+91{last10}" if len(last10) == 10 else "",
+                f"91{last10}" if len(last10) == 10 else "",
+            }
+            phone_variants = {p for p in phone_variants if p}
+
+            criteria = [_Lead.wa_id == wa_id]
+            if phone_variants:
+                criteria.append(_Lead.phone.in_(phone_variants))
+                criteria.append(_Lead.mobile.in_(phone_variants))
+            customer_id_val = getattr(customer, "id", None)
+            if customer_id_val:
+                criteria.append(_Lead.customer_id == customer_id_val)
+
+            existing_any = (
+                db.query(_Lead)
+                .filter(or_(*criteria))
+                .order_by(_Lead.created_at.desc())
+                .first()
+            )
+            if existing_any:
+                print(f"✅ [zoho_integration] Duplicate prevented: existing lead found for {wa_id} (lead_id={existing_any.zoho_lead_id})")
+                return {"success": True, "duplicate": True, "lead_id": existing_any.zoho_lead_id}
+        except Exception as _e:
+            print(f"⚠️ [zoho_integration] De-dup check failed: {_e}")
+
+        # Zoho-side duplicate guard by phone
+        try:
+            from controllers.components.lead_appointment_flow.zoho_lead_service import zoho_lead_service
+            existing_zoho = zoho_lead_service.find_existing_lead_by_phone(phone_number)
+            if existing_zoho and isinstance(existing_zoho, dict):
+                lead_id_existing = str(existing_zoho.get("id") or existing_zoho.get("Id") or "")
+                if lead_id_existing:
+                    print(f"✅ [zoho_integration] Duplicate prevented via Zoho search by phone. lead_id={lead_id_existing}")
+                    return {"success": True, "duplicate": True, "lead_id": lead_id_existing}
+        except Exception as _e:
+            print(f"⚠️ [zoho_integration] Zoho-side duplicate check failed: {_e}")
+        
         # Get appointment details from session state
         try:
             from controllers.web_socket import lead_appointment_state

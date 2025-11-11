@@ -442,6 +442,21 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     print(f"[lead_appointment_flow] DEBUG - Skipping lead flow: not dedicated number (pid={phone_id_meta}, disp={display_num})")
                 else:
                     print(f"[lead_appointment_flow] DEBUG - ✅ Starting point detected on dedicated number! Running lead appointment flow...")
+                    # Log entry event
+                    try:
+                        from utils.flow_log import log_flow_event  # type: ignore
+                        from services.customer_service import get_customer_record_by_wa_id  # type: ignore
+                        _cust = get_customer_record_by_wa_id(db, wa_id)
+                        log_flow_event(
+                            db,
+                            flow_type="lead_appointment",
+                            step="entry",
+                            wa_id=wa_id,
+                            name=(getattr(_cust, "name", None) or ""),
+                            description="Lead appointment flow triggered",
+                        )
+                    except Exception:
+                        pass
                     # Clear stale state to allow flow restart
                     try:
                         from controllers.state.memory import clear_flow_state_for_restart
@@ -466,6 +481,22 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         )
                         lead_status = (lead_result or {}).get("status")
                         print(f"[lead_appointment_flow] DEBUG - Lead flow result: status={lead_status}, result={lead_result}")
+                        # Log outcome
+                        try:
+                            from utils.flow_log import log_flow_event  # type: ignore
+                            from services.customer_service import get_customer_record_by_wa_id  # type: ignore
+                            _cust = get_customer_record_by_wa_id(db, wa_id)
+                            log_flow_event(
+                                db,
+                                flow_type="lead_appointment",
+                                step="result",
+                                status_code=200 if lead_status not in {"skipped", "error"} else None,
+                                wa_id=wa_id,
+                                name=(getattr(_cust, "name", None) or ""),
+                                description=f"Lead flow result: {lead_status}",
+                            )
+                        except Exception:
+                            pass
                         
                         if lead_status not in {"skipped", "error"}:
                             print(f"[lead_appointment_flow] DEBUG - ✅ Lead flow handled successfully, returning result")

@@ -36,6 +36,19 @@ async def run_treament_flow(
     will act only when `message_type == "text"`.
     """
 
+    # Log entry event for observability
+    try:
+        from utils.flow_log import log_flow_event  # type: ignore
+        log_flow_event(
+            db,
+            flow_type="treatment",
+            step="entry",
+            wa_id=wa_id,
+            description="Treatment flow invoked",
+        )
+    except Exception:
+        pass
+
     handled_text = False
 
     # 1) Do NOT persist/broadcast inbound text here to avoid duplicates.
@@ -938,7 +951,9 @@ async def run_appointment_buttons_flow(
                     try:
                         from controllers.components.lead_appointment_flow.zoho_lead_service import create_lead_for_appointment
                         from services.customer_service import get_customer_record_by_wa_id
+                        from utils.flow_log import log_flow_event  # type: ignore
                         customer = get_customer_record_by_wa_id(db, wa_id)
+                        customer_name = getattr(customer, "name", None) or ""
                         selected_concern = (st or {}).get("selected_concern")
                         appointment_details = {
                             "flow_type": "treatment_flow",
@@ -946,7 +961,7 @@ async def run_appointment_buttons_flow(
                             "no_scheduling_required": True,
                             "selected_concern": selected_concern,
                         }
-                        await create_lead_for_appointment(
+                        lead_res = await create_lead_for_appointment(
                             db=db,
                             wa_id=wa_id,
                             customer=customer,
@@ -954,8 +969,39 @@ async def run_appointment_buttons_flow(
                             lead_status="PENDING",
                             appointment_preference="Treatment consultation - no specific appointment time requested",
                         )
+                        # Mark flow completion for summary API
+                        try:
+                            _desc = "Treatment flow completed: Lead created and thank-you sent"
+                            try:
+                                if isinstance(lead_res, dict) and lead_res.get("duplicate"):
+                                    _desc = f"Treatment flow completed: duplicate avoided (lead {lead_res.get('lead_id')})"
+                            except Exception:
+                                pass
+                            log_flow_event(
+                                db,
+                                flow_type="treatment",
+                                step="result",
+                                status_code=200,
+                                wa_id=wa_id,
+                                name=customer_name,
+                                description=_desc,
+                            )
+                        except Exception:
+                            pass
                     except Exception:
-                        pass
+                        # Log failure to help summary API
+                        try:
+                            log_flow_event(
+                                db,
+                                flow_type="treatment",
+                                step="result",
+                                status_code=500,
+                                wa_id=wa_id,
+                                name=customer_name if 'customer_name' in locals() else None,
+                                description="Treatment flow failed while creating lead",
+                            )
+                        except Exception:
+                            pass
                     # Thank you message - use the phone_id that triggered this flow
                     stored_phone_id = st.get("treatment_flow_phone_id")
                     phone_id_hint = stored_phone_id if stored_phone_id else None

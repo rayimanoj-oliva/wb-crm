@@ -10,7 +10,7 @@ import json
 import os
 
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from utils.zoho_auth import get_valid_access_token
 
 
@@ -166,6 +166,55 @@ class ZohoLeadService:
         }
         
         return lead_data
+
+    def _normalize_digits(self, phone: str) -> str:
+        try:
+            import re as _re
+            digits = _re.sub(r"\D", "", phone or "")
+            return digits[-10:] if len(digits) >= 10 else digits
+        except Exception:
+            return phone
+
+    def find_existing_lead_by_phone(self, phone: str) -> Optional[Dict[str, Any]]:
+        """Search Zoho for an existing lead by phone. Returns first match dict or None."""
+        try:
+            access_token = self._get_access_token()
+            headers = {"Authorization": f"Zoho-oauthtoken {access_token}"}
+            digits = self._normalize_digits(phone)
+            if not digits:
+                return None
+            candidates = {
+                digits,
+                digits[-10:] if len(digits) > 10 else digits,
+                f"91{digits[-10:]}" if len(digits[-10:]) == 10 else None,
+                f"+91{digits[-10:]}" if len(digits[-10:]) == 10 else None,
+            }
+            candidates = [c for c in candidates if c]
+
+            # Try search endpoint variants: direct phone search + criteria on multiple fields
+            search_fields = ["Phone", "Mobile", "Phone_1", "Phone_2", "Alternate_Phone"]
+
+            for ph in candidates:
+                # 1) direct phone param (Zoho matches Phone/Mobile)
+                url1 = f"{self.base_url}/search?phone={ph}"
+                r1 = requests.get(url1, headers=headers, timeout=10)
+                if r1.status_code == 200:
+                    data = r1.json() or {}
+                    if data.get("data"):
+                        return data["data"][0]
+
+                # 2) criteria search across multiple phone fields
+                for field in search_fields:
+                    crit = f"({field}:equals:{ph})"
+                    url2 = f"{self.base_url}/search?criteria={crit}"
+                    r2 = requests.get(url2, headers=headers, timeout=10)
+                    if r2.status_code == 200:
+                        data = r2.json() or {}
+                        if data.get("data"):
+                            return data["data"][0]
+            return None
+        except Exception:
+            return None
     
     def create_lead(
         self,
@@ -402,6 +451,86 @@ async def create_lead_for_appointment(
             f"user_confirmed => corrected_phone: {appointment_details.get('corrected_phone')}"
         )
         
+        # De-duplication: avoid creating another lead for same wa_id/phone/customer (no time limit)
+        try:
+            from models.models import Lead as _Lead
+
+            def _digits_only(val: str | None) -> str:
+                try:
+                    import re as _re
+                    return _re.sub(r"\D", "", val or "")
+                except Exception:
+                    return val or ""
+
+            phone_digits = _digits_only(phone_number)
+            last10 = phone_digits[-10:] if len(phone_digits) >= 10 else phone_digits
+
+            phone_variants = {
+                phone_digits,
+                last10 if len(last10) == 10 else "",
+                f"+{phone_digits}" if phone_digits else "",
+                f"+91{last10}" if len(last10) == 10 else "",
+                f"91{last10}" if len(last10) == 10 else "",
+            }
+            phone_variants = {p for p in phone_variants if p}
+
+            criteria = [_Lead.wa_id == wa_id]
+            if phone_variants:
+                criteria.append(_Lead.phone.in_(phone_variants))
+                criteria.append(_Lead.mobile.in_(phone_variants))
+            customer_id_val = getattr(customer, "id", None)
+            if customer_id_val:
+                criteria.append(_Lead.customer_id == customer_id_val)
+
+            existing_any = (
+                db.query(_Lead)
+                .filter(or_(*criteria))
+                .order_by(_Lead.created_at.desc())
+                .first()
+            )
+            if existing_any:
+                print(f"✅ [LEAD APPOINTMENT FLOW] Duplicate prevented: existing lead found for {wa_id} (lead_id={existing_any.zoho_lead_id})")
+                try:
+                    from utils.flow_log import log_flow_event  # type: ignore
+                    log_flow_event(
+                        db,
+                        flow_type="lead_appointment",
+                        step="result",
+                        status_code=200,
+                        wa_id=wa_id,
+                        name=getattr(customer, 'name', None) or '',
+                        description=f"Duplicate avoided: existing lead {existing_any.zoho_lead_id}",
+                    )
+                except Exception:
+                    pass
+                return {"success": True, "duplicate": True, "lead_id": existing_any.zoho_lead_id}
+        except Exception as _e:
+            print(f"⚠️ [LEAD APPOINTMENT FLOW] De-dup check failed: {_e}")
+
+        # Zoho-side duplicate guard by phone
+        try:
+            existing_zoho = zoho_lead_service.find_existing_lead_by_phone(phone_number)
+            if existing_zoho and isinstance(existing_zoho, dict):
+                lead_id_existing = str(existing_zoho.get("id") or existing_zoho.get("Id") or "")
+                if lead_id_existing:
+                    print(f"✅ [LEAD APPOINTMENT FLOW] Duplicate prevented via Zoho search by phone. lead_id={lead_id_existing}")
+                    try:
+                        from utils.flow_log import log_flow_event  # type: ignore
+                        log_flow_event(
+                            db,
+                            flow_type="lead_appointment",
+                            step="result",
+                            status_code=200,
+                            wa_id=wa_id,
+                            name=getattr(customer, 'name', None) or '',
+                            description=f"Duplicate avoided (Zoho search): existing lead {lead_id_existing}",
+                        )
+                    except Exception:
+                        pass
+                    return {"success": True, "duplicate": True, "lead_id": lead_id_existing}
+        except Exception as _e:
+            print(f"⚠️ [LEAD APPOINTMENT FLOW] Zoho-side duplicate check failed: {_e}")
+
         # Initialize variables for concern tracking
         selected_concern = None
         zoho_mapped_concern = None

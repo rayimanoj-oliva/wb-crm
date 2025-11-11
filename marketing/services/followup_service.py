@@ -5,6 +5,7 @@ import logging
 import sys
 
 from sqlalchemy.orm import Session
+from sqlalchemy import or_, func
 
 from models.models import Customer
 
@@ -17,6 +18,7 @@ from schemas.customer_schema import CustomerCreate
 from config.constants import get_messages_url
 from cache.redis_connection import get_redis_client
 from marketing.whatsapp_numbers import get_number_config, TREATMENT_FLOW_ALLOWED_PHONE_IDS, WHATSAPP_NUMBERS
+from utils.flow_log import log_flow_event  # flow logs
 
 # Create logger for this module
 logger = logging.getLogger("followup_service")
@@ -115,8 +117,8 @@ def _resolve_marketing_credentials(db: Session, *, wa_id: Optional[str] = None) 
     return token, str(phone_id_pref), display_from
 
 # Follow-up timing constants (in minutes)
-FOLLOW_UP_1_DELAY_MINUTES = 5  # Time before sending Follow-Up 1
-FOLLOW_UP_2_DELAY_MINUTES = 30  # Time after Follow-Up 1 before sending Follow-Up 2
+FOLLOW_UP_1_DELAY_MINUTES = 2  # Time before sending Follow-Up 1
+FOLLOW_UP_2_DELAY_MINUTES = 3  # Time after Follow-Up 1 before sending Follow-Up 2
 
 FOLLOW_UP_1_TEXT = (
     "👋 Hi! Just checking in — are we still connected?\n\n"
@@ -417,6 +419,21 @@ async def send_followup1_interactive(db: Session, *, wa_id: str, from_wa_id: str
     )
     message_service.create_message(db, message_data)
     logger.debug(f"Follow-Up 1 message persisted to database for customer_id: {customer.id}, wa_id: {wa_id}")
+
+    # Flow log: Follow-Up 1 dispatched (pending)
+    try:
+        cust_name = getattr(customer, "name", None) or ""
+        log_flow_event(
+            db,
+            flow_type="treatment",
+            step="follow_up_1_sent",
+            status_code=200,
+            wa_id=wa_id,
+            name=cust_name,
+            description="Follow-Up 1 interactive sent",
+        )
+    except Exception:
+        pass
     
     try:
         # Also mark Follow-Up 1 state on the customer and schedule Follow-Up 2 timer
@@ -483,6 +500,21 @@ async def send_followup2(db: Session, *, wa_id: str, from_wa_id: str = None):
     )
     message_service.create_message(db, message_data)
     logger.debug(f"Follow-Up 2 message persisted to database for customer_id: {customer.id}, wa_id: {wa_id}")
+
+    # Flow log: Follow-Up 2 dispatched
+    try:
+        cust_name = getattr(customer, "name", None) or ""
+        log_flow_event(
+            db,
+            flow_type="treatment",
+            step="follow_up_2_sent",
+            status_code=200,
+            wa_id=wa_id,
+            name=cust_name,
+            description="Follow-Up 2 text sent",
+        )
+    except Exception:
+        pass
     
     try:
         # Mark Follow-Up 2 state on the customer
@@ -496,6 +528,94 @@ async def send_followup2(db: Session, *, wa_id: str, from_wa_id: str = None):
     except Exception as e:
         logger.error(f"Failed to update customer state after Follow-Up 2 to {wa_id}: {e}")
         db.rollback()
-    
+
+    # After Follow-Up 2: if user still hasn't replied, push a lead only if none exists
+    try:
+        from models.models import Lead as _Lead
+
+        # Normalize wa_id to phone (digits only) and last 10 digits variant
+        def _digits_only(s: Optional[str]) -> str:
+            try:
+                import re as _re
+                return _re.sub(r"\D", "", s or "")
+            except Exception:
+                return s or ""
+
+        phone_digits = _digits_only(wa_id)
+        last10 = phone_digits[-10:] if len(phone_digits) >= 10 else phone_digits
+
+        # Re-fetch customer to get possible customer_id linkage
+        cust_for_link = db.query(Customer).filter(Customer.id == customer.id).first() if customer else None
+        cust_id = getattr(cust_for_link, "id", None)
+
+        # Robust duplicate check:
+        # - Same wa_id
+        # - Same phone exact (digits only stored) OR phone ends with last 10
+        # - Same customer_id linkage if present
+        existing = (
+            db.query(_Lead)
+            .filter(
+                or_(
+                    _Lead.wa_id == wa_id,
+                    _Lead.phone == phone_digits,
+                    func.right(_Lead.phone, 10) == last10,
+                    (_Lead.customer_id == cust_id) if cust_id else False,
+                )
+            )
+            .order_by(_Lead.created_at.desc())
+            .first()
+        )
+
+        if not existing:
+            # Double-check in Zoho by phone to avoid duplicates even if local DB missed a record
+            try:
+                from controllers.components.lead_appointment_flow.zoho_lead_service import zoho_lead_service  # type: ignore
+                zoho_hit = zoho_lead_service.find_existing_lead_by_phone(phone_digits or wa_id)
+            except Exception as e:
+                logger.warning(f"[followup_service] Zoho duplicate check failed for {wa_id}: {e}")
+                zoho_hit = None
+
+            if zoho_hit:
+                lead_id_existing = str((zoho_hit or {}).get("id") or (zoho_hit or {}).get("Id") or "")
+                logger.info(f"[followup_service] Zoho lead already exists for {wa_id} (lead_id={lead_id_existing}). Skipping dropoff lead creation.")
+                # Optional: log informational result
+                try:
+                    log_flow_event(
+                        db,
+                        flow_type="lead_appointment",
+                        step="result",
+                        status_code=200,
+                        wa_id=wa_id,
+                        name=getattr(customer, "name", None) or "",
+                        description=f"Duplicate avoided after Follow-Up 2: existing Zoho lead {lead_id_existing}",
+                    )
+                except Exception:
+                    pass
+                return message_id
+
+            logger.info(f"[followup_service] No existing lead for {wa_id} (DB+Zoho). Creating dropoff lead after Follow-Up 2.")
+            try:
+                from controllers.components.lead_appointment_flow.zoho_lead_service import create_lead_for_dropoff  # type: ignore
+                res = await create_lead_for_dropoff(db, wa_id=wa_id, customer=customer, dropoff_point="no_response_followup2")
+                # Log flow
+                try:
+                    log_flow_event(
+                        db,
+                        flow_type="lead_appointment",
+                        step="result",
+                        status_code=200 if (res or {}).get("success") else 500,
+                        wa_id=wa_id,
+                        name=getattr(customer, "name", None) or "",
+                        description="Lead created after Follow-Up 2 (no response)" if (res or {}).get("success") else f"Lead creation failed after Follow-Up 2: {(res or {}).get('error')}",
+                    )
+                except Exception:
+                    pass
+            except Exception as e:
+                logger.error(f"[followup_service] Dropoff lead creation failed for {wa_id}: {e}")
+        else:
+            logger.info(f"[followup_service] Existing lead found for {wa_id} (lead_id={existing.zoho_lead_id}). Skipping dropoff lead creation.")
+    except Exception as e:
+        logger.error(f"[followup_service] Post-FU2 lead check failed for {wa_id}: {e}")
+
     return message_id
 
