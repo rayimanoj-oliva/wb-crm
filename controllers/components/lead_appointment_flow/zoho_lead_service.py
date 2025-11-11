@@ -451,9 +451,10 @@ async def create_lead_for_appointment(
             f"user_confirmed => corrected_phone: {appointment_details.get('corrected_phone')}"
         )
         
-        # De-duplication: avoid creating another lead for same wa_id/phone/customer (no time limit)
+        # De-duplication: avoid creating another lead for same wa_id/phone/customer within last 24 hours
         try:
             from models.models import Lead as _Lead
+            from datetime import datetime as _dt, timedelta as _td
 
             def _digits_only(val: str | None) -> str:
                 try:
@@ -474,6 +475,9 @@ async def create_lead_for_appointment(
             }
             phone_variants = {p for p in phone_variants if p}
 
+            # Only check for duplicates within last 24 hours
+            window_start = _dt.utcnow() - _td(hours=24)
+
             criteria = [_Lead.wa_id == wa_id]
             if phone_variants:
                 criteria.append(_Lead.phone.in_(phone_variants))
@@ -485,6 +489,7 @@ async def create_lead_for_appointment(
             existing_any = (
                 db.query(_Lead)
                 .filter(or_(*criteria))
+                .filter(_Lead.created_at >= window_start)
                 .order_by(_Lead.created_at.desc())
                 .first()
             )

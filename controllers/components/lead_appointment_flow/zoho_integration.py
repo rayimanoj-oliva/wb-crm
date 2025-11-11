@@ -135,10 +135,11 @@ async def trigger_zoho_lead_creation(
                 phone_number = f"91{phone_number}"
             print(f"[lead_appointment_flow] DEBUG - Using WA ID as phone: {phone_number}")
         
-        # De-duplication: Check local DB first, then Zoho
+        # De-duplication: Check local DB first (within last 24 hours), then Zoho
         try:
             from models.models import Lead as _Lead
             from sqlalchemy import or_, func
+            from datetime import datetime as _dt, timedelta as _td
 
             def _digits_only(val: str | None) -> str:
                 try:
@@ -159,6 +160,9 @@ async def trigger_zoho_lead_creation(
             }
             phone_variants = {p for p in phone_variants if p}
 
+            # Only check for duplicates within last 24 hours
+            window_start = _dt.utcnow() - _td(hours=24)
+
             criteria = [_Lead.wa_id == wa_id]
             if phone_variants:
                 criteria.append(_Lead.phone.in_(phone_variants))
@@ -170,6 +174,7 @@ async def trigger_zoho_lead_creation(
             existing_any = (
                 db.query(_Lead)
                 .filter(or_(*criteria))
+                .filter(_Lead.created_at >= window_start)
                 .order_by(_Lead.created_at.desc())
                 .first()
             )

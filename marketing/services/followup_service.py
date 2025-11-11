@@ -548,10 +548,11 @@ async def send_followup2(db: Session, *, wa_id: str, from_wa_id: str = None):
         cust_for_link = db.query(Customer).filter(Customer.id == customer.id).first() if customer else None
         cust_id = getattr(cust_for_link, "id", None)
 
-        # Robust duplicate check:
+        # Robust duplicate check (within last 24 hours):
         # - Same wa_id
         # - Same phone exact (digits only stored) OR phone ends with last 10
         # - Same customer_id linkage if present
+        window_start = datetime.utcnow() - timedelta(hours=24)
         existing = (
             db.query(_Lead)
             .filter(
@@ -562,6 +563,7 @@ async def send_followup2(db: Session, *, wa_id: str, from_wa_id: str = None):
                     (_Lead.customer_id == cust_id) if cust_id else False,
                 )
             )
+            .filter(_Lead.created_at >= window_start)
             .order_by(_Lead.created_at.desc())
             .first()
         )
