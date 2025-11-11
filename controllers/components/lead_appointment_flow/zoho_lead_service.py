@@ -3,13 +3,14 @@ Enhanced Zoho Lead Creation Service for Lead-to-Appointment Booking Flow
 Handles Zoho CRM lead creation with proper field mapping and Q5 trigger integration
 """
 
-from datetime import datetime
+from datetime import datetime, date
 from typing import Dict, Any, Optional
 import requests
 import json
 import os
 
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from utils.zoho_auth import get_valid_access_token
 
 
@@ -567,6 +568,40 @@ async def create_lead_for_appointment(
                     print(f"[LEAD APPOINTMENT FLOW] Detected treatment flow from appointment_state")
             except Exception as e:
                 print(f"[LEAD APPOINTMENT FLOW] Could not check appointment_state: {e}")
+
+        # ===== Same-day duplicate check before pushing to Zoho =====
+        try:
+            from models.models import Lead  # local DB model
+
+            today = datetime.utcnow().date()
+            # Build input full name normalized
+            input_full_name = f"{(first_name or '').strip()} {(last_name or '').strip()}".strip().lower()
+
+            # Build normalized full name in DB: lower(trim(first_name || ' ' || last_name))
+            db_full_name = func.lower(func.trim(func.concat(func.coalesce(Lead.first_name, ''), func.concat(' ', func.coalesce(Lead.last_name, '')))))
+
+            query = db.query(Lead).filter(
+                Lead.phone == phone_number,
+                func.date(Lead.created_at) == today,
+                db_full_name == input_full_name
+            )
+
+            existing_today = query.first()
+            if existing_today:
+                print(
+                    f"🛑 [LEAD APPOINTMENT FLOW] Duplicate detected for today. "
+                    f"Phone: {phone_number}, Name: {first_name} {last_name}. "
+                    f"Skipping Zoho push. Existing Zoho Lead ID: {existing_today.zoho_lead_id}"
+                )
+                return {
+                    "success": True,
+                    "skipped": True,
+                    "reason": "duplicate_same_day",
+                    "lead_id": existing_today.zoho_lead_id
+                }
+        except Exception as dup_e:
+            print(f"⚠️ [LEAD APPOINTMENT FLOW] Duplicate-check failed, proceeding with push: {dup_e}")
+        # ===========================================================
 
         if flow_type == "treatment_flow":
             # Treatment flow
