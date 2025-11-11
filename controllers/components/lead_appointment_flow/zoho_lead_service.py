@@ -175,9 +175,16 @@ class ZohoLeadService:
         except Exception:
             return phone
 
-    def find_existing_lead_by_phone(self, phone: str) -> Optional[Dict[str, Any]]:
-        """Search Zoho for an existing lead by phone. Returns first match dict or None."""
+    def find_existing_lead_by_phone(self, phone: str, within_last_24h: bool = True) -> Optional[Dict[str, Any]]:
+        """Search Zoho for an existing lead by phone. Returns first match dict or None.
+        
+        Args:
+            phone: Phone number to search for
+            within_last_24h: If True, only return leads created within last 24 hours (default: True)
+        """
         try:
+            from datetime import datetime, timedelta, timezone
+            
             access_token = self._get_access_token()
             headers = {"Authorization": f"Zoho-oauthtoken {access_token}"}
             digits = self._normalize_digits(phone)
@@ -191,6 +198,11 @@ class ZohoLeadService:
             }
             candidates = [c for c in candidates if c]
 
+            # Calculate 24-hour cutoff if needed
+            cutoff_time = None
+            if within_last_24h:
+                cutoff_time = datetime.now(timezone.utc) - timedelta(hours=24)
+
             # Try search endpoint variants: direct phone search + criteria on multiple fields
             search_fields = ["Phone", "Mobile", "Phone_1", "Phone_2", "Alternate_Phone"]
 
@@ -201,7 +213,30 @@ class ZohoLeadService:
                 if r1.status_code == 200:
                     data = r1.json() or {}
                     if data.get("data"):
-                        return data["data"][0]
+                        # Filter by creation date if needed
+                        for lead in data["data"]:
+                            if not within_last_24h:
+                                return lead
+                            # Check Created_Time in details
+                            details = lead.get("details", {})
+                            created_time_str = details.get("Created_Time")
+                            if created_time_str:
+                                try:
+                                    # Zoho returns time in format: "2025-11-11T17:53:04+05:30"
+                                    # Parse it to datetime
+                                    created_dt = datetime.fromisoformat(created_time_str.replace('Z', '+00:00'))
+                                    # Convert to UTC if needed
+                                    if created_dt.tzinfo is None:
+                                        created_dt = created_dt.replace(tzinfo=timezone.utc)
+                                    else:
+                                        created_dt = created_dt.astimezone(timezone.utc)
+                                    
+                                    if created_dt >= cutoff_time:
+                                        return lead
+                                except Exception:
+                                    # If date parsing fails, skip this lead
+                                    continue
+                        # If no recent lead found, continue to next candidate
 
                 # 2) criteria search across multiple phone fields
                 for field in search_fields:
@@ -211,7 +246,28 @@ class ZohoLeadService:
                     if r2.status_code == 200:
                         data = r2.json() or {}
                         if data.get("data"):
-                            return data["data"][0]
+                            # Filter by creation date if needed
+                            for lead in data["data"]:
+                                if not within_last_24h:
+                                    return lead
+                                # Check Created_Time in details
+                                details = lead.get("details", {})
+                                created_time_str = details.get("Created_Time")
+                                if created_time_str:
+                                    try:
+                                        # Zoho returns time in format: "2025-11-11T17:53:04+05:30"
+                                        created_dt = datetime.fromisoformat(created_time_str.replace('Z', '+00:00'))
+                                        # Convert to UTC if needed
+                                        if created_dt.tzinfo is None:
+                                            created_dt = created_dt.replace(tzinfo=timezone.utc)
+                                        else:
+                                            created_dt = created_dt.astimezone(timezone.utc)
+                                        
+                                        if created_dt >= cutoff_time:
+                                            return lead
+                                    except Exception:
+                                        # If date parsing fails, skip this lead
+                                        continue
             return None
         except Exception:
             return None
