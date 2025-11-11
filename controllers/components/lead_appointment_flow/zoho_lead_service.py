@@ -12,6 +12,7 @@ import os
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from utils.zoho_auth import get_valid_access_token
+from marketing.services.lead_metrics import log_lead_metric, infer_step_from_details
 
 
 class ZohoLeadService:
@@ -548,6 +549,21 @@ async def create_lead_for_appointment(
         
         print(f"👤 [LEAD APPOINTMENT FLOW] Name mapping - Original: '{user_name}', First: '{first_name}', Last: '{last_name}'")
 
+        # Compute step for logging (based on appointment/session details)
+        try:
+            step_for_log = infer_step_from_details(
+                {
+                    **(appointment_details or {}),
+                    "selected_city": city,
+                    "selected_clinic": clinic,
+                    **({"selected_location": location} if 'location' in locals() and location else {}),
+                    "selected_week": appointment_date if appointment_date != "Not specified" else None,
+                    "selected_time": appointment_time if appointment_time != "Not specified" else None,
+                }
+            )
+        except Exception:
+            step_for_log = "start"
+
         # Determine flow type and set Lead Source / Sub Source / Language per flow
         try:
             flow_type = (appointment_details or {}).get("flow_type")
@@ -593,6 +609,19 @@ async def create_lead_for_appointment(
                     f"Phone: {phone_number}, Name: {first_name} {last_name}. "
                     f"Skipping Zoho push. Existing Zoho Lead ID: {existing_today.zoho_lead_id}"
                 )
+                # Metrics: duplicate skip
+                try:
+                    log_lead_metric(
+                        event_type="duplicate_same_day",
+                        wa_id=wa_id,
+                        phone=phone_number,
+                        full_name=f"{first_name} {last_name}".strip(),
+                        step=step_for_log,
+                        details="Skipped Zoho push due to same-day duplicate",
+                        meta={"existing_zoho_lead_id": existing_today.zoho_lead_id},
+                    )
+                except Exception:
+                    pass
                 return {
                     "success": True,
                     "skipped": True,
@@ -617,6 +646,25 @@ async def create_lead_for_appointment(
                 lead_source_val = "Facebook"
                 language_val = "English"
             sub_source_val = "WhatsApp"
+
+        # Metrics: push attempt
+        try:
+            log_lead_metric(
+                event_type="push_attempt",
+                wa_id=wa_id,
+                phone=phone_number,
+                full_name=f"{first_name} {last_name}".strip(),
+                step=step_for_log,
+                details=f"Attempting Zoho push (source={lead_source_val}, sub_source={sub_source_val})",
+                meta={
+                    "city": city,
+                    "clinic": clinic,
+                    "selected_concern": selected_concern,
+                    "zoho_mapped_concern": zoho_mapped_concern,
+                },
+            )
+        except Exception:
+            pass
 
         result = zoho_lead_service.create_lead(
             first_name=first_name,
@@ -654,6 +702,20 @@ async def create_lead_for_appointment(
             print(f"👤 [LEAD APPOINTMENT FLOW] Customer: {user_name}")
             print(f"📱 [LEAD APPOINTMENT FLOW] WhatsApp ID: {wa_id}")
             print(f"🔗 [LEAD APPOINTMENT FLOW] Check Zoho CRM for lead ID: {result.get('lead_id')}")
+
+            # Metrics: push success
+            try:
+                log_lead_metric(
+                    event_type="push_success",
+                    wa_id=wa_id,
+                    phone=phone_number,
+                    full_name=f"{first_name} {last_name}".strip(),
+                    step=step_for_log,
+                    details="Zoho lead created successfully",
+                    meta={"zoho_lead_id": result.get("lead_id")},
+                )
+            except Exception:
+                pass
             
             # Save lead to local database
             try:
@@ -715,6 +777,18 @@ async def create_lead_for_appointment(
             print(f"❌ [LEAD APPOINTMENT FLOW] FAILED! Lead creation failed!")
             print(f"🚨 [LEAD APPOINTMENT FLOW] Error: {result.get('error')}")
             print(f"📱 [LEAD APPOINTMENT FLOW] WhatsApp ID: {wa_id}")
+            # Metrics: push failed
+            try:
+                log_lead_metric(
+                    event_type="push_failed",
+                    wa_id=wa_id,
+                    phone=phone_number,
+                    full_name=f"{first_name} {last_name}".strip(),
+                    step=step_for_log,
+                    details=str(result.get("error")),
+                )
+            except Exception:
+                pass
         
         return result
         
@@ -869,6 +943,29 @@ async def handle_termination_event(
         print(f"🚫 [TERMINATION EVENT] Termination Reason: {termination_reason}")
         print(f"📋 [TERMINATION EVENT] Appointment Details: {appointment_details}")
         print(f"🎯 [TERMINATION EVENT] Action: Creating follow-up lead (NO auto-dial)")
+
+        # Metrics: termination with step
+        try:
+            from marketing.services.lead_metrics import log_lead_metric, infer_step_from_details
+            step_term = infer_step_from_details({**(appointment_details or {}), "dropoff_point": termination_reason})
+            # Best-effort phone/name extraction (may not be available here)
+            phone_guess = None
+            try:
+                phone_guess = (appointment_details or {}).get("wa_phone") or (appointment_details or {}).get("corrected_phone")
+            except Exception:
+                pass
+            full_name_guess = getattr(customer, "name", None) or ""
+            log_lead_metric(
+                event_type="termination",
+                wa_id=wa_id,
+                phone=phone_guess,
+                full_name=full_name_guess,
+                step=step_term,
+                details=f"Termination: {termination_reason}",
+                meta=appointment_details or {},
+            )
+        except Exception:
+            pass
         
         # Create lead with NO_CALLBACK status for follow-up
         print(f"🚀 [TERMINATION EVENT] Creating lead with NO_CALLBACK status...")

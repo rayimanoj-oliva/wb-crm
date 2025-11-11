@@ -9,8 +9,10 @@ import requests
 import json
 
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from utils.zoho_auth import get_valid_access_token
 from utils.whatsapp import send_message_to_waid
+from marketing.services.lead_metrics import log_lead_metric, infer_step_from_details
 
 
 async def trigger_zoho_auto_dial(
@@ -203,6 +205,62 @@ async def trigger_zoho_lead_creation(
             lead_source_val = "WhatsApp Lead-to-Appointment Flow"
             sub_source_val = None
 
+        # Infer step for logging
+        try:
+            step_for_log = infer_step_from_details(
+                {
+                    **(appointment_details or {}),
+                    "selected_city": city,
+                    "selected_clinic": clinic,
+                    "selected_date": appointment_date if appointment_date != "Not specified" else None,
+                }
+            )
+        except Exception:
+            step_for_log = "start"
+
+        # Same-day duplicate check in legacy path as well
+        try:
+            from models.models import Lead
+            # Build name tokens same as below
+            import re as _re
+            tokens_for_dup = [t for t in _re.split(r"\s+", (user_name or '').strip()) if t]
+            if len(tokens_for_dup) >= 2:
+                dup_first = tokens_for_dup[0]
+                dup_last = " ".join(tokens_for_dup[1:])
+            elif len(tokens_for_dup) == 1:
+                dup_first = ""
+                dup_last = tokens_for_dup[0]
+            else:
+                dup_first = ""
+                dup_last = "Customer"
+
+            input_full_name = f"{dup_first} {dup_last}".strip().lower()
+            db_full_name = func.lower(func.trim(func.concat(func.coalesce(Lead.first_name, ''), func.concat(' ', func.coalesce(Lead.last_name, '')))))
+
+            today = datetime.utcnow().date()
+            dup = db.query(Lead).filter(
+                Lead.phone == phone_number,
+                func.date(Lead.created_at) == today,
+                db_full_name == input_full_name
+            ).first()
+            if dup:
+                print(f"[lead_appointment_flow] DEBUG - Duplicate (legacy path) found for today, skipping push.")
+                try:
+                    log_lead_metric(
+                        event_type="duplicate_same_day",
+                        wa_id=wa_id,
+                        phone=phone_number,
+                        full_name=input_full_name,
+                        step=step_for_log,
+                        details="Skipped Zoho push (legacy path) due to same-day duplicate",
+                        meta={"existing_zoho_lead_id": dup.zoho_lead_id},
+                    )
+                except Exception:
+                    pass
+                return {"success": True, "skipped": True, "reason": "duplicate_same_day", "lead_id": dup.zoho_lead_id}
+        except Exception as _e_dup:
+            print(f"[lead_appointment_flow] WARNING - Legacy duplicate check failed: {_e_dup}")
+
         # Simplified lead data without custom fields to avoid API errors
         lead_data = {
             "data": [
@@ -235,6 +293,19 @@ async def trigger_zoho_lead_creation(
         zoho_leads_url = "https://www.zohoapis.in/crm/v2/Leads"
         
         print(f"[lead_appointment_flow] DEBUG - Making API call to: {zoho_leads_url}")
+        # Metrics: push attempt
+        try:
+            log_lead_metric(
+                event_type="push_attempt",
+                wa_id=wa_id,
+                phone=phone_number,
+                full_name=user_name,
+                step=step_for_log,
+                details=f"Attempting Zoho push (legacy path, source={lead_source_val})",
+                meta={"city": city, "clinic": clinic},
+            )
+        except Exception:
+            pass
         response = requests.post(
             zoho_leads_url,
             headers=headers,
@@ -252,7 +323,51 @@ async def trigger_zoho_lead_creation(
             
             # Log successful lead creation
             print(f"[zoho_integration] DEBUG - Lead created successfully: {wa_id}, Name: {user_name}, Lead ID: {lead_id}")
-            
+            # Metrics: success
+            try:
+                log_lead_metric(
+                    event_type="push_success",
+                    wa_id=wa_id,
+                    phone=phone_number,
+                    full_name=user_name,
+                    step=step_for_log,
+                    details="Zoho lead created successfully (legacy path)",
+                    meta={"zoho_lead_id": lead_id},
+                )
+            except Exception:
+                pass
+
+            # Save to local DB to keep parity with service path
+            try:
+                from models.models import Lead as LeadModel
+                existing = db.query(LeadModel).filter(LeadModel.zoho_lead_id == lead_id).first()
+                if not existing:
+                    new_lead = LeadModel(
+                        zoho_lead_id=lead_id,
+                        first_name=lead_data["data"][0]["First_Name"] or "",
+                        last_name=lead_data["data"][0]["Last_Name"] or "",
+                        email=getattr(customer, 'email', '') or '',
+                        phone=phone_number,
+                        mobile=phone_number,
+                        city=city,
+                        lead_source=lead_source_val,
+                        company="Oliva Skin & Hair Clinic",
+                        wa_id=wa_id,
+                        appointment_details={
+                            "selected_city": city,
+                            "selected_clinic": clinic,
+                            "custom_date": appointment_date,
+                        },
+                        sub_source=(sub_source_val or None),
+                    )
+                    db.add(new_lead)
+                    db.commit()
+                    db.refresh(new_lead)
+                    print(f"[zoho_integration] DEBUG - Lead saved to DB (legacy path): {new_lead.id}")
+            except Exception as _save_e:
+                print(f"[zoho_integration] WARNING - Failed to save lead to DB (legacy path): {_save_e}")
+                db.rollback()
+
             return {"success": True, "lead_id": lead_id, "response": response_data}
         else:
             error_msg = f"API Error {response.status_code}: {response.text}"
@@ -260,6 +375,17 @@ async def trigger_zoho_lead_creation(
             
             # Log failed lead creation
             print(f"[zoho_integration] DEBUG - Lead creation failed: {wa_id}, Error: {error_msg}")
+            try:
+                log_lead_metric(
+                    event_type="push_failed",
+                    wa_id=wa_id,
+                    phone=phone_number,
+                    full_name=user_name,
+                    step=step_for_log,
+                    details=error_msg,
+                )
+            except Exception:
+                pass
             
             return {"success": False, "error": error_msg}
             
