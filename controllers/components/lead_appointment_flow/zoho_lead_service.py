@@ -569,9 +569,19 @@ async def create_lead_for_appointment(
             except Exception as e:
                 print(f"[LEAD APPOINTMENT FLOW] Could not check appointment_state: {e}")
 
-        # ===== Same-day duplicate check before pushing to Zoho =====
+        # ===== Same-day duplicate check before pushing to Zoho (per lead source) =====
         try:
             from models.models import Lead  # local DB model
+
+            # Determine intended lead source for this flow for dedup boundaries
+            try:
+                _session_lead_source = session_data.get("lead_source")
+            except Exception:
+                _session_lead_source = None
+            if flow_type == "treatment_flow":
+                lead_source_for_check = "Business Listing"
+            else:
+                lead_source_for_check = _session_lead_source or "Facebook"
 
             today = datetime.utcnow().date()
             # Build input full name normalized
@@ -583,14 +593,16 @@ async def create_lead_for_appointment(
             query = db.query(Lead).filter(
                 Lead.phone == phone_number,
                 func.date(Lead.created_at) == today,
-                db_full_name == input_full_name
+                db_full_name == input_full_name,
+                Lead.lead_source == lead_source_for_check,
             )
 
             existing_today = query.first()
             if existing_today:
                 print(
                     f"🛑 [LEAD APPOINTMENT FLOW] Duplicate detected for today. "
-                    f"Phone: {phone_number}, Name: {first_name} {last_name}. "
+                    f"Phone: {phone_number}, Name: {first_name} {last_name}, "
+                    f"Lead Source: {lead_source_for_check}. "
                     f"Skipping Zoho push. Existing Zoho Lead ID: {existing_today.zoho_lead_id}"
                 )
                 return {
@@ -601,7 +613,7 @@ async def create_lead_for_appointment(
                 }
         except Exception as dup_e:
             print(f"⚠️ [LEAD APPOINTMENT FLOW] Duplicate-check failed, proceeding with push: {dup_e}")
-        # ===========================================================
+        # =============================================================================
 
         if flow_type == "treatment_flow":
             # Treatment flow
