@@ -237,3 +237,76 @@ def flow_summary(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@router.get("/completion-counts")
+def get_completion_counts(
+    db: Session = Depends(get_db),
+    date_from: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    date_to: Optional[str] = Query(None, description="YYYY-MM-DD"),
+):
+    """
+    Get counts of customers who completed full flows (reached 'result' step with status 200)
+    Returns counts for treatment and lead_appointment flows separately.
+    """
+    try:
+        filters = []
+        if date_from:
+            dt_from = _parse_dt(date_from)
+            if dt_from:
+                filters.append(FlowLog.created_at >= dt_from)
+        if date_to:
+            dt_to = _parse_dt(date_to)
+            if dt_to:
+                filters.append(FlowLog.created_at <= dt_to)
+
+        # Get all logs (or filtered by date)
+        query = db.query(FlowLog).filter(and_(*filters)) if filters else db.query(FlowLog)
+        rows: List[FlowLog] = query.order_by(FlowLog.wa_id.asc(), FlowLog.created_at.asc()).all()
+
+        # Group by flow_type and wa_id
+        treatment_groups: Dict[str, List[FlowLog]] = {}
+        lead_appointment_groups: Dict[str, List[FlowLog]] = {}
+
+        for r in rows:
+            if not r.wa_id:
+                continue
+            if r.flow_type == "treatment":
+                treatment_groups.setdefault(r.wa_id, []).append(r)
+            elif r.flow_type == "lead_appointment":
+                lead_appointment_groups.setdefault(r.wa_id, []).append(r)
+
+        # Count completed flows (have 'result' step with status 200)
+        def count_completed(groups: Dict[str, List[FlowLog]]) -> int:
+            completed = 0
+            for wa_id, logs in groups.items():
+                # Check if this customer has a 'result' step with status 200
+                has_completed = any(
+                    (log.step or "").lower() == "result" and (log.status_code or 0) == 200
+                    for log in logs
+                )
+                if has_completed:
+                    completed += 1
+            return completed
+
+        treatment_completed = count_completed(treatment_groups)
+        lead_appointment_completed = count_completed(lead_appointment_groups)
+
+        # Also get total counts (all customers who started each flow)
+        treatment_total = len(treatment_groups)
+        lead_appointment_total = len(lead_appointment_groups)
+
+        return {
+            "success": True,
+            "treatment": {
+                "total": treatment_total,
+                "completed": treatment_completed,
+                "pending": treatment_total - treatment_completed,
+            },
+            "lead_appointment": {
+                "total": lead_appointment_total,
+                "completed": lead_appointment_completed,
+                "pending": lead_appointment_total - lead_appointment_completed,
+            },
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
