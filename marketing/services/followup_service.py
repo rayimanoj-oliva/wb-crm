@@ -19,6 +19,7 @@ from config.constants import get_messages_url
 from cache.redis_connection import get_redis_client
 from marketing.whatsapp_numbers import get_number_config, TREATMENT_FLOW_ALLOWED_PHONE_IDS, WHATSAPP_NUMBERS
 from utils.flow_log import log_flow_event  # flow logs
+import json
 
 # Create logger for this module
 logger = logging.getLogger("followup_service")
@@ -609,6 +610,7 @@ async def send_followup2(db: Session, *, wa_id: str, from_wa_id: str = None):
                         wa_id=wa_id,
                         name=getattr(customer, "name", None) or "",
                         description="Lead created after Follow-Up 2 (no response)" if (res or {}).get("success") else f"Lead creation failed after Follow-Up 2: {(res or {}).get('error')}",
+                        response_json=json.dumps(res, default=str) if res is not None else None,
                     )
                 except Exception:
                     pass

@@ -81,6 +81,7 @@ def list_flow_logs(
                 "status_code": x.status_code,
                 "wa_id": x.wa_id,
                 "description": x.description,
+                "response_json": x.response_json,
             }
 
         return {
@@ -245,8 +246,9 @@ def get_completion_counts(
     date_to: Optional[str] = Query(None, description="YYYY-MM-DD"),
 ):
     """
-    Get counts of customers who completed full flows (reached 'result' step with status 200)
-    Returns counts for treatment and lead_appointment flows separately.
+    Get counts of customers who completed full flows (reached 'thank you' stage).
+    A flow is considered completed if any log description contains a thank-you message.
+    If the flow only has follow-up messages (and no thank-you), it is counted as non-completed.
     """
     try:
         filters = []
@@ -259,11 +261,9 @@ def get_completion_counts(
             if dt_to:
                 filters.append(FlowLog.created_at <= dt_to)
 
-        # Get all logs (or filtered by date)
         query = db.query(FlowLog).filter(and_(*filters)) if filters else db.query(FlowLog)
         rows: List[FlowLog] = query.order_by(FlowLog.wa_id.asc(), FlowLog.created_at.asc()).all()
 
-        # Group by flow_type and wa_id
         treatment_groups: Dict[str, List[FlowLog]] = {}
         lead_appointment_groups: Dict[str, List[FlowLog]] = {}
 
@@ -275,38 +275,69 @@ def get_completion_counts(
             elif r.flow_type == "lead_appointment":
                 lead_appointment_groups.setdefault(r.wa_id, []).append(r)
 
-        # Count completed flows (have 'result' step with status 200)
-        def count_completed(groups: Dict[str, List[FlowLog]]) -> int:
-            completed = 0
+        thank_you_keywords = [
+            "thank you",
+            "thankyou",
+            "thank-you",
+            "✅ thank you",
+            "thank you!",
+            "thank you 😊",
+            "thank you 🙏",
+        ]
+        follow_up_keywords = [
+            "follow-up",
+            "follow up",
+            "followup",
+        ]
+
+        def analyze_groups(groups: Dict[str, List[FlowLog]]) -> Dict[str, int]:
+            totals = {
+                "total": 0,
+                "completed": 0,
+                "followups": 0,
+            }
+
             for wa_id, logs in groups.items():
-                # Check if this customer has a 'result' step with status 200
-                has_completed = any(
-                    (log.step or "").lower() == "result" and (log.status_code or 0) == 200
+                totals["total"] += 1
+                descriptions = [
+                    (log.description or "").lower()
                     for log in logs
+                ]
+
+                has_thank_you = any(
+                    any(keyword in desc for keyword in thank_you_keywords)
+                    for desc in descriptions
                 )
-                if has_completed:
-                    completed += 1
-            return completed
 
-        treatment_completed = count_completed(treatment_groups)
-        lead_appointment_completed = count_completed(lead_appointment_groups)
+                has_follow_up = any(
+                    any(keyword in desc for keyword in follow_up_keywords)
+                    for desc in descriptions
+                )
 
-        # Also get total counts (all customers who started each flow)
-        treatment_total = len(treatment_groups)
-        lead_appointment_total = len(lead_appointment_groups)
+                if has_thank_you:
+                    totals["completed"] += 1
+                elif has_follow_up:
+                    totals["followups"] += 1
+                # Remaining flows will be treated as pending (total - completed - followups)
+
+            return totals
+
+        treatment_totals = analyze_groups(treatment_groups)
+        lead_totals = analyze_groups(lead_appointment_groups)
+
+        def build_result(totals: Dict[str, int]) -> Dict[str, int]:
+            pending = max(totals["total"] - totals["completed"] - totals["followups"], 0)
+            return {
+                "total": totals["total"],
+                "completed": totals["completed"],
+                "followups": totals["followups"],
+                "pending": pending,
+            }
 
         return {
             "success": True,
-            "treatment": {
-                "total": treatment_total,
-                "completed": treatment_completed,
-                "pending": treatment_total - treatment_completed,
-            },
-            "lead_appointment": {
-                "total": lead_appointment_total,
-                "completed": lead_appointment_completed,
-                "pending": lead_appointment_total - lead_appointment_completed,
-            },
+            "treatment": build_result(treatment_totals),
+            "lead_appointment": build_result(lead_totals),
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

@@ -18,6 +18,7 @@ def log_flow_event(
     wa_id: Optional[str] = None,
     name: Optional[str] = None,
     description: Optional[str] = None,
+    response_json: Optional[str] = None,
 ) -> str:
     """Persist a flow log entry. Swallows DB errors to avoid impacting user flows.
 
@@ -31,6 +32,7 @@ def log_flow_event(
             wa_id=wa_id,
             name=name,
             description=description,
+            response_json=response_json,
             created_at=datetime.utcnow(),
         )
         db.add(log)

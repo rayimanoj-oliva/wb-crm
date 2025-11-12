@@ -985,6 +985,7 @@ async def run_appointment_buttons_flow(
                                 wa_id=wa_id,
                                 name=customer_name,
                                 description=_desc,
+                                response_json=json.dumps(lead_res, default=str) if lead_res is not None else None,
                             )
                         except Exception:
                             pass

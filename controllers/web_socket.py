@@ -494,6 +494,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                 wa_id=wa_id,
                                 name=(getattr(_cust, "name", None) or ""),
                                 description=f"Lead flow result: {lead_status}",
+                                response_json=json.dumps(lead_result, default=str) if lead_result is not None else None,
                             )
                         except Exception:
                             pass

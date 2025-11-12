@@ -368,6 +368,7 @@ class FlowLog(Base):
     step = Column(String(100), nullable=True)       # last step reached or "result"
     status_code = Column(Integer, nullable=True)    # API status/result code
     description = Column(Text, nullable=True)       # human-friendly description
+    response_json = Column(Text, nullable=True)    # raw API response or payload
 
     # For sorting/filtering
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
