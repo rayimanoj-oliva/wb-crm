@@ -8,9 +8,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, text
 import csv
 import io
+import json
+
+from openpyxl import Workbook
 
 from database.db import get_db
-from models.models import FlowLog
+from models.models import FlowLog, Lead
 
 router = APIRouter(prefix="/api/flow-logs", tags=["flow-logs"])
 
@@ -139,6 +142,142 @@ def export_flow_logs_csv(
             media_type="text/csv",
             headers={"Content-Disposition": "attachment; filename=flow_logs.csv"},
         )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/export-pushed-leads")
+def export_pushed_leads_excel(
+    db: Session = Depends(get_db),
+    flow_type: Optional[str] = Query(None),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
+):
+    """
+    Export only successfully pushed leads (unique lead_id) to an Excel sheet.
+    """
+    try:
+        filters = [
+            FlowLog.step == "result",
+            FlowLog.status_code == 200,
+            FlowLog.response_json.isnot(None),
+        ]
+        if flow_type:
+            filters.append(FlowLog.flow_type == flow_type)
+        if date_from:
+            dt_from = _parse_dt(date_from)
+            if dt_from:
+                filters.append(FlowLog.created_at >= dt_from)
+        if date_to:
+            dt_to = _parse_dt(date_to)
+            if dt_to:
+                filters.append(FlowLog.created_at <= dt_to)
+
+        query = db.query(FlowLog).filter(and_(*filters))
+        logs: List[FlowLog] = query.order_by(FlowLog.created_at.desc()).limit(10000).all()
+
+        flow_type_labels = {
+            "treatment": "Marketing",
+            "lead_appointment": "Meta Ad Campaign",
+        }
+
+        exported: List[Tuple[FlowLog, str]] = []
+        seen_leads = set()
+
+        for log in logs:
+            if not log.response_json:
+                continue
+            try:
+                payload = json.loads(log.response_json)
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if not payload.get("success"):
+                continue
+            if payload.get("duplicate") or payload.get("skipped"):
+                continue
+            lead_id = payload.get("lead_id")
+            if not lead_id:
+                try:
+                    response_data = (payload.get("response") or {})
+                    data_items = response_data.get("data") or []
+                    if data_items:
+                        details = data_items[0].get("details") or {}
+                        lead_id = details.get("id")
+                except Exception:
+                    lead_id = None
+            if not lead_id:
+                continue
+            lead_id_str = str(lead_id)
+            if lead_id_str in seen_leads:
+                continue
+            seen_leads.add(lead_id_str)
+            exported.append((log, lead_id_str))
+
+        if not exported:
+            raise HTTPException(status_code=404, detail="No pushed leads found for the selected filters.")
+
+        lead_records: Dict[str, Lead] = {}
+        lead_ids = [lead_id for _, lead_id in exported]
+        if lead_ids:
+            lead_objs = (
+                db.query(Lead)
+                .filter(Lead.zoho_lead_id.in_(lead_ids))
+                .all()
+            )
+            lead_records = {lead.zoho_lead_id: lead for lead in lead_objs}
+
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.title = "Pushed Leads"
+        headers = ["Name", "Lead ID", "Lead Source", "Sub Source", "Phone Number", "Type of Flow", "Created At"]
+        worksheet.append(headers)
+
+        for log, lead_id in exported:
+            lead = lead_records.get(lead_id)
+            if lead:
+                name_parts = [lead.first_name or "", lead.last_name or ""]
+                name = " ".join(part.strip() for part in name_parts if part and part.strip()).strip()
+                phone = lead.phone or lead.mobile or (log.wa_id or "")
+                lead_source = lead.lead_source or ""
+                sub_source = lead.sub_source or ""
+            else:
+                name = (log.name or "").strip()
+                phone = log.wa_id or ""
+                lead_source = ""
+                sub_source = ""
+
+            if not name:
+                name = "Unknown"
+
+            flow_label = flow_type_labels.get(log.flow_type or "", log.flow_type or "Unknown")
+            created_at = log.created_at.isoformat() if log.created_at else ""
+
+            worksheet.append([
+                name,
+                lead_id,
+                lead_source,
+                sub_source,
+                phone,
+                flow_label,
+                created_at,
+            ])
+
+        output = io.BytesIO()
+        workbook.save(output)
+        output.seek(0)
+
+        filename_suffix = f"_{flow_type}" if flow_type else ""
+        return StreamingResponse(
+            output,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": f"attachment; filename=pushed_leads{filename_suffix}.xlsx"
+            },
+        )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
