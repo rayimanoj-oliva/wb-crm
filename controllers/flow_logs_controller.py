@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Any, Dict, List, Tuple
 from uuid import UUID
 
@@ -154,126 +154,146 @@ def export_pushed_leads_excel(
     date_to: Optional[str] = Query(None),
 ):
     """
-    Export only successfully pushed leads (unique lead_id) to an Excel sheet.
+    Export leads pushed to Zoho (stored in leads table) as an Excel workbook.
+    Results can be filtered by flow type and date range.
     """
     try:
-        filters = [
+        dt_from = _parse_dt(date_from)
+        dt_to = _parse_dt(date_to)
+        dt_to_upper: Optional[datetime] = None
+        if dt_to:
+            # include entire day when only a date is provided
+            if date_to and len(date_to) == 10:
+                dt_to_upper = dt_to + timedelta(days=1)
+            else:
+                dt_to_upper = dt_to
+
+        lead_query = db.query(Lead)
+        if dt_from:
+            lead_query = lead_query.filter(Lead.created_at >= dt_from)
+        if dt_to_upper:
+            lead_query = lead_query.filter(Lead.created_at < dt_to_upper)
+
+        leads: List[Lead] = (
+            lead_query.order_by(Lead.created_at.desc()).limit(20000).all()
+        )
+
+        if not leads:
+            raise HTTPException(status_code=404, detail="No leads found for the selected filters.")
+
+        log_filters = [
             FlowLog.step == "result",
             FlowLog.status_code == 200,
             FlowLog.response_json.isnot(None),
         ]
         if flow_type:
-            filters.append(FlowLog.flow_type == flow_type)
-        if date_from:
-            dt_from = _parse_dt(date_from)
-            if dt_from:
-                filters.append(FlowLog.created_at >= dt_from)
-        if date_to:
-            dt_to = _parse_dt(date_to)
-            if dt_to:
-                filters.append(FlowLog.created_at <= dt_to)
+            log_filters.append(FlowLog.flow_type == flow_type)
+        if dt_from:
+            log_filters.append(FlowLog.created_at >= dt_from)
+        if dt_to_upper:
+            log_filters.append(FlowLog.created_at < dt_to_upper)
 
-        query = db.query(FlowLog).filter(and_(*filters))
-        logs: List[FlowLog] = query.order_by(FlowLog.created_at.desc()).limit(10000).all()
+        flow_log_map: Dict[str, str] = {}
+        wa_id_map: Dict[str, str] = {}
+
+        log_rows = db.query(FlowLog).filter(and_(*log_filters)).all()
+        for log in log_rows:
+            if not log.response_json:
+                continue
+            lead_id: Optional[str] = None
+            try:
+                payload = json.loads(log.response_json)
+                if isinstance(payload, dict):
+                    if payload.get("success") and not payload.get("duplicate") and not payload.get("skipped"):
+                        lead_id = payload.get("lead_id")
+                        if not lead_id:
+                            response_block = payload.get("response") or {}
+                            data_list = response_block.get("data") or []
+                            if data_list:
+                                details = (data_list[0] or {}).get("details") or {}
+                                lead_id = details.get("id")
+            except Exception:
+                continue
+
+            if not lead_id:
+                continue
+            lead_id_str = str(lead_id)
+            flow_log_map.setdefault(lead_id_str, log.flow_type or "")
+            if log.wa_id:
+                wa_id_map.setdefault(lead_id_str, log.wa_id)
 
         flow_type_labels = {
             "treatment": "Marketing",
             "lead_appointment": "Meta Ad Campaign",
         }
 
-        exported: List[Tuple[FlowLog, str]] = []
-        seen_leads = set()
-
-        for log in logs:
-            if not log.response_json:
-                continue
-            try:
-                payload = json.loads(log.response_json)
-            except Exception:
-                continue
-            if not isinstance(payload, dict):
-                continue
-            if not payload.get("success"):
-                continue
-            if payload.get("duplicate") or payload.get("skipped"):
-                continue
-            lead_id = payload.get("lead_id")
-            if not lead_id:
-                try:
-                    response_data = (payload.get("response") or {})
-                    data_items = response_data.get("data") or []
-                    if data_items:
-                        details = data_items[0].get("details") or {}
-                        lead_id = details.get("id")
-                except Exception:
-                    lead_id = None
-            if not lead_id:
-                continue
-            lead_id_str = str(lead_id)
-            if lead_id_str in seen_leads:
-                continue
-            seen_leads.add(lead_id_str)
-            exported.append((log, lead_id_str))
-
-        if not exported:
-            raise HTTPException(status_code=404, detail="No pushed leads found for the selected filters.")
-
-        lead_records: Dict[str, Lead] = {}
-        lead_ids = [lead_id for _, lead_id in exported]
-        if lead_ids:
-            lead_objs = (
-                db.query(Lead)
-                .filter(Lead.zoho_lead_id.in_(lead_ids))
-                .all()
-            )
-            lead_records = {lead.zoho_lead_id: lead for lead in lead_objs}
+        def infer_flow_from_source(lead_source: Optional[str]) -> Optional[str]:
+            if not lead_source:
+                return None
+            source_lower = lead_source.lower()
+            if "business" in source_lower:
+                return "treatment"
+            if "facebook" in source_lower or "meta" in source_lower:
+                return "lead_appointment"
+            return None
 
         workbook = Workbook()
         worksheet = workbook.active
         worksheet.title = "Pushed Leads"
-        headers = ["Name", "Lead ID", "Lead Source", "Sub Source", "Phone Number", "Type of Flow", "Created At"]
-        worksheet.append(headers)
+        worksheet.append(["Name", "Lead ID", "Lead Source", "Sub Source", "Phone Number", "Type of Flow", "Created At"])
 
-        for log, lead_id in exported:
-            lead = lead_records.get(lead_id)
-            if lead:
-                name_parts = [lead.first_name or "", lead.last_name or ""]
-                name = " ".join(part.strip() for part in name_parts if part and part.strip()).strip()
-                phone = lead.phone or lead.mobile or (log.wa_id or "")
-                lead_source = lead.lead_source or ""
-                sub_source = lead.sub_source or ""
-            else:
-                name = (log.name or "").strip()
-                phone = log.wa_id or ""
-                lead_source = ""
-                sub_source = ""
+        rows_written = 0
+        for lead in leads:
+            lead_id = lead.zoho_lead_id
+            if not lead_id:
+                continue
 
-            if not name:
-                name = "Unknown"
+            flow_code = flow_log_map.get(lead_id) or infer_flow_from_source(lead.lead_source)
+            if flow_type:
+                if not flow_code:
+                    continue
+                if flow_code != flow_type:
+                    continue
 
-            flow_label = flow_type_labels.get(log.flow_type or "", log.flow_type or "Unknown")
-            created_at = log.created_at.isoformat() if log.created_at else ""
+            flow_label = flow_type_labels.get(flow_code or "", flow_code or "Unknown")
+
+            name_parts = [lead.first_name or "", lead.last_name or ""]
+            name = " ".join(part.strip() for part in name_parts if part and part.strip()).strip() or "Unknown"
+
+            phone = lead.phone or lead.mobile or wa_id_map.get(lead_id) or ""
 
             worksheet.append([
                 name,
                 lead_id,
-                lead_source,
-                sub_source,
+                lead.lead_source or "",
+                lead.sub_source or "",
                 phone,
                 flow_label,
-                created_at,
+                lead.created_at.isoformat() if lead.created_at else "",
             ])
+            rows_written += 1
+
+        if rows_written == 0:
+            raise HTTPException(status_code=404, detail="No leads matched the selected filters.")
 
         output = io.BytesIO()
         workbook.save(output)
         output.seek(0)
 
-        filename_suffix = f"_{flow_type}" if flow_type else ""
+        suffix_parts = []
+        if flow_type:
+            suffix_parts.append(flow_type)
+        if date_from:
+            suffix_parts.append(f"from_{date_from}")
+        if date_to:
+            suffix_parts.append(f"to_{date_to}")
+        suffix = ("_" + "_".join(suffix_parts)) if suffix_parts else ""
+
         return StreamingResponse(
             output,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={
-                "Content-Disposition": f"attachment; filename=pushed_leads{filename_suffix}.xlsx"
+                "Content-Disposition": f"attachment; filename=pushed_leads{suffix}.xlsx"
             },
         )
     except HTTPException:
