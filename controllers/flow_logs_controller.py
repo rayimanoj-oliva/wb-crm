@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Optional, Any, Dict, List, Tuple
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, HTTPException
 from fastapi.responses import StreamingResponse
@@ -339,5 +340,35 @@ def get_completion_counts(
             "treatment": build_result(treatment_totals),
             "lead_appointment": build_result(lead_totals),
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{log_id}")
+def get_flow_log(
+    log_id: UUID,
+    db: Session = Depends(get_db),
+):
+    try:
+        log = db.query(FlowLog).filter(FlowLog.id == log_id).first()
+        if not log:
+            raise HTTPException(status_code=404, detail="Log not found")
+
+        return {
+            "success": True,
+            "data": {
+                "id": str(log.id),
+                "created_at": log.created_at.isoformat() if log.created_at else None,
+                "flow_type": log.flow_type,
+                "name": log.name,
+                "step": log.step,
+                "status_code": log.status_code,
+                "wa_id": log.wa_id,
+                "description": log.description,
+                "response_json": log.response_json,
+            }
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
