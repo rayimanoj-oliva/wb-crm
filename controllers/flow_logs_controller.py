@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-from typing import Optional, Any, Dict, List, Tuple
+from typing import Optional, Any, Dict, List, Tuple, Set
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, HTTPException
@@ -296,6 +296,129 @@ def export_pushed_leads_excel(
                 "Content-Disposition": f"attachment; filename=pushed_leads{suffix}.xlsx"
             },
         )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/lead-counts")
+def get_lead_counts(
+    db: Session = Depends(get_db),
+    date_from: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    date_to: Optional[str] = Query(None, description="YYYY-MM-DD"),
+):
+    """
+    Return counts of leads pushed to Zoho, grouped by flow type.
+    """
+    try:
+        dt_from = _parse_dt(date_from)
+        dt_to = _parse_dt(date_to)
+        dt_to_upper: Optional[datetime] = None
+        if dt_to:
+            if date_to and len(date_to) == 10:
+                dt_to_upper = dt_to + timedelta(days=1)
+            else:
+                dt_to_upper = dt_to
+
+        lead_query = db.query(Lead)
+        if dt_from:
+            lead_query = lead_query.filter(Lead.created_at >= dt_from)
+        if dt_to_upper:
+            lead_query = lead_query.filter(Lead.created_at < dt_to_upper)
+
+        leads: List[Lead] = lead_query.order_by(Lead.created_at.desc()).limit(20000).all()
+
+        if not leads:
+            return {
+                "success": True,
+                "overall": {"total_leads": 0, "unique_customers": 0},
+                "treatment": {"total_leads": 0, "unique_customers": 0},
+                "lead_appointment": {"total_leads": 0, "unique_customers": 0},
+            }
+
+        log_filters = [
+            FlowLog.step == "result",
+            FlowLog.status_code == 200,
+            FlowLog.response_json.isnot(None),
+        ]
+        if dt_from:
+            log_filters.append(FlowLog.created_at >= dt_from)
+        if dt_to_upper:
+            log_filters.append(FlowLog.created_at < dt_to_upper)
+
+        flow_log_map: Dict[str, str] = {}
+        log_rows = db.query(FlowLog).filter(and_(*log_filters)).all()
+        for log in log_rows:
+            if not log.response_json:
+                continue
+            try:
+                payload = json.loads(log.response_json)
+                if not isinstance(payload, dict):
+                    continue
+                if not payload.get("success"):
+                    continue
+                if payload.get("duplicate") or payload.get("skipped"):
+                    continue
+                lead_id = payload.get("lead_id")
+                if not lead_id:
+                    response_block = payload.get("response") or {}
+                    data_list = response_block.get("data") or []
+                    if data_list:
+                        details = (data_list[0] or {}).get("details") or {}
+                        lead_id = details.get("id")
+                if not lead_id:
+                    continue
+                flow_log_map[str(lead_id)] = log.flow_type or ""
+            except Exception:
+                continue
+
+        def infer_flow_from_source(lead_source: Optional[str]) -> Optional[str]:
+            if not lead_source:
+                return None
+            lower = lead_source.lower()
+            if "business" in lower:
+                return "treatment"
+            if "facebook" in lower or "meta" in lower:
+                return "lead_appointment"
+            return None
+
+        counters = {
+            "overall": {"total_leads": 0, "customers": set()},
+            "treatment": {"total_leads": 0, "customers": set()},
+            "lead_appointment": {"total_leads": 0, "customers": set()},
+        }  # type: Dict[str, Dict[str, Any]]
+
+        for lead in leads:
+            lead_id = lead.zoho_lead_id
+            if not lead_id:
+                continue
+
+            flow_code = flow_log_map.get(lead_id) or infer_flow_from_source(lead.lead_source)
+
+            counters["overall"]["total_leads"] += 1
+            if lead.wa_id:
+                counters["overall"]["customers"].add(lead.wa_id)
+
+            if flow_code in {"treatment", "lead_appointment"}:
+                counters[flow_code]["total_leads"] += 1
+                if lead.wa_id:
+                    counters[flow_code]["customers"].add(lead.wa_id)
+
+        def pack(flow_key: str) -> Dict[str, int]:
+            entry = counters.get(flow_key) or {"total_leads": 0, "customers": set()}
+            customers: Set[str] = entry.get("customers", set())  # type: ignore
+            return {
+                "total_leads": int(entry.get("total_leads", 0)),
+                "unique_customers": len(customers),
+            }
+
+        return {
+            "success": True,
+            "overall": pack("overall"),
+            "treatment": pack("treatment"),
+            "lead_appointment": pack("lead_appointment"),
+        }
     except HTTPException:
         raise
     except Exception as e:
