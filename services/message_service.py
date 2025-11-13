@@ -98,6 +98,77 @@ def get_messages(db: Session, wa_id: str, peer: str | None):
     )
 
 
+def get_customer_wa_ids_by_date(db: Session, target_date: str) -> list[str]:
+    """
+    Get all customer wa_ids that have messages on a specific date.
+    
+    Args:
+        db: Database session
+        target_date: Date string in format 'YYYY-MM-DD' (e.g., "2025-11-14")
+    
+    Returns:
+        List of unique customer wa_ids that have messages on the target date
+    """
+    from sqlalchemy import distinct, func, cast, Date
+    from datetime import datetime
+    
+    try:
+        # Parse the target date
+        target_dt = datetime.strptime(target_date, '%Y-%m-%d').date()
+        start_datetime = datetime.combine(target_dt, datetime.min.time())
+        end_datetime = datetime.combine(target_dt, datetime.max.time())
+        
+        # Find all unique customer wa_ids that have messages on this date
+        # Messages can be either from customer (from_wa_id) or to customer (to_wa_id)
+        # We need to get the customer's wa_id, not the business number
+        
+        # Get wa_ids from messages where customer sent a message (from_wa_id is customer)
+        from_customer = (
+            db.query(distinct(Message.from_wa_id))
+            .filter(
+                Message.timestamp >= start_datetime,
+                Message.timestamp <= end_datetime
+            )
+            .all()
+        )
+        
+        # Get wa_ids from messages where customer received a message (to_wa_id is customer)
+        to_customer = (
+            db.query(distinct(Message.to_wa_id))
+            .filter(
+                Message.timestamp >= start_datetime,
+                Message.timestamp <= end_datetime
+            )
+            .all()
+        )
+        
+        # Combine and extract wa_ids, excluding business numbers
+        customer_wa_ids_set = set()
+        business_numbers = {'917729992376', '917617613030', '918297882978', '7729992376', '7617613030', '8297882978'}
+        
+        for wa_id_tuple in from_customer:
+            if wa_id_tuple[0]:
+                wa_id = wa_id_tuple[0]
+                # Extract last 10 digits to check if it's a business number
+                digits = ''.join(filter(str.isdigit, wa_id))
+                last10 = digits[-10:] if len(digits) >= 10 else digits
+                if last10 not in business_numbers and wa_id not in business_numbers:
+                    customer_wa_ids_set.add(wa_id)
+        
+        for wa_id_tuple in to_customer:
+            if wa_id_tuple[0]:
+                wa_id = wa_id_tuple[0]
+                digits = ''.join(filter(str.isdigit, wa_id))
+                last10 = digits[-10:] if len(digits) >= 10 else digits
+                if last10 not in business_numbers and wa_id not in business_numbers:
+                    customer_wa_ids_set.add(wa_id)
+        
+        return list(customer_wa_ids_set)
+    except Exception as e:
+        print(f"Error in get_customer_wa_ids_by_date: {e}")
+        return []
+
+
 def get_customer_wa_ids_by_business_number(db: Session, business_number: str) -> list[str]:
     """
     Get all customer wa_ids that have messages with a specific business number.
