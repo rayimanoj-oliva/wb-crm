@@ -5,7 +5,7 @@ from uuid import UUID
 from schemas.message_schema import MessageCreate, MessageOut
 from services import message_service
 from database.db import get_db
-from services.message_service import get_messages
+from services.message_service import get_messages, get_customer_wa_ids_by_business_number
 
 router = APIRouter(
     tags=["Messages"]
@@ -71,4 +71,18 @@ def get_chat(
         )
 
     return messages
+
+
+@router.get("/customers/by-business-number/{business_number}")
+def get_customers_by_business_number(
+    business_number: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Get all customer wa_ids that have messages with a specific business number.
+    
+    This endpoint is useful for filtering conversations by business number on the frontend.
+    """
+    customer_wa_ids = get_customer_wa_ids_by_business_number(db, business_number)
+    return {"customer_wa_ids": customer_wa_ids}
 

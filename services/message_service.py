@@ -96,3 +96,63 @@ def get_messages(db: Session, wa_id: str, peer: str | None):
         .order_by(Message.timestamp.asc())
         .all()
     )
+
+
+def get_customer_wa_ids_by_business_number(db: Session, business_number: str) -> list[str]:
+    """
+    Get all customer wa_ids that have messages with a specific business number.
+    
+    Args:
+        db: Database session
+        business_number: The business WhatsApp number (e.g., "917729992376" or "7729992376")
+    
+    Returns:
+        List of unique customer wa_ids that have exchanged messages with the business number
+    """
+    from sqlalchemy import distinct
+    import re
+    
+    # Normalize the business number to handle different formats
+    # Extract digits only and try different formats
+    digits = re.sub(r'\D', '', business_number)
+    if len(digits) >= 10:
+        last10 = digits[-10:]
+        # Try different formats: full with 91, with +91, and just last 10 digits
+        business_number_variants = [
+            business_number,  # Original format
+            digits,  # Digits only
+            last10,  # Last 10 digits
+            f"91{last10}",  # With 91 prefix
+            f"+91{last10}",  # With +91 prefix
+        ]
+        # Remove duplicates while preserving order
+        business_number_variants = list(dict.fromkeys(business_number_variants))
+    else:
+        business_number_variants = [business_number]
+    
+    # Find all messages where the business number is involved (checking all variants)
+    # Business number can be either from_wa_id (business sent to customer) or to_wa_id (customer sent to business)
+    customer_wa_ids_set = set()
+    
+    for variant in business_number_variants:
+        # Messages where business sent to customer (from_wa_id = business, to_wa_id = customer)
+        from_business = (
+            db.query(distinct(Message.to_wa_id))
+            .filter(Message.from_wa_id == variant)
+            .all()
+        )
+        for wa_id_tuple in from_business:
+            if wa_id_tuple[0] and wa_id_tuple[0] not in business_number_variants:
+                customer_wa_ids_set.add(wa_id_tuple[0])
+        
+        # Messages where customer sent to business (from_wa_id = customer, to_wa_id = business)
+        to_business = (
+            db.query(distinct(Message.from_wa_id))
+            .filter(Message.to_wa_id == variant)
+            .all()
+        )
+        for wa_id_tuple in to_business:
+            if wa_id_tuple[0] and wa_id_tuple[0] not in business_number_variants:
+                customer_wa_ids_set.add(wa_id_tuple[0])
+    
+    return list(customer_wa_ids_set)
