@@ -619,10 +619,11 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
 
                 if not allowed_inbound:
                     try:
-                        print(f"[ws_webhook] DEBUG - Skip bootstrap: inbound number not in allowed list (to_wa_id={to_wa_id})")
+                        print(f"[ws_webhook] DEBUG - Skip bootstrap: inbound number not in allowed list (to_wa_id={to_wa_id}). Message will still be saved to database and broadcast to WebSocket.")
                     except Exception:
                         pass
-                    return {"status": "skipped", "message_id": message_id}
+                    # DO NOT return early here - let the message continue to be saved to database and broadcast
+                    # The message should be saved even if it's not part of a flow
                 # Skip bootstrap entirely to prevent duplicate/conflicting messages
             handled_text = status_val in {"handled"}
 
