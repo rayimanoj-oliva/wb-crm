@@ -1,4 +1,5 @@
 from sqlalchemy.orm import Session
+from sqlalchemy import or_, and_
 
 from cache.service import increment_unread, reset_unread
 from models.models import Message, Customer
@@ -72,8 +73,26 @@ def delete_message(db: Session, message_id: int):
         db.commit()
     return message
 
-def get_messages_by_wa_id(db: Session, wa_id: str):
-    reset_unread(wa_id)
-    return db.query(Message).filter(
+def get_messages(db: Session, wa_id: str, peer: str | None):
+    
+    base_query = db.query(Message).filter(
         (Message.from_wa_id == wa_id) | (Message.to_wa_id == wa_id)
-    ).order_by(Message.timestamp.asc()).all()
+    )
+
+    # If peer is NOT provided → return all messages involving wa_id
+    if not peer:
+        reset_unread(wa_id)  # optional
+        return base_query.order_by(Message.timestamp.asc()).all()
+
+    # If peer IS provided → return only messages between wa_id and peer
+    reset_unread(wa_id)  # optional
+    return (
+        base_query.filter(
+            or_(
+                and_(Message.from_wa_id == wa_id, Message.to_wa_id == peer),
+                and_(Message.from_wa_id == peer, Message.to_wa_id == wa_id),
+            )
+        )
+        .order_by(Message.timestamp.asc())
+        .all()
+    )
