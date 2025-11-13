@@ -1105,6 +1105,49 @@ async def run_appointment_buttons_flow(
                             )
                         except Exception:
                             pass
+                    # Create appointment record for tracking (before sending thank you message)
+                    try:
+                        from services.referrer_service import referrer_service
+                        from datetime import datetime as dt
+                        # Get selected concern and other details from state
+                        selected_concern = st.get("selected_concern") or "Treatment Consultation"
+                        selected_city = st.get("selected_city")
+                        selected_location = st.get("selected_location")
+                        
+                        # Determine center name and location
+                        center_name = "Oliva Clinics"
+                        location = selected_location or selected_city or "Multiple Locations"
+                        if selected_city:
+                            center_name = f"Oliva {selected_city}"
+                        
+                        # Create appointment record with today's date (appointment will be confirmed later)
+                        # Use current date as appointment_date since no specific date was selected
+                        today_str = dt.now().strftime("%Y-%m-%d")
+                        appointment_record = referrer_service.create_appointment_booking(
+                            db=db,
+                            wa_id=wa_id,
+                            appointment_date=today_str,
+                            appointment_time="To be confirmed",
+                            treatment_type=selected_concern
+                        )
+                        if appointment_record:
+                            # Update center_name and location if we have better info
+                            if selected_city or selected_location:
+                                try:
+                                    appointment_record.center_name = center_name
+                                    appointment_record.location = location
+                                    db.commit()
+                                    db.refresh(appointment_record)
+                                    print(f"[treatment_flow] DEBUG - Appointment record created: id={appointment_record.id}, wa_id={wa_id}")
+                                except Exception as e:
+                                    print(f"[treatment_flow] WARNING - Could not update appointment record location: {e}")
+                        else:
+                            print(f"[treatment_flow] WARNING - Failed to create appointment record for wa_id={wa_id}")
+                    except Exception as e:
+                        print(f"[treatment_flow] WARNING - Could not create appointment record: {e}")
+                        import traceback
+                        traceback.print_exc()
+                    
                     # Thank you message - use the phone_id that triggered this flow
                     stored_phone_id = st.get("treatment_flow_phone_id")
                     phone_id_hint = stored_phone_id if stored_phone_id else None

@@ -4,7 +4,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 from datetime import datetime, date, timedelta
 
-from models.models import Message, Customer
+from models.models import Message, Customer, ReferrerTracking
 from clients.schema import AppointmentQuery
 import clients.service as client_service
 from models.models import Template, JobStatus
@@ -36,20 +36,34 @@ def get_total_customers(db: Session):
     return db.query(Customer).count()
 
 
-def get_appointments_booked_today(center_id: str, db: Session):
+def get_appointments_booked_today(center_id: Optional[str] = None, db: Session = None):
+    """
+    Count appointments booked today from treatment flow.
+    An appointment is considered booked when user reaches the "Thank you" message step.
+    """
+    if db is None:
+        return 0
+    
     today = date.today()
-
-    # Build the query object for today's date
-    query = AppointmentQuery(
-        center_id=center_id,
-        start_date=today,
-        end_date=today
+    
+    # Count appointments from ReferrerTracking where:
+    # 1. is_appointment_booked = True (appointment was booked)
+    # 2. created_at is today (booked today)
+    query = db.query(ReferrerTracking).filter(
+        ReferrerTracking.is_appointment_booked == True,
+        func.date(ReferrerTracking.created_at) == today
     )
-
-    # Fetch appointments using existing logic
-    appointments = client_service.fetch_appointments(query)
-
-    return len(appointments)
+    
+    # Optionally filter by center_id if provided
+    if center_id:
+        # Try to match center_id with center_name or location
+        query = query.filter(
+            (ReferrerTracking.center_name.ilike(f"%{center_id}%")) |
+            (ReferrerTracking.location.ilike(f"%{center_id}%"))
+        )
+    
+    count = query.count()
+    return count
 
 def get_agent_avg_response_time(agent_id: str, center_id: Optional[str], db: Session) -> Optional[float]:
     """

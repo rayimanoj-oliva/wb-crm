@@ -22,22 +22,14 @@ def total_customers(db: Session = Depends(get_db)):
     count = get_total_customers(db)
     return {"total_customers": count}
 
-@router.get("/appointments-booked-today")
-def appointments_booked_today(center_id: str, db: Session = Depends(get_db)):
+@router.get("/appointments-today")
+def appointments_booked_today(center_id: Optional[str] = None, db: Session = Depends(get_db)):
+    """
+    Get count of appointments booked today from treatment flow.
+    center_id is optional - if not provided, returns count for all centers.
+    """
     count = get_appointments_booked_today(center_id=center_id, db=db)
-    return {"appointments_booked_today": count}
-
-@router.get("/agent-avg-response-time")
-def agent_avg_response_time(agent_id: str, center_id: Optional[str] = None, db: Session = Depends(get_db)):
-
-    try:
-        avg_time = get_agent_avg_response_time(center_id=center_id, agent_id=agent_id, db=db)
-        return {"average_response_time_seconds": avg_time}
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"An error occurred while calculating average response time: {e}"
-        )
+    return {"count": count, "percentage": 0}  # percentage can be calculated separately if needed
 
 # 🆕 Add Template Status API
 @router.get("/template-status")
