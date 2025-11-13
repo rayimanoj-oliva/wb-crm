@@ -99,53 +99,6 @@ def list_flow_logs(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/export")
-def export_flow_logs_csv(
-    db: Session = Depends(get_db),
-    flow_type: Optional[str] = Query(None),
-    date_from: Optional[str] = Query(None),
-    date_to: Optional[str] = Query(None),
-):
-    try:
-        filters = []
-        if flow_type:
-            filters.append(FlowLog.flow_type == flow_type)
-        if date_from:
-            dt_from = _parse_dt(date_from)
-            if dt_from:
-                filters.append(FlowLog.created_at >= dt_from)
-        if date_to:
-            dt_to = _parse_dt(date_to)
-            if dt_to:
-                filters.append(FlowLog.created_at <= dt_to)
-
-        query = db.query(FlowLog).filter(and_(*filters)) if filters else db.query(FlowLog)
-        rows = query.order_by(FlowLog.created_at.desc()).limit(5000).all()
-
-        output = io.StringIO()
-        writer = csv.writer(output)
-        writer.writerow(["created_at", "wa_id", "name", "flow_type", "step", "status_code", "description"])
-        for r in rows:
-            writer.writerow([
-                r.created_at.isoformat() if r.created_at else "",
-                r.wa_id or "",
-                r.name or "",
-                r.flow_type or "",
-                r.step or "",
-                r.status_code or "",
-                (r.description or "").replace("\n", " "),
-            ])
-        output.seek(0)
-
-        return StreamingResponse(
-            iter([output.getvalue()]),
-            media_type="text/csv",
-            headers={"Content-Disposition": "attachment; filename=flow_logs.csv"},
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @router.get("/export-pushed-leads")
 def export_pushed_leads_excel(
     db: Session = Depends(get_db),
@@ -425,99 +378,169 @@ def get_lead_counts(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/summary")
-def flow_summary(
+@router.get("/lead-statistics")
+def get_lead_statistics(
     db: Session = Depends(get_db),
-    flow_type: Optional[str] = Query(None),
-    hours: Optional[int] = Query(24, ge=1, le=168, description="Lookback window"),
-    date_from: Optional[str] = Query(None),
-    date_to: Optional[str] = Query(None),
+    date_from: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    date_to: Optional[str] = Query(None, description="YYYY-MM-DD"),
 ):
     """
-    Return one line per wa_id indicating overall flow status.
-    Columns: wa_id, status, error_code, error_message, issue_description, last_step, last_at
-    Rules:
-      - success: has a 'result' step with event_type transition/info and no later error
-      - failure: has any error; report latest error_code/message/description
-      - pending: otherwise; report the last_step reached
+    Return detailed lead statistics including:
+    - Total leads pushed to Zoho
+    - Duplicates
+    - Errors
+    - Followups
+    - Completed
+    - Leads generated (followups + completed)
     """
     try:
-        filters = []
-        if flow_type:
-            filters.append(FlowLog.flow_type == flow_type)
-
-        if date_from:
-            dt_from = _parse_dt(date_from)
-            if dt_from:
-                filters.append(FlowLog.created_at >= dt_from)
-        if date_to:
-            dt_to = _parse_dt(date_to)
-            if dt_to:
-                filters.append(FlowLog.created_at <= dt_to)
-        if not date_from and not date_to and hours:
-            # default lookback by hours
-            from datetime import timedelta
-            since = datetime.utcnow() - timedelta(hours=hours)
-            filters.append(FlowLog.created_at >= since)
-
-        query = db.query(FlowLog).filter(and_(*filters)) if filters else db.query(FlowLog)
-        rows: List[FlowLog] = query.order_by(FlowLog.wa_id.asc(), FlowLog.created_at.asc()).all()
-
-        # Group by wa_id
-        groups: Dict[str, List[FlowLog]] = {}
-        for r in rows:
-            key = r.wa_id or "unknown"
-            groups.setdefault(key, []).append(r)
-
-        result = []
-        for wa_id, logs in groups.items():
-            last_error: Optional[FlowLog] = None
-            last_result: Optional[FlowLog] = None
-            last_log: Optional[FlowLog] = logs[-1] if logs else None
-
-            for r in logs:
-                if r.status_code and int(r.status_code) >= 400:
-                    last_error = r
-                if (r.step or "").lower() == "result" and (r.status_code or 0) == 200:
-                    last_result = r
-
-            if last_error and (not last_result or last_error.created_at >= last_result.created_at):
-                status = "failure"
-                error_code = last_error.status_code
-                error_message = "ERROR"
-                issue_description = last_error.description or ""
-                last_step = last_error.step or ""
-                last_at = last_error.created_at.isoformat() if last_error.created_at else None
-            elif last_result:
-                status = "success"
-                error_code = 200
-                error_message = "OK"
-                issue_description = last_result.description or "Flow completed successfully"
-                last_step = last_result.step or "result"
-                last_at = last_result.created_at.isoformat() if last_result.created_at else None
+        dt_from = _parse_dt(date_from)
+        dt_to = _parse_dt(date_to)
+        dt_to_upper: Optional[datetime] = None
+        if dt_to:
+            if date_to and len(date_to) == 10:
+                dt_to_upper = dt_to + timedelta(days=1)
             else:
-                status = "pending"
-                error_code = None
-                error_message = ""
-                issue_description = f"Stopped at step '{(last_log.step if last_log else '')}'" if last_log and last_log.step else "No logs in window"
-                last_step = (last_log.step if last_log else "") or ""
-                last_at = last_log.created_at.isoformat() if (last_log and last_log.created_at) else None
+                dt_to_upper = dt_to
 
-            result.append({
-                "wa_id": wa_id,
-                "status": status,
-                "error_code": error_code,
-                "error_message": error_message,
-                "issue_description": issue_description,
-                "last_step": last_step,
-                "last_at": last_at,
-            })
+        # Get all FlowLog entries in date range
+        log_filters = []
+        if dt_from:
+            log_filters.append(FlowLog.created_at >= dt_from)
+        if dt_to_upper:
+            log_filters.append(FlowLog.created_at < dt_to_upper)
+
+        query = db.query(FlowLog).filter(and_(*log_filters)) if log_filters else db.query(FlowLog)
+        all_logs: List[FlowLog] = query.order_by(FlowLog.wa_id.asc(), FlowLog.created_at.asc()).all()
+
+        # Group logs by wa_id
+        groups: Dict[str, List[FlowLog]] = {}
+        for log in all_logs:
+            if not log.wa_id:
+                continue
+            groups.setdefault(log.wa_id, []).append(log)
+
+        # Keywords for classification
+        duplicate_keywords = ["duplicate", "duplicate avoided", "duplicate detected", "skipped", "already exists"]
+        error_keywords = ["error", "failed", "exception", "timeout"]
+        followup_keywords = ["follow-up", "follow up", "followup"]
+        completion_keywords = ["thank you", "thankyou", "thank-you", "completed", "lead created"]
+
+        # Counters
+        total_leads_pushed = 0  # Actual leads in Lead table
+        duplicates = 0
+        errors = 0
+        followups = 0
+        completed = 0
+
+        # Count actual leads pushed to Zoho (from Lead table)
+        lead_query = db.query(Lead)
+        if dt_from:
+            lead_query = lead_query.filter(Lead.created_at >= dt_from)
+        if dt_to_upper:
+            lead_query = lead_query.filter(Lead.created_at < dt_to_upper)
+        total_leads_pushed = lead_query.count()
+
+        # Analyze each group
+        for wa_id, logs in groups.items():
+            sorted_logs = sorted(logs, key=lambda x: x.created_at or datetime.min, reverse=True)
+            
+            # Check for duplicates
+            has_duplicate = False
+            for log in sorted_logs:
+                desc = (log.description or "").lower()
+                response_json_str = log.response_json or ""
+                
+                # Check description for duplicate keywords
+                if any(keyword in desc for keyword in duplicate_keywords):
+                    has_duplicate = True
+                    break
+                
+                # Check response_json for duplicate flag
+                try:
+                    if response_json_str:
+                        payload = json.loads(response_json_str)
+                        if isinstance(payload, dict) and (payload.get("duplicate") or payload.get("skipped")):
+                            has_duplicate = True
+                            break
+                except Exception:
+                    pass
+            
+            if has_duplicate:
+                duplicates += 1
+                continue
+
+            # Check for errors
+            has_error = False
+            for log in sorted_logs:
+                if log.status_code and log.status_code >= 400:
+                    has_error = True
+                    break
+                desc = (log.description or "").lower()
+                if any(keyword in desc for keyword in error_keywords):
+                    has_error = True
+                    break
+            
+            if has_error:
+                errors += 1
+                continue
+
+            # Check for completion
+            has_completion = False
+            for log in sorted_logs:
+                desc = (log.description or "").lower()
+                step = (log.step or "").lower()
+                status = log.status_code or 0
+                
+                # Check if step is "result" with 200 status
+                if status >= 200 and status < 300 and step == "result":
+                    # Verify it's not a duplicate by checking response_json
+                    response_json_str = log.response_json or ""
+                    try:
+                        if response_json_str:
+                            payload = json.loads(response_json_str)
+                            if isinstance(payload, dict) and payload.get("success") and not payload.get("duplicate") and not payload.get("skipped"):
+                                has_completion = True
+                                break
+                    except Exception:
+                        pass
+                
+                # Check for completion keywords
+                if any(keyword in desc for keyword in completion_keywords):
+                    has_completion = True
+                    break
+            
+            if has_completion:
+                completed += 1
+                continue
+
+            # Check for followup
+            has_followup = False
+            for log in sorted_logs:
+                step = (log.step or "").lower()
+                desc = (log.description or "").lower()
+                if any(keyword in step or keyword in desc for keyword in followup_keywords):
+                    has_followup = True
+                    break
+            
+            if has_followup:
+                followups += 1
+                continue
+
+        # Leads generated = followups + completed
+        leads_generated = followups + completed
 
         return {
             "success": True,
-            "rows": result,
-            "count": len(result),
+            "total_leads_pushed": total_leads_pushed,
+            "duplicates": duplicates,
+            "errors": errors,
+            "followups": followups,
+            "completed": completed,
+            "leads_generated": leads_generated,  # followups + completed
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
