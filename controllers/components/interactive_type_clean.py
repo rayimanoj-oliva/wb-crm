@@ -66,6 +66,18 @@ async def run_interactive_type(
                 "type": "interactive",
                 "message": reply_text,
                 "timestamp": timestamp.isoformat(),
+                "message_id": message_id,
+                "interactive_type": i_type,
+                "interactive_data": {
+                    "kind": i_type,
+                    "reply_id": reply_id,
+                    "reply_title": title,
+                },
+                "meta": {
+                    "kind": i_type,
+                    "reply_id": reply_id,
+                    "reply_title": title,
+                },
             })
             
             # Mark customer as replied and reset follow-up timer for ANY interactive response

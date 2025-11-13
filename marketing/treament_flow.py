@@ -552,12 +552,46 @@ async def run_treatment_buttons_flow(
 
                 if topic == "skin":
                     resp_skin = _send_template(wa_id=wa_id, template_name="skin_treat_flow", access_token=access_token2, phone_id=phone_id2, components=None, lang_code=lang_code)
+                    # Save template message to database
+                    if resp_skin.status_code == 200:
+                        try:
+                            response_data = resp_skin.json()
+                            template_message_id = response_data.get("messages", [{}])[0].get("id", f"outbound_{datetime.now().timestamp()}")
+                            
+                            from services.customer_service import get_or_create_customer
+                            from schemas.customer_schema import CustomerCreate
+                            from services.message_service import create_message
+                            from schemas.message_schema import MessageCreate
+                            
+                            customer = get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
+                            
+                            template_message = MessageCreate(
+                                message_id=template_message_id,
+                                from_wa_id=to_wa_id,
+                                to_wa_id=wa_id,
+                                type="template",
+                                body="skin_treat_flow",
+                                timestamp=datetime.now(),
+                                customer_id=customer.id,
+                            )
+                            create_message(db, template_message)
+                            print(f"[treatment_flow] DEBUG - skin_treat_flow template saved to database: {template_message_id}")
+                        except Exception as e:
+                            print(f"[treatment_flow] WARNING - Failed to save skin_treat_flow template to database: {e}")
+                            import traceback
+                            traceback.print_exc()
+                    
                     try:
+                        response_data_skin = resp_skin.json() if resp_skin.status_code == 200 else {}
+                        template_message_id_skin = response_data_skin.get("messages", [{}])[0].get("id", "") if resp_skin.status_code == 200 else ""
                         await manager.broadcast({
                             "from": to_wa_id,
                             "to": wa_id,
-                            "type": "template" if resp_skin.status_code == 200 else "template_error",
-                            "message": "skin_treat_flow sent" if resp_skin.status_code == 200 else "skin_treat_flow failed",
+                            "type": "template",
+                            "message": "skin_treat_flow",
+                            "body": "skin_treat_flow",
+                            "timestamp": datetime.now().isoformat(),
+                            "message_id": template_message_id_skin,
                             **({"status_code": resp_skin.status_code} if resp_skin.status_code != 200 else {}),
                         })
                     except Exception:
@@ -640,12 +674,46 @@ async def run_treatment_buttons_flow(
 
                 if topic == "hair":
                     resp_hair = _send_template(wa_id=wa_id, template_name="hair_treat_flow", access_token=access_token2, phone_id=phone_id2, components=None, lang_code=lang_code)
+                    # Save template message to database
+                    if resp_hair.status_code == 200:
+                        try:
+                            response_data = resp_hair.json()
+                            template_message_id = response_data.get("messages", [{}])[0].get("id", f"outbound_{datetime.now().timestamp()}")
+                            
+                            from services.customer_service import get_or_create_customer
+                            from schemas.customer_schema import CustomerCreate
+                            from services.message_service import create_message
+                            from schemas.message_schema import MessageCreate
+                            
+                            customer = get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
+                            
+                            template_message = MessageCreate(
+                                message_id=template_message_id,
+                                from_wa_id=to_wa_id,
+                                to_wa_id=wa_id,
+                                type="template",
+                                body="hair_treat_flow",
+                                timestamp=datetime.now(),
+                                customer_id=customer.id,
+                            )
+                            create_message(db, template_message)
+                            print(f"[treatment_flow] DEBUG - hair_treat_flow template saved to database: {template_message_id}")
+                        except Exception as e:
+                            print(f"[treatment_flow] WARNING - Failed to save hair_treat_flow template to database: {e}")
+                            import traceback
+                            traceback.print_exc()
+                    
                     try:
+                        response_data_hair = resp_hair.json() if resp_hair.status_code == 200 else {}
+                        template_message_id_hair = response_data_hair.get("messages", [{}])[0].get("id", "") if resp_hair.status_code == 200 else ""
                         await manager.broadcast({
                             "from": to_wa_id,
                             "to": wa_id,
-                            "type": "template" if resp_hair.status_code == 200 else "template_error",
-                            "message": "hair_treat_flow sent" if resp_hair.status_code == 200 else "hair_treat_flow failed",
+                            "type": "template",
+                            "message": "hair_treat_flow",
+                            "body": "hair_treat_flow",
+                            "timestamp": datetime.now().isoformat(),
+                            "message_id": template_message_id_hair,
                             **({"status_code": resp_hair.status_code} if resp_hair.status_code != 200 else {}),
                         })
                     except Exception:
@@ -662,12 +730,46 @@ async def run_treatment_buttons_flow(
 
                 if topic == "body":
                     resp_body = _send_template(wa_id=wa_id, template_name="body_treat_flow", access_token=access_token2, phone_id=phone_id2, components=None, lang_code=lang_code)
+                    # Save template message to database
+                    if resp_body.status_code == 200:
+                        try:
+                            response_data = resp_body.json()
+                            template_message_id = response_data.get("messages", [{}])[0].get("id", f"outbound_{datetime.now().timestamp()}")
+                            
+                            from services.customer_service import get_or_create_customer
+                            from schemas.customer_schema import CustomerCreate
+                            from services.message_service import create_message
+                            from schemas.message_schema import MessageCreate
+                            
+                            customer = get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
+                            
+                            template_message = MessageCreate(
+                                message_id=template_message_id,
+                                from_wa_id=to_wa_id,
+                                to_wa_id=wa_id,
+                                type="template",
+                                body="body_treat_flow",
+                                timestamp=datetime.now(),
+                                customer_id=customer.id,
+                            )
+                            create_message(db, template_message)
+                            print(f"[treatment_flow] DEBUG - body_treat_flow template saved to database: {template_message_id}")
+                        except Exception as e:
+                            print(f"[treatment_flow] WARNING - Failed to save body_treat_flow template to database: {e}")
+                            import traceback
+                            traceback.print_exc()
+                    
                     try:
+                        response_data_body = resp_body.json() if resp_body.status_code == 200 else {}
+                        template_message_id_body = response_data_body.get("messages", [{}])[0].get("id", "") if resp_body.status_code == 200 else ""
                         await manager.broadcast({
                             "from": to_wa_id,
                             "to": wa_id,
-                            "type": "template" if resp_body.status_code == 200 else "template_error",
-                            "message": "body_treat_flow sent" if resp_body.status_code == 200 else "body_treat_flow failed",
+                            "type": "template",
+                            "message": "body_treat_flow",
+                            "body": "body_treat_flow",
+                            "timestamp": datetime.now().isoformat(),
+                            "message_id": template_message_id_body,
                             **({"status_code": resp_body.status_code} if resp_body.status_code != 200 else {}),
                         })
                     except Exception:

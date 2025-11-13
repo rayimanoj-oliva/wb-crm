@@ -95,7 +95,36 @@ def send_mr_treatment(
         components=None,
         lang_code=lang_code,
     )
+    template_message_id_mr = ""
     if resp.status_code == 200:
+        # Save template message to database
+        try:
+            response_data = resp.json()
+            template_message_id_mr = response_data.get("messages", [{}])[0].get("id", f"outbound_{datetime.now().timestamp()}")
+            
+            from services.customer_service import get_or_create_customer
+            from schemas.customer_schema import CustomerCreate
+            from services.message_service import create_message
+            from schemas.message_schema import MessageCreate
+            
+            customer = get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
+            
+            outbound_message = MessageCreate(
+                message_id=template_message_id_mr,
+                from_wa_id=_display_from_for_phone_id(phone_id),
+                to_wa_id=wa_id,
+                type="template",
+                body="mr_treatment",
+                timestamp=datetime.now(),
+                customer_id=customer.id,
+            )
+            create_message(db, outbound_message)
+            print(f"[send_mr_treatment] DEBUG - Template message saved to database: {template_message_id_mr}")
+        except Exception as e:
+            print(f"[send_mr_treatment] WARNING - Failed to save template message to database: {e}")
+            import traceback
+            traceback.print_exc()
+        
         try:
             from controllers.web_socket import appointment_state  # type: ignore
             st = appointment_state.get(wa_id) or {}
@@ -112,9 +141,11 @@ def send_mr_treatment(
         awaitable = manager.broadcast({
             "from": _display_from_for_phone_id(phone_id),
             "to": wa_id,
-            "type": "template" if resp.status_code == 200 else "template_error",
-            "message": "mr_treatment sent" if resp.status_code == 200 else "mr_treatment failed",
+            "type": "template",
+            "message": "mr_treatment",
+            "body": "mr_treatment",
             "timestamp": datetime.now().isoformat(),
+            "message_id": template_message_id_mr,
         })
         # manager.broadcast is async; support both sync/async contexts
         if hasattr(awaitable, "__await__"):
@@ -162,6 +193,34 @@ def send_concern_buttons(
     }
     resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
     if resp.status_code == 200:
+        # Save message to database
+        try:
+            response_data = resp.json()
+            message_id = response_data.get("messages", [{}])[0].get("id", f"outbound_{datetime.now().timestamp()}")
+            
+            from services.customer_service import get_or_create_customer
+            from schemas.customer_schema import CustomerCreate
+            from services.message_service import create_message
+            from schemas.message_schema import MessageCreate
+            
+            customer = get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
+            
+            outbound_message = MessageCreate(
+                message_id=message_id,
+                from_wa_id=_display_from_for_phone_id(phone_id),
+                to_wa_id=wa_id,
+                type="interactive",
+                body="Please choose your area of concern:",
+                timestamp=datetime.now(),
+                customer_id=customer.id,
+            )
+            create_message(db, outbound_message)
+            print(f"[send_concern_buttons] DEBUG - Interactive message saved to database: {message_id}")
+        except Exception as e:
+            print(f"[send_concern_buttons] WARNING - Failed to save message to database: {e}")
+            import traceback
+            traceback.print_exc()
+        
         # Mark concern buttons as sent to prevent duplicates
         try:
             from controllers.web_socket import appointment_state  # type: ignore
@@ -178,6 +237,8 @@ def send_concern_buttons(
             "type": "interactive",
             "message": "Please choose your area of concern:",
             "timestamp": datetime.now().isoformat(),
+            "interactive_type": "button",
+            "interactive_data": {"kind": "buttons", "options": ["Skin", "Hair", "Body"]},
             "meta": {"kind": "buttons", "options": ["Skin", "Hair", "Body"]},
         })
         if hasattr(awaitable, "__await__"):
@@ -224,6 +285,34 @@ def send_next_actions(
     }
     resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
     if resp.status_code == 200:
+        # Save message to database
+        try:
+            response_data = resp.json()
+            message_id = response_data.get("messages", [{}])[0].get("id", f"outbound_{datetime.now().timestamp()}")
+            
+            from services.customer_service import get_or_create_customer
+            from schemas.customer_schema import CustomerCreate
+            from services.message_service import create_message
+            from schemas.message_schema import MessageCreate
+            
+            customer = get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
+            
+            outbound_message = MessageCreate(
+                message_id=message_id,
+                from_wa_id=_display_from_for_phone_id(phone_id),
+                to_wa_id=wa_id,
+                type="interactive",
+                body="Please choose one of the following options:",
+                timestamp=datetime.now(),
+                customer_id=customer.id,
+            )
+            create_message(db, outbound_message)
+            print(f"[send_next_actions] DEBUG - Interactive message saved to database: {message_id}")
+        except Exception as e:
+            print(f"[send_next_actions] WARNING - Failed to save message to database: {e}")
+            import traceback
+            traceback.print_exc()
+        
         try:
             from controllers.web_socket import appointment_state  # type: ignore
             st = appointment_state.get(wa_id) or {}
@@ -238,6 +327,8 @@ def send_next_actions(
             "type": "interactive",
             "message": "Please choose one of the following options:",
             "timestamp": datetime.now().isoformat(),
+            "interactive_type": "button",
+            "interactive_data": {"kind": "buttons", "options": ["📅 Book an Appointment", "📞 Request a Call Back"]},
             "meta": {"kind": "buttons", "options": ["📅 Book an Appointment", "📞 Request a Call Back"]},
         })
         if hasattr(awaitable, "__await__"):
