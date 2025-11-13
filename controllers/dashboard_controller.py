@@ -10,7 +10,9 @@ from services.dashboard_service import get_today_metrics, get_total_customers, g
 from services.dashboard_service import get_appointments_booked_today
 from services.dashboard_service import (
     get_template_status,
-    get_recent_failed_messages
+    get_recent_failed_messages,
+    get_campaign_performance_summary,
+    get_campaign_performance_list
 )
 router = APIRouter(tags=["Dashboard"])
 
@@ -58,3 +60,20 @@ def template_status_review(db: Session = Depends(get_db)):
 @router.get("/recent-failed-messages")
 def recent_failed_messages(db: Session = Depends(get_db)):
     return get_recent_failed_messages(db)
+
+# 🆕 Add Campaign Performance APIs
+@router.get("/campaign-performance/summary")
+def campaign_performance_summary(db: Session = Depends(get_db)):
+    """
+    Get overall campaign performance summary statistics.
+    Returns sent, delivered, read, and replied counts with percentages.
+    """
+    return get_campaign_performance_summary(db)
+
+@router.get("/campaign-performance/list")
+def campaign_performance_list(limit: Optional[int] = 10, db: Session = Depends(get_db)):
+    """
+    Get list of campaigns with their individual performance metrics.
+    Returns campaign details including sent, delivered, read, replied, CTR, and ROI.
+    """
+    return get_campaign_performance_list(db, limit=limit)

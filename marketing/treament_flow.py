@@ -1050,6 +1050,10 @@ async def run_appointment_buttons_flow(
                 st = appointment_state.get(wa_id) or {}
                 flow_ctx = st.get("flow_context")
                 if flow_ctx == "treatment":
+                    # Initialize is_duplicate flag to track if lead was a duplicate
+                    is_duplicate = False
+                    lead_res = None
+                    customer_name = ""
                     try:
                         from controllers.components.lead_appointment_flow.zoho_lead_service import create_lead_for_appointment
                         from services.customer_service import get_customer_record_by_wa_id
@@ -1071,14 +1075,15 @@ async def run_appointment_buttons_flow(
                             lead_status="PENDING",
                             appointment_preference="Treatment consultation - no specific appointment time requested",
                         )
+                        # Check if lead was a duplicate
+                        if isinstance(lead_res, dict):
+                            if lead_res.get("duplicate") or lead_res.get("skipped"):
+                                is_duplicate = True
                         # Mark flow completion for summary API
                         try:
                             _desc = "Treatment flow completed: Lead created and thank-you sent"
-                            try:
-                                if isinstance(lead_res, dict) and lead_res.get("duplicate"):
-                                    _desc = f"Treatment flow completed: duplicate avoided (lead {lead_res.get('lead_id')})"
-                            except Exception:
-                                pass
+                            if is_duplicate:
+                                _desc = f"Treatment flow completed: duplicate avoided (lead {lead_res.get('lead_id') if lead_res else 'N/A'})"
                             log_flow_event(
                                 db,
                                 flow_type="treatment",
@@ -1093,6 +1098,7 @@ async def run_appointment_buttons_flow(
                             pass
                     except Exception:
                         # Log failure to help summary API
+                        is_duplicate = True  # Treat exceptions as duplicates to avoid counting failed leads
                         try:
                             log_flow_event(
                                 db,
@@ -1100,53 +1106,58 @@ async def run_appointment_buttons_flow(
                                 step="result",
                                 status_code=500,
                                 wa_id=wa_id,
-                                name=customer_name if 'customer_name' in locals() else None,
+                                name=customer_name if customer_name else None,
                                 description="Treatment flow failed while creating lead",
                             )
                         except Exception:
                             pass
-                    # Create appointment record for tracking (before sending thank you message)
-                    try:
-                        from services.referrer_service import referrer_service
-                        from datetime import datetime as dt
-                        # Get selected concern and other details from state
-                        selected_concern = st.get("selected_concern") or "Treatment Consultation"
-                        selected_city = st.get("selected_city")
-                        selected_location = st.get("selected_location")
-                        
-                        # Determine center name and location
-                        center_name = "Oliva Clinics"
-                        location = selected_location or selected_city or "Multiple Locations"
-                        if selected_city:
-                            center_name = f"Oliva {selected_city}"
-                        
-                        # Create appointment record with today's date (appointment will be confirmed later)
-                        # Use current date as appointment_date since no specific date was selected
-                        today_str = dt.now().strftime("%Y-%m-%d")
-                        appointment_record = referrer_service.create_appointment_booking(
-                            db=db,
-                            wa_id=wa_id,
-                            appointment_date=today_str,
-                            appointment_time="To be confirmed",
-                            treatment_type=selected_concern
-                        )
-                        if appointment_record:
-                            # Update center_name and location if we have better info
-                            if selected_city or selected_location:
-                                try:
-                                    appointment_record.center_name = center_name
-                                    appointment_record.location = location
-                                    db.commit()
-                                    db.refresh(appointment_record)
-                                    print(f"[treatment_flow] DEBUG - Appointment record created: id={appointment_record.id}, wa_id={wa_id}")
-                                except Exception as e:
-                                    print(f"[treatment_flow] WARNING - Could not update appointment record location: {e}")
-                        else:
-                            print(f"[treatment_flow] WARNING - Failed to create appointment record for wa_id={wa_id}")
-                    except Exception as e:
-                        print(f"[treatment_flow] WARNING - Could not create appointment record: {e}")
-                        import traceback
-                        traceback.print_exc()
+                    
+                    # Create appointment record for tracking ONLY if lead was NOT a duplicate
+                    # This ensures we only count appointments where leads were successfully pushed to Zoho
+                    if not is_duplicate:
+                        try:
+                            from services.referrer_service import referrer_service
+                            from datetime import datetime as dt
+                            # Get selected concern and other details from state
+                            selected_concern = st.get("selected_concern") or "Treatment Consultation"
+                            selected_city = st.get("selected_city")
+                            selected_location = st.get("selected_location")
+                            
+                            # Determine center name and location
+                            center_name = "Oliva Clinics"
+                            location = selected_location or selected_city or "Multiple Locations"
+                            if selected_city:
+                                center_name = f"Oliva {selected_city}"
+                            
+                            # Create appointment record with today's date (appointment will be confirmed later)
+                            # Use current date as appointment_date since no specific date was selected
+                            today_str = dt.now().strftime("%Y-%m-%d")
+                            appointment_record = referrer_service.create_appointment_booking(
+                                db=db,
+                                wa_id=wa_id,
+                                appointment_date=today_str,
+                                appointment_time="To be confirmed",
+                                treatment_type=selected_concern
+                            )
+                            if appointment_record:
+                                # Update center_name and location if we have better info
+                                if selected_city or selected_location:
+                                    try:
+                                        appointment_record.center_name = center_name
+                                        appointment_record.location = location
+                                        db.commit()
+                                        db.refresh(appointment_record)
+                                        print(f"[treatment_flow] DEBUG - Appointment record created (non-duplicate lead): id={appointment_record.id}, wa_id={wa_id}")
+                                    except Exception as e:
+                                        print(f"[treatment_flow] WARNING - Could not update appointment record location: {e}")
+                            else:
+                                print(f"[treatment_flow] WARNING - Failed to create appointment record for wa_id={wa_id}")
+                        except Exception as e:
+                            print(f"[treatment_flow] WARNING - Could not create appointment record: {e}")
+                            import traceback
+                            traceback.print_exc()
+                    else:
+                        print(f"[treatment_flow] DEBUG - Skipping appointment record creation (duplicate lead detected) for wa_id={wa_id}")
                     
                     # Thank you message - use the phone_id that triggered this flow
                     stored_phone_id = st.get("treatment_flow_phone_id")
