@@ -49,6 +49,22 @@ def get_messages_by_customer_id(db: Session, customer_id: int):
     return db.query(Message).filter(Message.customer_id == customer_id).all()
 
 
+# Get all messages involving a specific wa_id (either as sender or receiver)
+def get_messages_by_wa_id(db: Session, wa_id: str):
+    """Get all messages where the given wa_id is either the sender or receiver.
+    
+    Args:
+        db: Database session
+        wa_id: WhatsApp ID to search for
+        
+    Returns:
+        List of all messages involving this wa_id
+    """
+    return db.query(Message).filter(
+        (Message.from_wa_id == wa_id) | (Message.to_wa_id == wa_id)
+    ).order_by(Message.timestamp.asc()).all()
+
+
 # Update a message (by database ID)
 def update_message(db: Session, message_id: int, updated_data: MessageCreate) -> Message:
     message = get_message_by_id(db, message_id)

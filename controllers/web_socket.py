@@ -277,6 +277,85 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         # Fetch or create customer
         customer = customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=sender_name))
 
+        # Save customer messages to database EARLY (before flow handling)
+        # This ensures messages are saved even if flows return early
+        if message_type == "text" and body_text:
+            # Check if already saved to avoid duplicates
+            existing_msg = db.query(Message).filter(Message.message_id == message_id).first()
+            if not existing_msg:
+                inbound_text_msg = MessageCreate(
+                    message_id=message_id,
+                    from_wa_id=from_wa_id,
+                    to_wa_id=to_wa_id,
+                    type="text",
+                    body=body_text,
+                    timestamp=timestamp,
+                    customer_id=customer.id
+                )
+                message_service.create_message(db, inbound_text_msg)
+                db.commit()  # Explicitly commit the transaction
+                print(f"[ws_webhook] DEBUG - Customer text message saved to database early: {message_id}")
+                
+                # Broadcast to WebSocket so message appears in UI immediately
+                try:
+                    await manager.broadcast({
+                        "from": from_wa_id,
+                        "to": to_wa_id,
+                        "type": "text",
+                        "message": body_text,
+                        "timestamp": timestamp.isoformat(),
+                        "message_id": message_id,
+                    })
+                    print(f"[ws_webhook] DEBUG - Customer text message broadcasted to WebSocket early: {message_id}")
+                except Exception as e:
+                    print(f"[ws_webhook] WARNING - WebSocket broadcast failed: {e}")
+        elif message_type == "interactive" and interactive and i_type:
+            # Save interactive messages early as well
+            existing_msg = db.query(Message).filter(Message.message_id == message_id).first()
+            if not existing_msg:
+                reply_text = ""
+                reply_id = ""
+                if i_type == "button_reply":
+                    reply_text = interactive.get("button_reply", {}).get("title", "")
+                    reply_id = interactive.get("button_reply", {}).get("id", "")
+                elif i_type == "list_reply":
+                    reply_text = interactive.get("list_reply", {}).get("title", "")
+                    reply_id = interactive.get("list_reply", {}).get("id", "")
+                
+                if reply_text:
+                    msg_interactive = MessageCreate(
+                        message_id=message_id,
+                        from_wa_id=from_wa_id,
+                        to_wa_id=to_wa_id,
+                        type="interactive",
+                        body=reply_text,
+                        timestamp=timestamp,
+                        customer_id=customer.id,
+                    )
+                    message_service.create_message(db, msg_interactive)
+                    db.commit()  # Explicitly commit the transaction
+                    print(f"[ws_webhook] DEBUG - Customer interactive message saved to database early: {message_id}")
+                    
+                    # Broadcast to WebSocket so message appears in UI immediately
+                    try:
+                        await manager.broadcast({
+                            "from": from_wa_id,
+                            "to": to_wa_id,
+                            "type": "interactive",
+                            "message": reply_text,
+                            "timestamp": timestamp.isoformat(),
+                            "message_id": message_id,
+                            "interactive_type": i_type,
+                            "interactive_data": {
+                                "kind": i_type,
+                                "reply_id": reply_id,
+                                "reply_title": reply_text,
+                            },
+                        })
+                        print(f"[ws_webhook] DEBUG - Customer interactive message broadcasted to WebSocket early: {message_id}")
+                    except Exception as e:
+                        print(f"[ws_webhook] WARNING - WebSocket broadcast failed: {e}")
+
         # Track referrer information on EVERY message
         if body_text:
             try:
