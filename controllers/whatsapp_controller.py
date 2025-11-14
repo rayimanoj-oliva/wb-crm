@@ -91,6 +91,8 @@ async def send_whatsapp_message(
             if upload_res.status_code != 200:
                 raise HTTPException(status_code=500, detail=f"Media upload failed: {upload_res.text}")
             media_id = upload_res.json().get("id")
+            # Set effective_media_id for images, videos, and documents
+            effective_media_id = media_id
 
         payload = {
             "messaging_product": "whatsapp",
