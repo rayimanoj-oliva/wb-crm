@@ -1263,6 +1263,60 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             })
 
             return {"status": "success", "message_id": message_id}
+        elif message_type == "video":
+            video = message["video"]
+
+            media_id = video.get("id")
+            caption = video.get("caption", "")
+            mime_type = video.get("mime_type", "video/mp4")
+            filename = video.get("filename", "")
+
+            # Get media URL from WhatsApp API
+            media_url = None
+            try:
+                token_obj = whatsapp_service.get_latest_token(db)
+                if token_obj:
+                    token = token_obj.token
+                    headers = {"Authorization": f"Bearer {token}"}
+                    metadata_url = f"https://graph.facebook.com/v22.0/{media_id}"
+                    meta_res = requests.get(metadata_url, headers=headers)
+                    if meta_res.status_code == 200:
+                        media_url = meta_res.json().get("url")
+            except Exception as e:
+                print(f"[ws_webhook] WARNING - Failed to get video media URL: {e}")
+
+            # Save message in DB
+            message_data = MessageCreate(
+                message_id=message_id,
+                from_wa_id=from_wa_id,
+                to_wa_id=to_wa_id,
+                type="video",
+                body=caption or "[Video]",
+                timestamp=timestamp,
+                customer_id=customer.id,
+                media_id=media_id,
+                caption=caption,
+                filename=filename,
+                mime_type=mime_type,
+            )
+            new_msg = message_service.create_message(db, message_data)
+            db.commit()  # Explicitly commit the transaction
+
+            # Broadcast to WebSocket clients
+            await manager.broadcast({
+                "from": from_wa_id,
+                "to": to_wa_id,
+                "type": "video",
+                "message_id": message_id,
+                "media_id": media_id,
+                "media_url": media_url,  # Include temporary URL for frontend
+                "caption": caption,
+                "filename": filename,
+                "mime_type": mime_type,
+                "timestamp": timestamp.isoformat(),
+            })
+
+            return {"status": "success", "message_id": message_id}
         elif message_type == "button":
             # Template button reply (WhatsApp sets type = "button" for template quick replies)
             btn = message.get("button", {})

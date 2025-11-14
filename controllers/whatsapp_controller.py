@@ -41,7 +41,7 @@ def add_token(token_data: WhatsAppTokenCreate, db: Session = Depends(get_db)):
 @router.post("/send-message")
 async def send_whatsapp_message(
     wa_id: str = Form(...),
-    type: Literal["text", "image", "document", "interactive", "location", "template", "flow"] = Form(...),
+    type: Literal["text", "image", "document", "video", "interactive", "location", "template", "flow"] = Form(...),
     body: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
     latitude: Optional[str] = Form(None),
@@ -116,6 +116,14 @@ async def send_whatsapp_message(
             if not media_id:
                 raise HTTPException(status_code=400, detail="Document upload failed")
             payload["document"] = {"id": media_id, "caption": body or "", "filename": file.filename}
+
+        # ---------------- Video Message ----------------
+        elif type == "video":
+            if not media_id:
+                raise HTTPException(status_code=400, detail="Video upload failed")
+            payload["video"] = {"id": media_id}
+            if body:
+                payload["video"]["caption"] = body
 
         # ---------------- Interactive Message ----------------
         elif type == "interactive":
@@ -269,7 +277,7 @@ async def send_whatsapp_message(
             timestamp=datetime.now(),
             customer_id=customer.id,
             media_id=effective_media_id,
-            caption=body if type in ["image", "document"] else None,
+            caption=body if type in ["image", "document", "video"] else None,
             filename=file.filename if file else None,
             latitude=latitude,
             longitude=longitude,
@@ -289,7 +297,13 @@ async def send_whatsapp_message(
             "mime_type": message.mime_type
         })
 
-        return {"status": "success", "message_id": message.message_id}
+        return {
+            "status": "success", 
+            "message_id": message.message_id,
+            "media_id": message.media_id,
+            "mime_type": message.mime_type,
+            "filename": message.filename
+        }
 
     except Exception as e:
         return {"status": "failed", "error": str(e)}
