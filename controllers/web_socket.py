@@ -270,6 +270,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         except Exception:
             body_text = ""
         handled_text = False
+        message_broadcasted = False  # Track if message has been broadcast to avoid duplicates
 
         # Check prior messages first (before any early returns)
         prior_messages = message_service.get_messages_by_wa_id(db, wa_id)
@@ -306,6 +307,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         "timestamp": timestamp.isoformat(),
                         "message_id": message_id,
                     })
+                    message_broadcasted = True  # Mark as broadcasted
                     print(f"[ws_webhook] DEBUG - Customer text message broadcasted to WebSocket early: {message_id}")
                 except Exception as e:
                     print(f"[ws_webhook] WARNING - WebSocket broadcast failed: {e}")
@@ -352,6 +354,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                 "reply_title": reply_text,
                             },
                         })
+                        message_broadcasted = True  # Mark as broadcasted
                         print(f"[ws_webhook] DEBUG - Customer interactive message broadcasted to WebSocket early: {message_id}")
                     except Exception as e:
                         print(f"[ws_webhook] WARNING - WebSocket broadcast failed: {e}")
@@ -1016,21 +1019,27 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     handled_text = True
                     return {"status": "treatment_interactive_prompted", "message_id": message_id}
 
-            # Always broadcast to WebSocket (even if already saved)
-            if not handled_text:  # Only broadcast if not already handled by treatment flow
+            # Only broadcast if not already broadcasted early and not handled by treatment flow
+            if not message_broadcasted and not handled_text:
                 # Determine flow context for broadcast metadata
                 flow_context = "treatment" if is_treatment_flow_number else ("lead_appointment" if is_lead_appointment_number else "unknown")
-                await manager.broadcast({
-                    "from": wa_id,  # Customer's WA ID
-                    "to": to_wa_id,  # Business number
-                    "type": "text",
-                    "message": body_text,
-                    "timestamp": timestamp.isoformat(),
-                    "meta": {
-                        "flow": flow_context,
-                        "action": "customer_message"
-                    }
-                })
+                try:
+                    await manager.broadcast({
+                        "from": wa_id,  # Customer's WA ID
+                        "to": to_wa_id,  # Business number
+                        "type": "text",
+                        "message": body_text,
+                        "timestamp": timestamp.isoformat(),
+                        "message_id": message_id,
+                        "meta": {
+                            "flow": flow_context,
+                            "action": "customer_message"
+                        }
+                    })
+                    message_broadcasted = True  # Mark as broadcasted
+                    print(f"[ws_webhook] DEBUG - Customer text message broadcasted to WebSocket (late): {message_id}")
+                except Exception as e:
+                    print(f"[ws_webhook] WARNING - WebSocket broadcast failed: {e}")
 
             # Catalog link is sent only on explicit button clicks; no text keyword trigger
 
