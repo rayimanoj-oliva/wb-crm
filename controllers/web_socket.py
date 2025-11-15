@@ -357,6 +357,8 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         message_broadcasted = True  # Mark as broadcasted
                         print(f"[ws_webhook] DEBUG - Customer interactive message broadcasted to WebSocket early: {message_id}")
                     except Exception as e:
+                        # Even if broadcast fails, mark as broadcasted to prevent duplicate attempts
+                        message_broadcasted = True
                         print(f"[ws_webhook] WARNING - WebSocket broadcast failed: {e}")
 
         # Track referrer information on EVERY message
@@ -1621,17 +1623,22 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             try:
                 if i_type in {"button_reply", "list_reply"}:
                     reply_text_any = (title or reply_id or "[Interactive Reply]")
-                    msg_interactive_any = MessageCreate(
-                        message_id=message_id,
-                        from_wa_id=from_wa_id,
-                        to_wa_id=to_wa_id,
-                        type="interactive",
-                        body=reply_text_any,
-                        timestamp=timestamp,
-                        customer_id=customer.id,
-                    )
-                    message_service.create_message(db, msg_interactive_any)
-                    db.commit()  # Explicitly commit the transaction
+                    
+                    # Check if message was already saved early (to avoid duplicate database entries)
+                    existing_msg_check = db.query(Message).filter(Message.message_id == message_id).first()
+                    if not existing_msg_check:
+                        msg_interactive_any = MessageCreate(
+                            message_id=message_id,
+                            from_wa_id=from_wa_id,
+                            to_wa_id=to_wa_id,
+                            type="interactive",
+                            body=reply_text_any,
+                            timestamp=timestamp,
+                            customer_id=customer.id,
+                        )
+                        message_service.create_message(db, msg_interactive_any)
+                        db.commit()  # Explicitly commit the transaction
+                    
                     # Only broadcast if not already broadcasted early (check message_broadcasted flag)
                     if not message_broadcasted:
                         # Determine flow context for broadcast metadata
@@ -1642,6 +1649,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                             "type": "interactive",
                             "message": reply_text_any,
                             "timestamp": timestamp.isoformat(),
+                            "message_id": message_id,
                             "meta": {
                                 "flow": flow_context,
                                 "action": "customer_message",
