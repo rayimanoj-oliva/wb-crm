@@ -1616,6 +1616,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
 
             # NEW: Immediately persist and broadcast ANY interactive reply before branching,
             # so UI always shows the user's selection even if we return early later.
+            # NOTE: Check message_broadcasted flag to avoid duplicate broadcasts (already broadcast early at line 343)
             interactive_broadcasted = False
             try:
                 if i_type in {"button_reply", "list_reply"}:
@@ -1631,21 +1632,27 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     )
                     message_service.create_message(db, msg_interactive_any)
                     db.commit()  # Explicitly commit the transaction
-                    # Determine flow context for broadcast metadata
-                    flow_context = "treatment" if is_treatment_flow_number else ("lead_appointment" if is_lead_appointment_number else "unknown")
-                    await manager.broadcast({
-                        "from": wa_id,  # Customer's WA ID
-                        "to": to_wa_id,  # Business number
-                        "type": "interactive",
-                        "message": reply_text_any,
-                        "timestamp": timestamp.isoformat(),
-                        "meta": {
-                            "flow": flow_context,
-                            "action": "customer_message",
-                            "interactive_type": i_type
-                        }
-                    })
-                    interactive_broadcasted = True
+                    # Only broadcast if not already broadcasted early (check message_broadcasted flag)
+                    if not message_broadcasted:
+                        # Determine flow context for broadcast metadata
+                        flow_context = "treatment" if is_treatment_flow_number else ("lead_appointment" if is_lead_appointment_number else "unknown")
+                        await manager.broadcast({
+                            "from": wa_id,  # Customer's WA ID
+                            "to": to_wa_id,  # Business number
+                            "type": "interactive",
+                            "message": reply_text_any,
+                            "timestamp": timestamp.isoformat(),
+                            "meta": {
+                                "flow": flow_context,
+                                "action": "customer_message",
+                                "interactive_type": i_type
+                            }
+                        })
+                        message_broadcasted = True  # Mark as broadcasted
+                        interactive_broadcasted = True
+                    else:
+                        # Already broadcasted early, just mark as broadcasted
+                        interactive_broadcasted = True
                     
                     # Mark customer as replied and reset follow-up timer for ANY interactive response
                     # This ensures follow-up timer resets from user's last interaction (button/list click)

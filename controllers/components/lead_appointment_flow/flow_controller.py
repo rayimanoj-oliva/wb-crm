@@ -40,20 +40,14 @@ async def run_lead_appointment_flow(
     """
     
     try:
+        # NOTE: Do NOT broadcast here - web_socket.py already handles broadcasting to avoid duplicates
         # Broadcast incoming customer messages to WebSocket
-        if message_type == "text" and body_text:
-            try:
-                await manager.broadcast({
-                    "from": wa_id,
-                    "to": from_wa_id,
-                    "type": "text",
-                    "message": body_text,
-                    "timestamp": timestamp.isoformat(),
-                    "meta": {"flow": "lead_appointment", "action": "customer_message"}
-                })
-                print(f"[lead_appointment_flow] DEBUG - Customer text message broadcasted to WebSocket")
-            except Exception as e:
-                print(f"[lead_appointment_flow] WARNING - WebSocket broadcast failed: {e}")
+        # REMOVED: Duplicate broadcast - web_socket.py already broadcasts early (line 302)
+        # if message_type == "text" and body_text:
+        #     try:
+        #         await manager.broadcast({...})
+        #     except Exception as e:
+        #         print(f"[lead_appointment_flow] WARNING - WebSocket broadcast failed: {e}")
         
         # Handle text messages - check for auto-welcome trigger
         if message_type == "text" and body_text:
@@ -67,25 +61,19 @@ async def run_lead_appointment_flow(
         
         # Handle interactive responses
         if message_type == "interactive" and interactive and i_type:
+            # NOTE: Do NOT broadcast here - web_socket.py already handles broadcasting to avoid duplicates
             # Broadcast interactive responses to WebSocket
-            try:
-                reply_text = ""
-                if i_type == "button_reply":
-                    reply_text = interactive.get("button_reply", {}).get("title", "")
-                elif i_type == "list_reply":
-                    reply_text = interactive.get("list_reply", {}).get("title", "")
-                
-                await manager.broadcast({
-                    "from": wa_id,
-                    "to": from_wa_id,
-                    "type": "interactive",
-                    "message": reply_text,
-                    "timestamp": timestamp.isoformat(),
-                    "meta": {"flow": "lead_appointment", "action": "customer_interaction", "i_type": i_type}
-                })
-                print(f"[lead_appointment_flow] DEBUG - Customer interactive response broadcasted to WebSocket")
-            except Exception as e:
-                print(f"[lead_appointment_flow] WARNING - WebSocket broadcast failed: {e}")
+            # REMOVED: Duplicate broadcast - web_socket.py already broadcasts early (line 343)
+            # try:
+            #     reply_text = ""
+            #     if i_type == "button_reply":
+            #         reply_text = interactive.get("button_reply", {}).get("title", "")
+            #     elif i_type == "list_reply":
+            #         reply_text = interactive.get("list_reply", {}).get("title", "")
+            #     
+            #     await manager.broadcast({...})
+            # except Exception as e:
+            #     print(f"[lead_appointment_flow] WARNING - WebSocket broadcast failed: {e}")
             
             return await handle_interactive_response(
                 db=db,
