@@ -57,8 +57,36 @@ def update_user(
     user_id: UUID,
     user: UserUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin_user)  # Only admins can update users
+    current_user: User = Depends(get_current_user)  # Allow users to update their own profile
 ):
+    # Get the user being updated
+    target_user = crud.get_user(db, user_id)
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # If current user is an agent, they can only update their own profile
+    if current_user.role == "AGENT":
+        if current_user.id != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Agents can only update their own profile"
+            )
+        # Agents cannot change their role
+        if user.role is not None and user.role != target_user.role:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Agents cannot change their role"
+            )
+        # Remove role from update if agent is trying to update themselves
+        user.role = None
+    
+    # Only admins can update other users' roles
+    elif current_user.role != "ADMIN":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can update other users"
+        )
+    
     updated = crud.update_user(db, user_id, user)
     if not updated:
         raise HTTPException(status_code=404, detail="User not found")
