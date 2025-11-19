@@ -60,3 +60,24 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     if user is None:
         raise credentials_exception
     return user
+
+
+# -- Role-based access control --
+def get_current_admin_user(current_user: User = Depends(get_current_user)):
+    """Dependency to ensure the current user is an ADMIN"""
+    if current_user.role != "ADMIN":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required"
+        )
+    return current_user
+
+
+def get_current_agent_user(current_user: User = Depends(get_current_user)):
+    """Dependency to ensure the current user is an AGENT"""
+    if current_user.role != "AGENT":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Agent access required"
+        )
+    return current_user

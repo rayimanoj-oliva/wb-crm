@@ -1,6 +1,6 @@
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from uuid import UUID
 
@@ -8,7 +8,7 @@ from schemas.customer_schema import CustomerOut
 from schemas.user_schema import UserCreate, UserRead, UserUpdate
 from models.models import User, Customer
 from services import crud
-from auth import get_current_user
+from auth import get_current_user, get_current_admin_user
 from database.db import get_db
 from services.customer_service import get_customers_for_user
 
@@ -25,14 +25,10 @@ def read_current_user(current_user: User = Depends(get_current_user)):
 def create_user(
     user: UserCreate,
     db: Session = Depends(get_db),
-    # current_user: User = Depends(get_current_user)  # Authenticated user
+    current_user: User = Depends(get_current_admin_user)  # Only admins can create users
 ):
     if crud.get_user_by_email(db, user.email):
         raise HTTPException(status_code=400, detail="Email already registered")
-
-    # # Optional: only admins can assign the ADMIN role
-    # if user.role == "ADMIN" and current_user.role != "ADMIN":
-    #     raise HTTPException(status_code=403, detail="Only admins can create admin users")
 
     return crud.create_user(db, user)
 
@@ -41,7 +37,7 @@ def read_users(
     skip: int = 0,
     limit: int = 10,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_admin_user),  # Only admins can list all users
 ):
     return crud.get_users(db, skip=skip, limit=limit)
 
@@ -49,7 +45,7 @@ def read_users(
 def read_user(
     user_id: UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_admin_user)  # Only admins can view other users
 ):
     user = crud.get_user(db, user_id)
     if not user:
@@ -61,7 +57,7 @@ def update_user(
     user_id: UUID,
     user: UserUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_admin_user)  # Only admins can update users
 ):
     updated = crud.update_user(db, user_id, user)
     if not updated:
@@ -72,7 +68,7 @@ def update_user(
 def delete_user(
     user_id: UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_admin_user)  # Only admins can delete users
 ):
     deleted = crud.delete_user(db, user_id)
     if not deleted:
@@ -88,9 +84,6 @@ def get_user_customers(user_id: UUID, db: Session = Depends(get_db)):
 def get_users_by_role(
         role: str,
         db: Session = Depends(get_db),
-        current_user: User = Depends(get_current_user)
+        current_user: User = Depends(get_current_admin_user)  # Only admins can filter by role
 ):
-    if current_user.role != "ADMIN":
-        raise HTTPException(status_code=403, detail="Admins only")
-
     return db.query(User).filter(User.role == role.upper()).all()
