@@ -81,6 +81,20 @@ async def send_auto_welcome_message(db: Session, *, wa_id: str) -> Dict[str, Any
                 create_message(db, outbound_message)
                 print(f"[lead_appointment_flow] DEBUG - Auto welcome template message saved to database: {message_id}")
                 
+                # Ensure flow state is set when template is sent (in case it wasn't set earlier)
+                try:
+                    from controllers.web_socket import lead_appointment_state
+                    if wa_id not in lead_appointment_state:
+                        lead_appointment_state[wa_id] = {}
+                    lead_appointment_state[wa_id]["flow_context"] = "lead_appointment"
+                    if "lead_source" not in lead_appointment_state[wa_id]:
+                        lead_appointment_state[wa_id]["lead_source"] = "Facebook"
+                    if "language" not in lead_appointment_state[wa_id]:
+                        lead_appointment_state[wa_id]["language"] = "English"
+                    print(f"[lead_appointment_flow] ⚠️⚠️⚠️ DEBUG - Ensured flow state is set for {wa_id} after sending template")
+                except Exception as e:
+                    print(f"[lead_appointment_flow] WARNING - Could not set flow state: {e}")
+                
                 # Broadcast to WebSocket
                 await manager.broadcast({
                     "from": os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),

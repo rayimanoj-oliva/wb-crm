@@ -58,8 +58,16 @@ def clear_flow_state_for_restart(wa_id: str) -> None:
                 appointment_state[wa_id] = {k: v for k, v in state.items() if k in critical_fields}
         
         # Clear lead appointment state to allow fresh start
+        # BUT: Don't clear if customer is actively in lead appointment flow (has flow_context set)
+        # This prevents treatment flow from clearing lead appointment flow state
         if wa_id in lead_appointment_state:
-            lead_appointment_state.pop(wa_id, None)
+            state = lead_appointment_state[wa_id]
+            # Only clear if flow_context is NOT "lead_appointment" (customer is not actively in flow)
+            if state.get("flow_context") != "lead_appointment":
+                lead_appointment_state.pop(wa_id, None)
+                print(f"[state/memory] DEBUG - Cleared lead appointment state for restart: wa_id={wa_id}")
+            else:
+                print(f"[state/memory] DEBUG - Preserved lead appointment state (customer is in active flow): wa_id={wa_id}")
         
         print(f"[state/memory] DEBUG - Cleared flow state for restart: wa_id={wa_id}")
     except Exception as e:

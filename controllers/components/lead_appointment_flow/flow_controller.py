@@ -51,9 +51,6 @@ async def run_lead_appointment_flow(
         
         # Handle text messages - check for auto-welcome trigger
         if message_type == "text" and body_text:
-            # First check if customer is in the middle of the flow (expecting interactive response)
-            is_in_flow = is_lead_appointment_flow_active(wa_id)
-            
             result = await handle_text_message(
                 db=db,
                 wa_id=wa_id,
@@ -64,8 +61,14 @@ async def run_lead_appointment_flow(
             
             # If message didn't trigger the flow
             if result.get("status") == "skipped":
-                # If customer is in the flow, they should use interactive options
+                # Re-check if customer is in the flow AFTER handle_text_message (state might have changed)
+                # This ensures we catch customers who are in an active flow (between flow trigger and completion)
+                is_in_flow = is_lead_appointment_flow_active(wa_id)
+                print(f"[lead_appointment_flow] ⚠️⚠️⚠️ DEBUG - Message status: skipped, is_in_flow: {is_in_flow}, wa_id: {wa_id}")
+                
+                # If customer is in the flow (between flow trigger until flow completed), send interruption message
                 if is_in_flow:
+                    print(f"[lead_appointment_flow] ⚠️⚠️⚠️ DEBUG - Customer {wa_id} is in flow, sending interruption message")
                     try:
                         from utils.whatsapp import send_message_to_waid
                         from .config import LEAD_APPOINTMENT_PHONE_ID, LEAD_APPOINTMENT_DISPLAY_LAST10
@@ -87,12 +90,17 @@ async def run_lead_appointment_flow(
                             phone_id_hint=str(LEAD_APPOINTMENT_PHONE_ID)
                         )
                         print(f"[lead_appointment_flow] ✅ Sent interactive reminder to {wa_id} (in flow)")
+                        # Return immediately to prevent "Thank you" message from being sent
+                        return result
                     except Exception as e:
                         print(f"[lead_appointment_flow] ❌ ERROR sending interactive reminder: {str(e)}")
                         import traceback
                         traceback.print_exc()
+                        # Return even on error to prevent "Thank you" message
+                        return result
                 else:
                     # Customer is not in flow (flow complete or never started) - send auto-reply
+                    print(f"[lead_appointment_flow] ⚠️⚠️⚠️ DEBUG - Customer {wa_id} is NOT in flow, sending Thank you message")
                     # IMPORTANT: This auto-reply is ONLY for lead appointment flow number 7729992376
                     try:
                         from utils.whatsapp import send_message_to_waid
@@ -562,8 +570,14 @@ def is_lead_appointment_flow_active(wa_id: str) -> bool:
     
     try:
         from controllers.web_socket import lead_appointment_state
-        return wa_id in lead_appointment_state and bool(lead_appointment_state[wa_id])
-    except Exception:
+        is_active = wa_id in lead_appointment_state and bool(lead_appointment_state[wa_id])
+        if is_active:
+            print(f"[lead_appointment_flow] DEBUG - Customer {wa_id} IS in lead appointment flow. State: {lead_appointment_state.get(wa_id)}")
+        else:
+            print(f"[lead_appointment_flow] DEBUG - Customer {wa_id} is NOT in lead appointment flow")
+        return is_active
+    except Exception as e:
+        print(f"[lead_appointment_flow] DEBUG - Error checking flow state for {wa_id}: {e}")
         return False
 
 
