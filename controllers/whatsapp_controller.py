@@ -29,7 +29,23 @@ WHATSAPP_API_URL = "https://graph.facebook.com/v22.0/367633743092037/messages"
 MEDIA_URL = "https://graph.facebook.com/v22.0/367633743092037/media"
 # MEDIA_URL = "https://graph.facebook.com/v22.0/286831244524604/media"
 
+PHONE_ID_MAP = {
+    "917617613030": "859830643878412",
+    "918297882978": "848542381673826",
+    "917729992376": "367633743092037",
+}
 
+def get_urls_by_peer(peer: str):
+    phone_id = PHONE_ID_MAP.get(peer)
+    if not phone_id:
+        raise HTTPException(status_code=400, detail=f"Invalid peer number: {peer}")
+
+    return {
+        "messages": f"https://graph.facebook.com/v22.0/{phone_id}/messages",
+        "media": f"https://graph.facebook.com/v22.0/{phone_id}/media",
+        "phone_id": phone_id
+    }
+    
 @router.post("/token", status_code=201)
 def add_token(token_data: WhatsAppTokenCreate, db: Session = Depends(get_db)):
     try:
@@ -40,6 +56,7 @@ def add_token(token_data: WhatsAppTokenCreate, db: Session = Depends(get_db)):
 
 @router.post("/send-message")
 async def send_whatsapp_message(
+    peer: str = Form(...),
     wa_id: str = Form(...),
     type: Literal["text", "image", "document", "video", "interactive", "location", "template", "flow"] = Form(...),
     body: Optional[str] = Form(None),
@@ -69,8 +86,10 @@ async def send_whatsapp_message(
             raise HTTPException(status_code=400, detail="Token not available")
         token = token_obj.token
         headers = {"Authorization": f"Bearer {token}"}
-        from_wa_id = "917729992376"
-
+        urls = get_urls_by_peer(peer)
+        WHATSAPP_API_URL = urls["messages"]
+        MEDIA_URL = urls["media"]
+        from_wa_id = peer  # sender changes based on peer
         media_id = None
         caption = None
         filename = None
