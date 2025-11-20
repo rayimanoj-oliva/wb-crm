@@ -51,6 +51,9 @@ async def run_lead_appointment_flow(
         
         # Handle text messages - check for auto-welcome trigger
         if message_type == "text" and body_text:
+            # First check if customer is in the middle of the flow (expecting interactive response)
+            is_in_flow = is_lead_appointment_flow_active(wa_id)
+            
             result = await handle_text_message(
                 db=db,
                 wa_id=wa_id,
@@ -59,37 +62,64 @@ async def run_lead_appointment_flow(
                 timestamp=timestamp
             )
             
-            # If message didn't trigger the flow, send auto-reply for lead appointment flow
+            # If message didn't trigger the flow
             if result.get("status") == "skipped":
-                # Only send auto-reply if this is definitely a lead appointment flow number
-                # (we're already in run_lead_appointment_flow, so it's confirmed)
-                try:
-                    from utils.whatsapp import send_message_to_waid
-                    from .config import LEAD_APPOINTMENT_PHONE_ID, LEAD_APPOINTMENT_DISPLAY_LAST10
-                    import os
-                    
-                    auto_reply_message = (
-                        "Thank you for your interest in Oliva — India's trusted chain of dermatology clinics.\n\n"
-                        "We are unable to address your query right now over chat.\n\n"
-                        "For any assistance, please call us on +919205481482.\n\n"
-                        "Our client relationship agent will attend to your queries."
-                    )
-                    
-                    # Use the lead appointment display number
-                    from_wa_id = os.getenv("WHATSAPP_DISPLAY_NUMBER", "91" + LEAD_APPOINTMENT_DISPLAY_LAST10)
-                    
-                    await send_message_to_waid(
-                        wa_id, 
-                        auto_reply_message, 
-                        db, 
-                        from_wa_id=from_wa_id,
-                        phone_id_hint=str(LEAD_APPOINTMENT_PHONE_ID)
-                    )
-                    print(f"[lead_appointment_flow] ✅ Sent auto-reply for non-triggering message to {wa_id}")
-                except Exception as e:
-                    print(f"[lead_appointment_flow] ❌ ERROR sending auto-reply: {str(e)}")
-                    import traceback
-                    traceback.print_exc()
+                # If customer is in the flow, they should use interactive options
+                if is_in_flow:
+                    try:
+                        from utils.whatsapp import send_message_to_waid
+                        from .config import LEAD_APPOINTMENT_PHONE_ID, LEAD_APPOINTMENT_DISPLAY_LAST10
+                        import os
+                        
+                        interactive_reminder = (
+                            "We didn't quite get that.\n\n"
+                            "Please select an above option."
+                        )
+                        
+                        # Use the lead appointment display number
+                        from_wa_id = os.getenv("WHATSAPP_DISPLAY_NUMBER", "91" + LEAD_APPOINTMENT_DISPLAY_LAST10)
+                        
+                        await send_message_to_waid(
+                            wa_id, 
+                            interactive_reminder, 
+                            db, 
+                            from_wa_id=from_wa_id,
+                            phone_id_hint=str(LEAD_APPOINTMENT_PHONE_ID)
+                        )
+                        print(f"[lead_appointment_flow] ✅ Sent interactive reminder to {wa_id} (in flow)")
+                    except Exception as e:
+                        print(f"[lead_appointment_flow] ❌ ERROR sending interactive reminder: {str(e)}")
+                        import traceback
+                        traceback.print_exc()
+                else:
+                    # Customer is not in flow (flow complete or never started) - send auto-reply
+                    try:
+                        from utils.whatsapp import send_message_to_waid
+                        from .config import LEAD_APPOINTMENT_PHONE_ID, LEAD_APPOINTMENT_DISPLAY_LAST10
+                        import os
+                        
+                        auto_reply_message = (
+                            "Thank you for your interest in Oliva — India's trusted chain of dermatology clinics.\n\n"
+                            "We are unable to address your query right now over chat.\n\n"
+                            "For any assistance, please call us on +919205481482.\n\n"
+                            "Our client relationship agent will attend to your queries."
+                        )
+                        
+                        # Use the lead appointment display number
+                        from_wa_id = os.getenv("WHATSAPP_DISPLAY_NUMBER", "91" + LEAD_APPOINTMENT_DISPLAY_LAST10)
+                        
+                        await send_message_to_waid(
+                            wa_id, 
+                            auto_reply_message, 
+                            db, 
+                            from_wa_id=from_wa_id,
+                            phone_id_hint=str(LEAD_APPOINTMENT_PHONE_ID)
+                        )
+                        print(f"[lead_appointment_flow] ✅ Sent auto-reply for non-triggering message to {wa_id} (flow not active)")
+                    except Exception as e:
+                        print(f"[lead_appointment_flow] ❌ ERROR sending auto-reply: {str(e)}")
+                        import traceback
+                        traceback.print_exc()
             
             return result
         
