@@ -51,29 +51,52 @@ async def run_lead_appointment_flow(
         
         # Handle text messages - check for auto-welcome trigger
         if message_type == "text" and body_text:
-            return await handle_text_message(
+            result = await handle_text_message(
                 db=db,
                 wa_id=wa_id,
                 body_text=body_text,
                 customer=customer,
                 timestamp=timestamp
             )
+            
+            # If message didn't trigger the flow, send auto-reply for lead appointment flow
+            if result.get("status") == "skipped":
+                # Only send auto-reply if this is definitely a lead appointment flow number
+                # (we're already in run_lead_appointment_flow, so it's confirmed)
+                try:
+                    from utils.whatsapp import send_message_to_waid
+                    from .config import LEAD_APPOINTMENT_PHONE_ID, LEAD_APPOINTMENT_DISPLAY_LAST10
+                    import os
+                    
+                    auto_reply_message = (
+                        "Thank you for your interest in Oliva — India's trusted chain of dermatology clinics.\n\n"
+                        "We are unable to address your query right now over chat.\n\n"
+                        "For any assistance, please call us on +919205481482.\n\n"
+                        "Our client relationship agent will attend to your queries."
+                    )
+                    
+                    # Use the lead appointment display number
+                    from_wa_id = os.getenv("WHATSAPP_DISPLAY_NUMBER", "91" + LEAD_APPOINTMENT_DISPLAY_LAST10)
+                    
+                    await send_message_to_waid(
+                        wa_id, 
+                        auto_reply_message, 
+                        db, 
+                        from_wa_id=from_wa_id,
+                        phone_id_hint=str(LEAD_APPOINTMENT_PHONE_ID)
+                    )
+                    print(f"[lead_appointment_flow] ✅ Sent auto-reply for non-triggering message to {wa_id}")
+                except Exception as e:
+                    print(f"[lead_appointment_flow] ❌ ERROR sending auto-reply: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
+            
+            return result
         
         # Handle interactive responses
         if message_type == "interactive" and interactive and i_type:
             # NOTE: Do NOT broadcast here - web_socket.py already handles broadcasting to avoid duplicates
-            # Broadcast interactive responses to WebSocket
-            # REMOVED: Duplicate broadcast - web_socket.py already broadcasts early (line 343)
-            # try:
-            #     reply_text = ""
-            #     if i_type == "button_reply":
-            #         reply_text = interactive.get("button_reply", {}).get("title", "")
-            #     elif i_type == "list_reply":
-            #         reply_text = interactive.get("list_reply", {}).get("title", "")
-            #     
-            #     await manager.broadcast({...})
-            # except Exception as e:
-            #     print(f"[lead_appointment_flow] WARNING - WebSocket broadcast failed: {e}")
+           
             
             return await handle_interactive_response(
                 db=db,
@@ -150,22 +173,14 @@ async def handle_text_message(
         and "want to know more" in normalized_text
     )
     
-    # Generic keyword triggers (fallback for older behavior)
-    welcome_triggers = [
-        "book", "appointment", "inquire", "inquiry", "consultation", "visit", "schedule"
-    ]
-    
     # Check if message matches any starting point message (exact match after normalization)
     # Normalize apostrophes in the starting points list to match
     normalized_starting_points = [point.replace("'", "'").replace("'", "'") for point in link_starting_points]
     is_starting_point = normalized_text in normalized_starting_points
     
-    # Also check for generic triggers
-    has_generic_trigger = any(trigger in normalized_text for trigger in welcome_triggers)
-    
     # NOTE: Location inquiry messages like "want to know more about services in..." should go to TREATMENT flow
     # They are handled by run_treament_flow which has a prefill_regex pattern for them
-    if is_starting_point or has_link_pattern or has_generic_trigger:
+    if is_starting_point or has_link_pattern:
         # Initialize lead appointment flow state immediately when starting point message is detected
         try:
             from controllers.web_socket import lead_appointment_state
