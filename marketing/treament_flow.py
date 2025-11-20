@@ -321,13 +321,43 @@ async def run_treament_flow(
                     except Exception:
                         pass
                     if resp_prefill.status_code == 200:
+                        # Save mr_welcome template to database
+                        try:
+                            response_data = resp_prefill.json()
+                            template_message_id = response_data.get("messages", [{}])[0].get("id", f"outbound_{datetime.now().timestamp()}")
+                            
+                            from services.customer_service import get_or_create_customer
+                            from schemas.customer_schema import CustomerCreate
+                            from services.message_service import create_message
+                            from schemas.message_schema import MessageCreate
+                            
+                            customer = get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
+                            
+                            template_message = MessageCreate(
+                                message_id=template_message_id,
+                                from_wa_id=to_wa_id,
+                                to_wa_id=wa_id,
+                                type="template",
+                                body=f"TEMPLATE: mr_welcome",
+                                timestamp=datetime.now(),
+                                customer_id=customer.id,
+                            )
+                            create_message(db, template_message)
+                            print(f"[treatment_flow] ✅ Saved mr_welcome template to database: message_id={template_message_id}")
+                        except Exception as db_error:
+                            import traceback
+                            print(f"[treatment_flow] ❌ ERROR saving mr_welcome template to database: {str(db_error)}")
+                            print(f"[treatment_flow] Traceback: {traceback.format_exc()}")
+                        
                         try:
                             await manager.broadcast({
                                 "from": to_wa_id,
                                 "to": wa_id,
                                 "type": "template",
-                                "message": "mr_welcome sent",
+                                "message": "TEMPLATE: mr_welcome",
                                 "timestamp": datetime.now().isoformat(),
+                                "message_id": template_message_id if 'template_message_id' in locals() else None,
+                                "meta": {"template_name": "mr_welcome"}
                             })
                         except Exception:
                             pass
@@ -410,20 +440,51 @@ async def run_treament_flow(
                                         print(f"[treatment_flow] DEBUG - confirm buttons sent phone_id={phone_id} status={_resp_btn.status_code}")
                                     except Exception:
                                         pass
+                                    
+                                    # Save confirmation buttons interactive message to database
+                                    if _resp_btn.status_code == 200:
+                                        try:
+                                            response_data = _resp_btn.json()
+                                            confirm_message_id = response_data.get("messages", [{}])[0].get("id", f"outbound_{datetime.now().timestamp()}")
+                                            
+                                            from services.customer_service import get_or_create_customer
+                                            from schemas.customer_schema import CustomerCreate
+                                            from services.message_service import create_message
+                                            from schemas.message_schema import MessageCreate
+                                            
+                                            customer = get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
+                                            
+                                            confirm_interactive = MessageCreate(
+                                                message_id=confirm_message_id,
+                                                from_wa_id=to_wa_id,
+                                                to_wa_id=wa_id,
+                                                type="interactive",
+                                                body="Are your name and contact number correct? ",
+                                                timestamp=datetime.now(),
+                                                customer_id=customer.id,
+                                            )
+                                            create_message(db, confirm_interactive)
+                                            print(f"[treatment_flow] ✅ Saved confirmation buttons to database: message_id={confirm_message_id}")
+                                            
+                                            # Broadcast Yes/No buttons to websocket UI
+                                            try:
+                                                await manager.broadcast({
+                                                    "from": to_wa_id,
+                                                    "to": wa_id,
+                                                    "type": "interactive",
+                                                    "message": "Are your name and contact number correct? ",
+                                                    "timestamp": datetime.now().isoformat(),
+                                                    "message_id": confirm_message_id,
+                                                    "meta": {"kind": "button", "options": ["Yes", "No"]},
+                                                })
+                                            except Exception:
+                                                pass
+                                        except Exception as db_error:
+                                            import traceback
+                                            print(f"[treatment_flow] ❌ ERROR saving confirmation buttons to database: {str(db_error)}")
+                                            print(f"[treatment_flow] Traceback: {traceback.format_exc()}")
                                 except Exception as _e_btn:
                                     print(f"[treatment_flow] ERROR - confirm buttons post failed: {_e_btn}")
-                                # Broadcast Yes/No buttons to websocket UI
-                                try:
-                                    await manager.broadcast({
-                                        "from": to_wa_id,
-                                        "to": wa_id,
-                                        "type": "interactive",
-                                        "message": "Are your name and contact number correct? ",
-                                        "timestamp": datetime.now().isoformat(),
-                                        "meta": {"kind": "buttons", "options": ["Yes", "No"]},
-                                    })
-                                except Exception:
-                                    pass
                                 # Mark that we are awaiting an interactive response
                                 try:
                                     from controllers.web_socket import appointment_state as _appt_state  # type: ignore
@@ -922,12 +983,46 @@ async def run_treatment_buttons_flow(
                     components=None,
                     lang_code=lang_code_book,
                 )
+                
+                # Save booking_appoint template to database
+                template_message_id_book = None
+                if resp_book.status_code == 200:
+                    try:
+                        response_data = resp_book.json()
+                        template_message_id_book = response_data.get("messages", [{}])[0].get("id", f"outbound_{datetime.now().timestamp()}")
+                        
+                        from services.customer_service import get_or_create_customer
+                        from schemas.customer_schema import CustomerCreate
+                        from services.message_service import create_message
+                        from schemas.message_schema import MessageCreate
+                        
+                        customer = get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
+                        
+                        template_message = MessageCreate(
+                            message_id=template_message_id_book,
+                            from_wa_id=to_wa_id,
+                            to_wa_id=wa_id,
+                            type="template",
+                            body=f"TEMPLATE: booking_appoint",
+                            timestamp=datetime.now(),
+                            customer_id=customer.id,
+                        )
+                        create_message(db, template_message)
+                        print(f"[treatment_flow] ✅ Saved booking_appoint template to database: message_id={template_message_id_book}")
+                    except Exception as db_error:
+                        import traceback
+                        print(f"[treatment_flow] ❌ ERROR saving booking_appoint template to database: {str(db_error)}")
+                        print(f"[treatment_flow] Traceback: {traceback.format_exc()}")
+                
                 try:
                     await manager.broadcast({
                         "from": to_wa_id,
                         "to": wa_id,
                         "type": "template" if resp_book.status_code == 200 else "template_error",
-                        "message": "booking_appoint sent" if resp_book.status_code == 200 else "booking_appoint failed",
+                        "message": "TEMPLATE: booking_appoint" if resp_book.status_code == 200 else "booking_appoint failed",
+                        "timestamp": datetime.now().isoformat(),
+                        "message_id": template_message_id_book,
+                        "meta": {"template_name": "booking_appoint"} if resp_book.status_code == 200 else {},
                         **({"status_code": resp_book.status_code} if resp_book.status_code != 200 else {}),
                     })
                 except Exception:
@@ -969,7 +1064,51 @@ async def run_treatment_buttons_flow(
                         },
                     },
                 }
-                requests.post(get_messages_url(phone_id3), headers=headers3, json=payload_buttons)
+                resp_buttons = requests.post(get_messages_url(phone_id3), headers=headers3, json=payload_buttons)
+                
+                # Save interactive message to database
+                if resp_buttons.status_code == 200:
+                    try:
+                        response_data = resp_buttons.json()
+                        interactive_message_id = response_data.get("messages", [{}])[0].get("id", f"outbound_{datetime.now().timestamp()}")
+                        
+                        from services.customer_service import get_or_create_customer
+                        from schemas.customer_schema import CustomerCreate
+                        from services.message_service import create_message
+                        from schemas.message_schema import MessageCreate
+                        
+                        customer = get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
+                        
+                        interactive_message = MessageCreate(
+                            message_id=interactive_message_id,
+                            from_wa_id=to_wa_id,
+                            to_wa_id=wa_id,
+                            type="interactive",
+                            body="Please choose one of the following options:",
+                            timestamp=datetime.now(),
+                            customer_id=customer.id,
+                        )
+                        create_message(db, interactive_message)
+                        print(f"[treatment_flow] ✅ Saved interactive message to database: message_id={interactive_message_id}")
+                        
+                        # Broadcast to WebSocket
+                        try:
+                            await manager.broadcast({
+                                "from": to_wa_id,
+                                "to": wa_id,
+                                "type": "interactive",
+                                "message": "Please choose one of the following options:",
+                                "timestamp": datetime.now().isoformat(),
+                                "message_id": interactive_message_id,
+                                "meta": {"kind": "button", "action": "next_actions"}
+                            })
+                        except Exception:
+                            pass
+                    except Exception as db_error:
+                        import traceback
+                        print(f"[treatment_flow] ❌ ERROR saving interactive message to database: {str(db_error)}")
+                        print(f"[treatment_flow] Traceback: {traceback.format_exc()}")
+                
                 try:
                     from controllers.web_socket import appointment_state as _appt_state  # type: ignore
                     st_expect = _appt_state.get(wa_id) or {}
