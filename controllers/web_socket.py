@@ -308,13 +308,9 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         "message_id": message_id,
                     })
                     message_broadcasted = True  # Mark as broadcasted
-                    print(f"[ws_webhook] ✅ Customer text message broadcasted to WebSocket early: message_id={message_id}, body={body_text[:50]}")
+                    print(f"[ws_webhook] DEBUG - Customer text message broadcasted to WebSocket early: {message_id}")
                 except Exception as e:
-                    print(f"[ws_webhook] ❌ ERROR - Early WebSocket broadcast failed: {e}")
-                    import traceback
-                    print(f"[ws_webhook] Traceback: {traceback.format_exc()}")
-                    # Don't mark as broadcasted if it failed - allow late broadcast to retry
-                    message_broadcasted = False
+                    print(f"[ws_webhook] WARNING - WebSocket broadcast failed: {e}")
         elif message_type == "interactive" and interactive and i_type:
             # Save interactive messages early as well
             existing_msg = db.query(Message).filter(Message.message_id == message_id).first()
@@ -361,11 +357,9 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         message_broadcasted = True  # Mark as broadcasted
                         print(f"[ws_webhook] DEBUG - Customer interactive message broadcasted to WebSocket early: {message_id}")
                     except Exception as e:
-                        print(f"[ws_webhook] ❌ ERROR - Interactive WebSocket broadcast failed: {e}")
-                        import traceback
-                        print(f"[ws_webhook] Traceback: {traceback.format_exc()}")
-                        # Don't mark as broadcasted if it failed - allow late broadcast to retry
-                        message_broadcasted = False
+                        # Even if broadcast fails, mark as broadcasted to prevent duplicate attempts
+                        message_broadcasted = True
+                        print(f"[ws_webhook] WARNING - WebSocket broadcast failed: {e}")
 
         # Track referrer information on EVERY message
         if body_text:
@@ -847,7 +841,6 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     return {"status": "dummy_payment_failed", "message_id": message_id}
 
         # 4️⃣ Regular text messages - ALWAYS save to database regardless of handling
-        # Also ensure broadcast happens even if early broadcast was skipped or failed
         if message_type == "text":
             # Check if already saved to avoid duplicates
             existing_msg = db.query(Message).filter(Message.message_id == message_id).first()
@@ -1028,9 +1021,8 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     handled_text = True
                     return {"status": "treatment_interactive_prompted", "message_id": message_id}
 
-            # ALWAYS broadcast text messages to WebSocket - ensure frontend receives them
-            # Only skip if already successfully broadcasted early
-            if not message_broadcasted:
+            # Only broadcast if not already broadcasted early and not handled by treatment flow
+            if not message_broadcasted and not handled_text:
                 # Determine flow context for broadcast metadata
                 flow_context = "treatment" if is_treatment_flow_number else ("lead_appointment" if is_lead_appointment_number else "unknown")
                 try:
@@ -1047,12 +1039,9 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         }
                     })
                     message_broadcasted = True  # Mark as broadcasted
-                    print(f"[ws_webhook] ✅ Customer text message broadcasted to WebSocket: message_id={message_id}, body={body_text[:50]}")
+                    print(f"[ws_webhook] DEBUG - Customer text message broadcasted to WebSocket (late): {message_id}")
                 except Exception as e:
-                    print(f"[ws_webhook] ❌ ERROR - WebSocket broadcast failed: {e}")
-                    import traceback
-                    print(f"[ws_webhook] Traceback: {traceback.format_exc()}")
-                    # Don't mark as broadcasted if it failed - allow retry or logging
+                    print(f"[ws_webhook] WARNING - WebSocket broadcast failed: {e}")
 
             # Catalog link is sent only on explicit button clicks; no text keyword trigger
 
@@ -1974,35 +1963,6 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                 components=body_components_fu,
                                 lang_code=lang_code_fu,
                             )
-                            
-                            # Save template message to database
-                            if resp_fu.status_code == 200:
-                                try:
-                                    response_data = resp_fu.json()
-                                    template_message_id = response_data.get("messages", [{}])[0].get("id", f"outbound_{datetime.now().timestamp()}")
-                                    
-                                    from services.customer_service import get_or_create_customer
-                                    from schemas.customer_schema import CustomerCreate
-                                    from services.message_service import create_message
-                                    from schemas.message_schema import MessageCreate
-                                    
-                                    customer = get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
-                                    
-                                    template_message = MessageCreate(
-                                        message_id=template_message_id,
-                                        from_wa_id=str(phone_id_fu),
-                                        to_wa_id=wa_id,
-                                        type="template",
-                                        body=f"TEMPLATE: mr_welcome",
-                                        timestamp=datetime.now(),
-                                        customer_id=customer.id,
-                                    )
-                                    create_message(db, template_message)
-                                    print(f"[web_socket] ✅ Successfully saved mr_welcome template to database: message_id={template_message_id}")
-                                except Exception as db_error:
-                                    import traceback
-                                    print(f"[web_socket] ❌ ERROR saving mr_welcome template to database: {str(db_error)}")
-                                    print(f"[web_socket] Traceback: {traceback.format_exc()}")
                             
                             # Mark mr_welcome as sent to prevent duplicates and store phone id
                             try:

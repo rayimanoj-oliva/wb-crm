@@ -172,34 +172,6 @@ async def run_mr_welcome_number_flow(
             pass
 
         if resp.status_code == 200:
-            # Save template message to database
-            try:
-                response_data = resp.json()
-                template_message_id = response_data.get("messages", [{}])[0].get("id", f"outbound_{datetime.now().timestamp()}")
-                
-                from services.customer_service import get_or_create_customer
-                from schemas.customer_schema import CustomerCreate
-                from services.message_service import create_message
-                from schemas.message_schema import MessageCreate
-                
-                customer = get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
-                
-                template_message = MessageCreate(
-                    message_id=template_message_id,
-                    from_wa_id=to_wa_id,
-                    to_wa_id=wa_id,
-                    type="template",
-                    body=f"TEMPLATE: mr_welcome",
-                    timestamp=datetime.now(),
-                    customer_id=customer.id,
-                )
-                create_message(db, template_message)
-                print(f"[mr_welcome_flow] ✅ Successfully saved mr_welcome template to database: message_id={template_message_id}")
-            except Exception as db_error:
-                import traceback
-                print(f"[mr_welcome_flow] ❌ ERROR saving mr_welcome template to database: {str(db_error)}")
-                print(f"[mr_welcome_flow] Traceback: {traceback.format_exc()}")
-            
             # After template is sent, immediately send confirmation prompt from the same number.
             try:
                 # Prepare name and phone display
@@ -282,5 +254,4 @@ async def run_mr_welcome_number_flow(
         except Exception:
             pass
         return {"status": "welcome_failed", "message_id": message_id}
-
 
