@@ -1216,6 +1216,34 @@ async def _send_week_list(*, db: Session, wa_id: str) -> Dict[str, Any]:
 
         resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
         if resp.status_code == 200:
+            # Save week list interactive message to database
+            try:
+                response_data = resp.json()
+                message_id = response_data.get("messages", [{}])[0].get("id", f"outbound_{datetime.now().timestamp()}")
+                
+                from services.customer_service import get_or_create_customer
+                from schemas.customer_schema import CustomerCreate
+                from services.message_service import create_message
+                from schemas.message_schema import MessageCreate
+                
+                customer = get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
+                
+                week_message = MessageCreate(
+                    message_id=message_id,
+                    from_wa_id=os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                    to_wa_id=wa_id,
+                    type="interactive",
+                    body="📅 Please choose your appointment week:",
+                    timestamp=datetime.now(),
+                    customer_id=customer.id,
+                )
+                create_message(db, week_message)
+                print(f"[interactive_type] ✅ Saved week list to database: message_id={message_id}")
+            except Exception as db_error:
+                import traceback
+                print(f"[interactive_type] ❌ ERROR saving week list to database: {str(db_error)}")
+                print(f"[interactive_type] Traceback: {traceback.format_exc()}")
+            
             try:
                 await manager.broadcast({
                     "from": os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
@@ -1223,6 +1251,7 @@ async def _send_week_list(*, db: Session, wa_id: str) -> Dict[str, Any]:
                     "type": "interactive",
                     "message": "📅 Please choose your appointment week:",
                     "timestamp": datetime.now().isoformat(),
+                    "message_id": message_id if 'message_id' in locals() else None,
                     "meta": {"kind": "list", "section": "Available Weeks"}
                 })
             except Exception:
@@ -1274,6 +1303,34 @@ async def _send_day_list_for_week(*, db: Session, wa_id: str, start_iso: str, en
 
         resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
         if resp.status_code == 200:
+            # Save day list interactive message to database
+            try:
+                response_data = resp.json()
+                message_id = response_data.get("messages", [{}])[0].get("id", f"outbound_{datetime.now().timestamp()}")
+                
+                from services.customer_service import get_or_create_customer
+                from schemas.customer_schema import CustomerCreate
+                from services.message_service import create_message
+                from schemas.message_schema import MessageCreate
+                
+                customer = get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
+                
+                day_message = MessageCreate(
+                    message_id=message_id,
+                    from_wa_id=os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                    to_wa_id=wa_id,
+                    type="interactive",
+                    body="🗓️ Pick a date:",
+                    timestamp=datetime.now(),
+                    customer_id=customer.id,
+                )
+                create_message(db, day_message)
+                print(f"[interactive_type] ✅ Saved day list to database: message_id={message_id}")
+            except Exception as db_error:
+                import traceback
+                print(f"[interactive_type] ❌ ERROR saving day list to database: {str(db_error)}")
+                print(f"[interactive_type] Traceback: {traceback.format_exc()}")
+            
             try:
                 await manager.broadcast({
                     "from": os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
@@ -1281,6 +1338,7 @@ async def _send_day_list_for_week(*, db: Session, wa_id: str, start_iso: str, en
                     "type": "interactive",
                     "message": "🗓️ Pick a date:",
                     "timestamp": datetime.now().isoformat(),
+                    "message_id": message_id if 'message_id' in locals() else None,
                     "meta": {"kind": "list", "section": "Available Days"}
                 })
             except Exception:
@@ -1382,6 +1440,34 @@ async def _send_time_slot_categories(*, db: Session, wa_id: str) -> Dict[str, An
 
         resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
         if resp.status_code == 200:
+            # Save time slot categories interactive message to database
+            try:
+                response_data = resp.json()
+                message_id = response_data.get("messages", [{}])[0].get("id", f"outbound_{datetime.now().timestamp()}")
+                
+                from services.customer_service import get_or_create_customer
+                from schemas.customer_schema import CustomerCreate
+                from services.message_service import create_message
+                from schemas.message_schema import MessageCreate
+                
+                customer = get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
+                
+                slot_message = MessageCreate(
+                    message_id=message_id,
+                    from_wa_id=os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                    to_wa_id=wa_id,
+                    type="interactive",
+                    body="⏰ Choose a time slot category:",
+                    timestamp=datetime.now(),
+                    customer_id=customer.id,
+                )
+                create_message(db, slot_message)
+                print(f"[interactive_type] ✅ Saved time slot categories to database: message_id={message_id}")
+            except Exception as db_error:
+                import traceback
+                print(f"[interactive_type] ❌ ERROR saving time slot categories to database: {str(db_error)}")
+                print(f"[interactive_type] Traceback: {traceback.format_exc()}")
+            
             try:
                 await manager.broadcast({
                     "from": os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
@@ -1389,6 +1475,7 @@ async def _send_time_slot_categories(*, db: Session, wa_id: str) -> Dict[str, An
                     "type": "interactive",
                     "message": "⏰ Choose a time slot category:",
                     "timestamp": datetime.now().isoformat(),
+                    "message_id": message_id if 'message_id' in locals() else None,
                     "meta": {"kind": "list", "section": "Time Slots"}
                 })
             except Exception:
@@ -1451,6 +1538,34 @@ async def _send_times_for_slot(*, db: Session, wa_id: str, slot_id: str) -> Dict
 
         resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
         if resp.status_code == 200:
+            # Save times list interactive message to database
+            try:
+                response_data = resp.json()
+                message_id = response_data.get("messages", [{}])[0].get("id", f"outbound_{datetime.now().timestamp()}")
+                
+                from services.customer_service import get_or_create_customer
+                from schemas.customer_schema import CustomerCreate
+                from services.message_service import create_message
+                from schemas.message_schema import MessageCreate
+                
+                customer = get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
+                
+                times_message = MessageCreate(
+                    message_id=message_id,
+                    from_wa_id=os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                    to_wa_id=wa_id,
+                    type="interactive",
+                    body=f"⏱️ Pick a time in {section_title} Slot:",
+                    timestamp=datetime.now(),
+                    customer_id=customer.id,
+                )
+                create_message(db, times_message)
+                print(f"[interactive_type] ✅ Saved times list to database: message_id={message_id}")
+            except Exception as db_error:
+                import traceback
+                print(f"[interactive_type] ❌ ERROR saving times list to database: {str(db_error)}")
+                print(f"[interactive_type] Traceback: {traceback.format_exc()}")
+            
             try:
                 await manager.broadcast({
                     "from": os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
@@ -1458,6 +1573,7 @@ async def _send_times_for_slot(*, db: Session, wa_id: str, slot_id: str) -> Dict
                     "type": "interactive",
                     "message": f"⏱️ Pick a time in {section_title} Slot:",
                     "timestamp": datetime.now().isoformat(),
+                    "message_id": message_id if 'message_id' in locals() else None,
                     "meta": {"kind": "list", "section": f"{section_title} Times"}
                 })
             except Exception:
@@ -1498,7 +1614,9 @@ async def _send_lead_week_list(*, db: Session, wa_id: str) -> Dict[str, Any]:
 
         access_token = token_entry.token
         headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-        phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+        # Use lead appointment phone ID
+        from controllers.components.lead_appointment_flow.config import LEAD_APPOINTMENT_PHONE_ID
+        phone_id = str(LEAD_APPOINTMENT_PHONE_ID)
 
         rows = _generate_week_ranges(4)
         if not rows:
@@ -1524,13 +1642,43 @@ async def _send_lead_week_list(*, db: Session, wa_id: str) -> Dict[str, Any]:
 
         resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
         if resp.status_code == 200:
+            # Save lead week list interactive message to database
+            try:
+                response_data = resp.json()
+                message_id = response_data.get("messages", [{}])[0].get("id", f"outbound_{datetime.now().timestamp()}")
+                
+                from services.customer_service import get_or_create_customer
+                from schemas.customer_schema import CustomerCreate
+                from services.message_service import create_message
+                from schemas.message_schema import MessageCreate
+                from controllers.components.lead_appointment_flow.config import LEAD_APPOINTMENT_DISPLAY_LAST10
+                
+                customer = get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
+                
+                week_message = MessageCreate(
+                    message_id=message_id,
+                    from_wa_id=("91" + LEAD_APPOINTMENT_DISPLAY_LAST10),
+                    to_wa_id=wa_id,
+                    type="interactive",
+                    body="📅 Please choose your preferred week for the appointment:",
+                    timestamp=datetime.now(),
+                    customer_id=customer.id,
+                )
+                create_message(db, week_message)
+                print(f"[interactive_type] ✅ Saved lead week list to database: message_id={message_id}")
+            except Exception as db_error:
+                import traceback
+                print(f"[interactive_type] ❌ ERROR saving lead week list to database: {str(db_error)}")
+                print(f"[interactive_type] Traceback: {traceback.format_exc()}")
+            
             try:
                 await manager.broadcast({
-                    "from": os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                    "from": ("91" + LEAD_APPOINTMENT_DISPLAY_LAST10),
                     "to": wa_id,
                     "type": "interactive",
                     "message": "📅 Please choose your preferred week for the appointment:",
                     "timestamp": datetime.now().isoformat(),
+                    "message_id": message_id if 'message_id' in locals() else None,
                     "meta": {"kind": "list", "section": "Available Weeks", "flow": "lead_appointment"}
                 })
             except Exception:
@@ -1583,13 +1731,43 @@ async def _send_lead_day_list_for_week(*, db: Session, wa_id: str, start_iso: st
 
         resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
         if resp.status_code == 200:
+            # Save lead day list interactive message to database
+            try:
+                response_data = resp.json()
+                message_id = response_data.get("messages", [{}])[0].get("id", f"outbound_{datetime.now().timestamp()}")
+                
+                from services.customer_service import get_or_create_customer
+                from schemas.customer_schema import CustomerCreate
+                from services.message_service import create_message
+                from schemas.message_schema import MessageCreate
+                from controllers.components.lead_appointment_flow.config import LEAD_APPOINTMENT_DISPLAY_LAST10
+                
+                customer = get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
+                
+                day_message = MessageCreate(
+                    message_id=message_id,
+                    from_wa_id=("91" + LEAD_APPOINTMENT_DISPLAY_LAST10),
+                    to_wa_id=wa_id,
+                    type="interactive",
+                    body="🗓️ Select your preferred date:",
+                    timestamp=datetime.now(),
+                    customer_id=customer.id,
+                )
+                create_message(db, day_message)
+                print(f"[interactive_type] ✅ Saved lead day list to database: message_id={message_id}")
+            except Exception as db_error:
+                import traceback
+                print(f"[interactive_type] ❌ ERROR saving lead day list to database: {str(db_error)}")
+                print(f"[interactive_type] Traceback: {traceback.format_exc()}")
+            
             try:
                 await manager.broadcast({
-                    "from": os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                    "from": ("91" + LEAD_APPOINTMENT_DISPLAY_LAST10),
                     "to": wa_id,
                     "type": "interactive",
                     "message": "🗓️ Select your preferred date:",
                     "timestamp": datetime.now().isoformat(),
+                    "message_id": message_id if 'message_id' in locals() else None,
                     "meta": {"kind": "list", "section": "Available Dates", "flow": "lead_appointment"}
                 })
             except Exception:
