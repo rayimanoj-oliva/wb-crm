@@ -95,7 +95,8 @@ async def run_treament_flow(
         
         # Send template for ANY text message if customer is NOT already in the flow
         # This ensures template is sent for all messages, not just specific greetings
-        should_send_template = prefill_detected or (not is_in_flow and normalized_body.strip())
+        # Only send if customer is NOT in flow (prevents duplicate sends when customer is already in flow)
+        should_send_template = not is_in_flow and (prefill_detected or normalized_body.strip())
         
         print(f"[treatment_flow] DEBUG - Template send decision: prefill_detected={prefill_detected}, is_in_flow={is_in_flow}, normalized_body='{normalized_body[:50]}', should_send_template={should_send_template}")
         

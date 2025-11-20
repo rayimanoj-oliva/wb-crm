@@ -99,41 +99,8 @@ async def run_lead_appointment_flow(
                         # Return even on error to prevent "Thank you" message
                         return result
                 else:
-                    # Customer is not in flow (flow complete or never started) - send auto-reply
-                    print(f"[lead_appointment_flow] ⚠️⚠️⚠️ DEBUG - Customer {wa_id} is NOT in flow, sending Thank you message")
-                    # IMPORTANT: This auto-reply is ONLY for lead appointment flow number 7729992376
-                    try:
-                        from utils.whatsapp import send_message_to_waid
-                        from .config import LEAD_APPOINTMENT_PHONE_ID, LEAD_APPOINTMENT_DISPLAY_LAST10
-                        
-                        # Explicit check: Ensure we're only sending for lead appointment number 7729992376
-                        # Verify the phone_number_id matches the lead appointment phone ID
-                        if phone_number_id and str(phone_number_id) != str(LEAD_APPOINTMENT_PHONE_ID):
-                            print(f"[lead_appointment_flow] ⚠️ Skipping auto-reply: phone_number_id={phone_number_id} is not lead appointment phone ID {LEAD_APPOINTMENT_PHONE_ID}")
-                            return result
-                        
-                        auto_reply_message = (
-                            "Thank you for your interest in Oliva — India's trusted chain of dermatology clinics.\n\n"
-                            "We are unable to address your query right now over chat.\n\n"
-                            "For any assistance, please call us on +919205481482.\n\n"
-                            "Our client relationship agent will attend to your queries."
-                        )
-                        
-                        # Always use the lead appointment display number (7729992376) - do not use env variable
-                        from_wa_id = "91" + LEAD_APPOINTMENT_DISPLAY_LAST10
-                        
-                        await send_message_to_waid(
-                            wa_id, 
-                            auto_reply_message, 
-                            db, 
-                            from_wa_id=from_wa_id,
-                            phone_id_hint=str(LEAD_APPOINTMENT_PHONE_ID)
-                        )
-                        print(f"[lead_appointment_flow] ✅ Sent auto-reply for non-triggering message to {wa_id} (lead appointment flow only, number: {LEAD_APPOINTMENT_DISPLAY_LAST10})")
-                    except Exception as e:
-                        print(f"[lead_appointment_flow] ❌ ERROR sending auto-reply: {str(e)}")
-                        import traceback
-                        traceback.print_exc()
+                    # Customer is not in flow (flow complete or never started) - no auto-reply
+                    print(f"[lead_appointment_flow] ⚠️⚠️⚠️ DEBUG - Customer {wa_id} is NOT in flow, skipping Thank you auto-reply (disabled by request)")
             
             return result
         
