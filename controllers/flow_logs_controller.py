@@ -658,43 +658,88 @@ def get_last_step_reached(
     """
     Get the last step reached by a customer in a flow before follow-ups.
     Returns the most recent step from: entry, city_selection, treatment, concern_list, last_step
+    
+    Flow types:
+    - "lead_appointment" or "lead_appointment_flow" -> searches for "lead_appointment"
+    - "treatment" or "treatment_flow" -> searches for "treatment"
     """
     try:
-        # Valid steps for lead appointment flow
+        # Normalize flow_type (handle both "treatment_flow" and "treatment", etc.)
+        normalized_flow_type = flow_type
+        if flow_type == "treatment_flow":
+            normalized_flow_type = "treatment"
+        elif flow_type == "lead_appointment_flow":
+            normalized_flow_type = "lead_appointment"
+        
+        # Valid steps for both flows
         valid_steps = ["entry", "city_selection", "treatment", "concern_list", "last_step"]
         
         # Query for the most recent valid step for this customer
+        # Filter by step and description pattern (more flexible - matches any description containing "Last step reached")
         log = (
             db.query(FlowLog)
             .filter(
                 and_(
                     FlowLog.wa_id == wa_id,
-                    FlowLog.flow_type == flow_type,
+                    FlowLog.flow_type == normalized_flow_type,
                     FlowLog.step.in_(valid_steps),
-                    FlowLog.description.like("Last step reached: %")
+                    or_(
+                        FlowLog.description.like("%Last step reached:%"),
+                        FlowLog.description == None  # Also include logs without description if step matches
+                    )
                 )
             )
             .order_by(FlowLog.created_at.desc())
             .first()
         )
         
+        # If no log found with description filter, try without description filter (in case format changed)
         if not log:
+            log = (
+                db.query(FlowLog)
+                .filter(
+                    and_(
+                        FlowLog.wa_id == wa_id,
+                        FlowLog.flow_type == normalized_flow_type,
+                        FlowLog.step.in_(valid_steps)
+                    )
+                )
+                .order_by(FlowLog.created_at.desc())
+                .first()
+            )
+        
+        if not log:
+            # Debug: Check if there are any logs at all for this customer
+            any_logs = db.query(FlowLog).filter(
+                and_(
+                    FlowLog.wa_id == wa_id,
+                    FlowLog.flow_type == normalized_flow_type
+                )
+            ).count()
+            
             return {
                 "success": True,
                 "wa_id": wa_id,
                 "flow_type": flow_type,
+                "normalized_flow_type": normalized_flow_type,
                 "last_step": None,
-                "message": "No step data found for this customer"
+                "message": "No step data found for this customer",
+                "debug": {
+                    "total_logs_for_customer": any_logs,
+                    "valid_steps_checked": valid_steps
+                }
             }
         
         return {
             "success": True,
             "wa_id": wa_id,
             "flow_type": flow_type,
+            "normalized_flow_type": normalized_flow_type,
             "last_step": log.step,
             "step_name": log.step,
             "reached_at": log.created_at.isoformat() if log.created_at else None,
             "customer_name": log.name,
+            "description": log.description,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

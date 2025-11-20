@@ -46,6 +46,53 @@ def log_flow_event(
         return ""
 
 
+def _get_customer_name_from_flow_state(db: Session, wa_id: Optional[str], flow_type: str) -> Optional[str]:
+    """Get customer name from flow state based on flow type.
+    
+    For lead_appointment flow: Check lead_appointment_state first, then customer record
+    For treatment flow: Check appointment_state first, then customer record
+    
+    Returns the name if found, else None.
+    """
+    if not wa_id:
+        return None
+    
+    try:
+        if flow_type == "lead_appointment":
+            # Try to get name from lead_appointment_state first
+            try:
+                from controllers.web_socket import lead_appointment_state  # type: ignore
+                state = lead_appointment_state.get(wa_id, {})
+                user_name = state.get("user_name")
+                if user_name:
+                    return str(user_name).strip()
+            except Exception:
+                pass
+        elif flow_type == "treatment":
+            # Try to get name from appointment_state first
+            try:
+                from controllers.web_socket import appointment_state  # type: ignore
+                state = appointment_state.get(wa_id, {})
+                user_name = state.get("user_name")
+                if user_name:
+                    return str(user_name).strip()
+            except Exception:
+                pass
+        
+        # Fallback: Get from customer record
+        try:
+            from services.customer_service import get_customer_record_by_wa_id
+            customer = get_customer_record_by_wa_id(db, wa_id)
+            if customer and hasattr(customer, 'name') and customer.name:
+                return str(customer.name).strip()
+        except Exception:
+            pass
+    except Exception:
+        pass
+    
+    return None
+
+
 def log_last_step_reached(
     db: Session,
     *,
@@ -63,9 +110,15 @@ def log_last_step_reached(
     - concern_list: Concern list shown (if applicable)
     - last_step: Final step before follow-ups (time slot selection or callback confirmation)
     
+    If name is not provided, it will be retrieved from the appropriate flow state.
+    
     Returns the created FlowLog id (as str) if successful, else empty string.
     """
     try:
+        # If name not provided, try to get it from flow state
+        if not name:
+            name = _get_customer_name_from_flow_state(db, wa_id, flow_type)
+        
         log = FlowLog(
             flow_type=flow_type,
             step=step,

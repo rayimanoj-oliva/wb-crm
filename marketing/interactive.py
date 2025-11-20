@@ -230,6 +230,19 @@ def send_concern_buttons(
             appointment_state[wa_id] = st
         except Exception:
             pass
+        
+        # Log last step reached: concern_list
+        try:
+            from utils.flow_log import log_last_step_reached
+            log_last_step_reached(
+                db,
+                flow_type="treatment",
+                step="concern_list",
+                wa_id=wa_id,
+            )
+            print(f"[treatment_flow] ✅ Logged last step: concern_list")
+        except Exception as e:
+            print(f"[treatment_flow] WARNING - Could not log last step: {e}")
     try:
         awaitable = manager.broadcast({
             "from": _display_from_for_phone_id(phone_id),
@@ -320,6 +333,19 @@ def send_next_actions(
             appointment_state[wa_id] = st
         except Exception:
             pass
+        
+        # Log last step reached: last_step (next_actions is the final step before follow-ups)
+        try:
+            from utils.flow_log import log_last_step_reached
+            log_last_step_reached(
+                db,
+                flow_type="treatment",
+                step="last_step",
+                wa_id=wa_id,
+            )
+            print(f"[treatment_flow] ✅ Logged last step: last_step (next_actions)")
+        except Exception as e:
+            print(f"[treatment_flow] WARNING - Could not log last step: {e}")
     try:
         awaitable = manager.broadcast({
             "from": _display_from_for_phone_id(phone_id),

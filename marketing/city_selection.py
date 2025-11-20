@@ -169,6 +169,20 @@ async def send_city_selection(db: Session, *, wa_id: str, phone_id_hint: str | N
                 _appt_state[wa_id] = st_expect
             except Exception:
                 pass
+            
+            # Log last step reached: city_selection
+            try:
+                from utils.flow_log import log_last_step_reached
+                log_last_step_reached(
+                    db,
+                    flow_type="treatment",
+                    step="city_selection",
+                    wa_id=wa_id,
+                )
+                print(f"[treatment_flow] ✅ Logged last step: city_selection")
+            except Exception as e:
+                print(f"[treatment_flow] WARNING - Could not log last step: {e}")
+            
             # Arm Follow-Up 1 after this outbound prompt in case user stops here
             try:
                 import asyncio

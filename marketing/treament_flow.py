@@ -48,6 +48,9 @@ async def run_treament_flow(
         )
     except Exception:
         pass
+    
+    # Log last step reached: entry (when mr_welcome template is about to be sent)
+    # This will be logged again when template is actually sent, but this ensures we capture flow start
 
     handled_text = False
 
@@ -418,6 +421,19 @@ async def run_treament_flow(
                             appointment_state[wa_id] = st
                         except Exception:
                             pass
+                        
+                        # Log last step reached: entry (mr_welcome template sent)
+                        try:
+                            from utils.flow_log import log_last_step_reached
+                            log_last_step_reached(
+                                db,
+                                flow_type="treatment",
+                                step="entry",
+                                wa_id=wa_id,
+                            )
+                            print(f"[treatment_flow] ✅ Logged last step: entry")
+                        except Exception as e:
+                            print(f"[treatment_flow] WARNING - Could not log last step: {e}")
 
                         # Build and send name/phone confirmation with Yes/No
                         try:
@@ -952,6 +968,19 @@ async def run_treatment_buttons_flow(
                 lead_appointment_state[wa_id]["selected_concern"] = selected_concern_label
             except Exception:
                 pass
+            
+            # Log last step reached: treatment (concern selected)
+            try:
+                from utils.flow_log import log_last_step_reached
+                log_last_step_reached(
+                    db,
+                    flow_type="treatment",
+                    step="treatment",
+                    wa_id=wa_id,
+                )
+                print(f"[treatment_flow] ✅ Logged last step: treatment")
+            except Exception as e:
+                print(f"[treatment_flow] WARNING - Could not log last step: {e}")
         except Exception:
             pass
         try:
@@ -1146,6 +1175,20 @@ async def run_treatment_buttons_flow(
                     _appt_state[wa_id] = st_expect
                 except Exception:
                     pass
+                
+                # Log last step reached: last_step (next_actions is the final step before follow-ups)
+                try:
+                    from utils.flow_log import log_last_step_reached
+                    log_last_step_reached(
+                        db,
+                        flow_type="treatment",
+                        step="last_step",
+                        wa_id=wa_id,
+                    )
+                    print(f"[treatment_flow] ✅ Logged last step: last_step (next_actions)")
+                except Exception as e:
+                    print(f"[treatment_flow] WARNING - Could not log last step: {e}")
+                
                 return {"status": "next_actions_sent", "message_id": message_id}
         except Exception:
             pass
