@@ -1793,7 +1793,9 @@ async def _send_lead_time_slot_categories(*, db: Session, wa_id: str) -> Dict[st
 
         access_token = token_entry.token
         headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-        phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+        # Use lead appointment phone ID
+        from controllers.components.lead_appointment_flow.config import LEAD_APPOINTMENT_PHONE_ID, LEAD_APPOINTMENT_DISPLAY_LAST10
+        phone_id = str(LEAD_APPOINTMENT_PHONE_ID)
 
         rows = [
             {"id": "slot_morning", "title": "Morning (9–11 AM)"},
@@ -1820,13 +1822,42 @@ async def _send_lead_time_slot_categories(*, db: Session, wa_id: str) -> Dict[st
 
         resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
         if resp.status_code == 200:
+            # Save lead time slot categories interactive message to database
+            try:
+                response_data = resp.json()
+                message_id = response_data.get("messages", [{}])[0].get("id", f"outbound_{datetime.now().timestamp()}")
+                
+                from services.customer_service import get_or_create_customer
+                from schemas.customer_schema import CustomerCreate
+                from services.message_service import create_message
+                from schemas.message_schema import MessageCreate
+                
+                customer = get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
+                
+                slot_message = MessageCreate(
+                    message_id=message_id,
+                    from_wa_id=("91" + LEAD_APPOINTMENT_DISPLAY_LAST10),
+                    to_wa_id=wa_id,
+                    type="interactive",
+                    body="⏰ Choose your preferred time slot:",
+                    timestamp=datetime.now(),
+                    customer_id=customer.id,
+                )
+                create_message(db, slot_message)
+                print(f"[interactive_type] ✅ Saved lead time slot categories to database: message_id={message_id}")
+            except Exception as db_error:
+                import traceback
+                print(f"[interactive_type] ❌ ERROR saving lead time slot categories to database: {str(db_error)}")
+                print(f"[interactive_type] Traceback: {traceback.format_exc()}")
+            
             try:
                 await manager.broadcast({
-                    "from": os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                    "from": ("91" + LEAD_APPOINTMENT_DISPLAY_LAST10),
                     "to": wa_id,
                     "type": "interactive",
                     "message": "⏰ Choose your preferred time slot:",
                     "timestamp": datetime.now().isoformat(),
+                    "message_id": message_id if 'message_id' in locals() else None,
                     "meta": {"kind": "list", "section": "Time Slots", "flow": "lead_appointment"}
                 })
             except Exception:
@@ -1850,7 +1881,9 @@ async def _send_lead_times_for_slot(*, db: Session, wa_id: str, slot_id: str) ->
 
         access_token = token_entry.token
         headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-        phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+        # Use lead appointment phone ID
+        from controllers.components.lead_appointment_flow.config import LEAD_APPOINTMENT_PHONE_ID, LEAD_APPOINTMENT_DISPLAY_LAST10
+        phone_id = str(LEAD_APPOINTMENT_PHONE_ID)
 
         rows = _generate_time_rows_for_slot(slot_id)
         if not rows:
@@ -1881,13 +1914,42 @@ async def _send_lead_times_for_slot(*, db: Session, wa_id: str, slot_id: str) ->
 
         resp = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
         if resp.status_code == 200:
+            # Save lead times list interactive message to database
+            try:
+                response_data = resp.json()
+                message_id = response_data.get("messages", [{}])[0].get("id", f"outbound_{datetime.now().timestamp()}")
+                
+                from services.customer_service import get_or_create_customer
+                from schemas.customer_schema import CustomerCreate
+                from services.message_service import create_message
+                from schemas.message_schema import MessageCreate
+                
+                customer = get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
+                
+                times_message = MessageCreate(
+                    message_id=message_id,
+                    from_wa_id=("91" + LEAD_APPOINTMENT_DISPLAY_LAST10),
+                    to_wa_id=wa_id,
+                    type="interactive",
+                    body=f"⏱️ Pick your preferred time in {section_title}:",
+                    timestamp=datetime.now(),
+                    customer_id=customer.id,
+                )
+                create_message(db, times_message)
+                print(f"[interactive_type] ✅ Saved lead times list to database: message_id={message_id}")
+            except Exception as db_error:
+                import traceback
+                print(f"[interactive_type] ❌ ERROR saving lead times list to database: {str(db_error)}")
+                print(f"[interactive_type] Traceback: {traceback.format_exc()}")
+            
             try:
                 await manager.broadcast({
-                    "from": os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                    "from": ("91" + LEAD_APPOINTMENT_DISPLAY_LAST10),
                     "to": wa_id,
                     "type": "interactive",
                     "message": f"⏱️ Pick your preferred time in {section_title}:",
                     "timestamp": datetime.now().isoformat(),
+                    "message_id": message_id if 'message_id' in locals() else None,
                     "meta": {"kind": "list", "section": f"{section_title} Times", "flow": "lead_appointment"}
                 })
             except Exception:
