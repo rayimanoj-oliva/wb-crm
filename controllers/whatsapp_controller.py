@@ -22,6 +22,7 @@ from schemas.whatsapp_token_schema import WhatsAppTokenCreate
 from database.db import get_db
 from services import customer_service, message_service, whatsapp_service
 from services.whatsapp_service import create_whatsapp_token, get_latest_token
+from models.models import Message
 
 router = APIRouter(tags=["WhatsApp Token"])
 
@@ -289,22 +290,47 @@ async def send_whatsapp_message(
         customer_data = CustomerCreate(wa_id=wa_id, name="")
         customer = customer_service.get_or_create_customer(db, customer_data)
 
-        message_data = MessageCreate(
-            message_id=message_id,
-            from_wa_id=from_wa_id,
-            to_wa_id=wa_id,
-            type=type,
-            body=body or "",
-            timestamp=datetime.now(),
-            customer_id=customer.id,
-            media_id=effective_media_id,
-            caption=body if type in ["image", "document", "video"] else None,
-            filename=file.filename if file else None,
-            latitude=latitude,
-            longitude=longitude,
-            mime_type=mime_type
-        )
-        message = message_service.create_message(db, message_data)
+        # Check if message already exists to avoid duplicates
+        existing_message = db.query(Message).filter(
+            Message.message_id == message_id
+        ).first()
+        
+        if existing_message:
+            # Message already exists, use it
+            message = existing_message
+            print(f"[send-message] Message {message_id} already exists in DB, using existing record")
+        else:
+            # Create new message
+            message_data = MessageCreate(
+                message_id=message_id,
+                from_wa_id=from_wa_id,
+                to_wa_id=wa_id,
+                type=type,
+                body=body or "",
+                timestamp=datetime.now(),
+                customer_id=customer.id,
+                media_id=effective_media_id,
+                caption=body if type in ["image", "document", "video"] else None,
+                filename=file.filename if file else None,
+                latitude=latitude,
+                longitude=longitude,
+                mime_type=mime_type
+            )
+            try:
+                message = message_service.create_message(db, message_data)
+                # Verify the message was saved by checking if it has an ID
+                if message and message.id:
+                    print(f"[send-message] ✅ Successfully saved {type} message to DB: message_id={message_id}, db_id={message.id}, template_name={template_name if type == 'template' else 'N/A'}, body={body[:50] if body else 'N/A'}")
+                else:
+                    print(f"[send-message] ⚠️ WARNING: Message created but no ID returned: message_id={message_id}")
+            except Exception as db_error:
+                # Log the error and re-raise to ensure we know about it
+                import traceback
+                error_msg = f"Failed to save {type} message to database: {str(db_error)}"
+                print(f"[send-message] ❌ ERROR: {error_msg}")
+                print(f"[send-message] Traceback: {traceback.format_exc()}")
+                # Re-raise the exception so the API returns an error
+                raise HTTPException(status_code=500, detail=error_msg)
 
         await manager.broadcast({
             "from": message.from_wa_id,
@@ -312,22 +338,29 @@ async def send_whatsapp_message(
             "type": message.type,
             "message": message.body,
             "timestamp": message.timestamp.isoformat(),
-            "media_id": message.media_id,
-            "caption": message.caption,
-            "filename": message.filename,
-            "mime_type": message.mime_type
+            "media_id": getattr(message, 'media_id', None),
+            "caption": getattr(message, 'caption', None),
+            "filename": getattr(message, 'filename', None),
+            "mime_type": getattr(message, 'mime_type', None)
         })
 
         return {
             "status": "success", 
             "message_id": message.message_id,
-            "media_id": message.media_id,
-            "mime_type": message.mime_type,
-            "filename": message.filename
+            "media_id": getattr(message, 'media_id', None),
+            "mime_type": getattr(message, 'mime_type', None),
+            "filename": getattr(message, 'filename', None)
         }
 
+    except HTTPException:
+        # Re-raise HTTP exceptions (they have proper status codes)
+        raise
     except Exception as e:
-        return {"status": "failed", "error": str(e)}
+        # Log the full error for debugging
+        import traceback
+        print(f"[send-message] CRITICAL ERROR: {str(e)}")
+        print(f"[send-message] Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Failed to send message: {str(e)}")
 
 
 

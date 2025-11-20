@@ -1964,6 +1964,35 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                 lang_code=lang_code_fu,
                             )
                             
+                            # Save template message to database
+                            if resp_fu.status_code == 200:
+                                try:
+                                    response_data = resp_fu.json()
+                                    template_message_id = response_data.get("messages", [{}])[0].get("id", f"outbound_{datetime.now().timestamp()}")
+                                    
+                                    from services.customer_service import get_or_create_customer
+                                    from schemas.customer_schema import CustomerCreate
+                                    from services.message_service import create_message
+                                    from schemas.message_schema import MessageCreate
+                                    
+                                    customer = get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
+                                    
+                                    template_message = MessageCreate(
+                                        message_id=template_message_id,
+                                        from_wa_id=str(phone_id_fu),
+                                        to_wa_id=wa_id,
+                                        type="template",
+                                        body=f"TEMPLATE: mr_welcome",
+                                        timestamp=datetime.now(),
+                                        customer_id=customer.id,
+                                    )
+                                    create_message(db, template_message)
+                                    print(f"[web_socket] ✅ Successfully saved mr_welcome template to database: message_id={template_message_id}")
+                                except Exception as db_error:
+                                    import traceback
+                                    print(f"[web_socket] ❌ ERROR saving mr_welcome template to database: {str(db_error)}")
+                                    print(f"[web_socket] Traceback: {traceback.format_exc()}")
+                            
                             # Mark mr_welcome as sent to prevent duplicates and store phone id
                             try:
                                 st_fu_mark = appointment_state.get(wa_id) or {}
