@@ -45,3 +45,43 @@ def log_flow_event(
             pass
         return ""
 
+
+def log_last_step_reached(
+    db: Session,
+    *,
+    flow_type: str,
+    step: str,
+    wa_id: Optional[str] = None,
+    name: Optional[str] = None,
+) -> str:
+    """Log the last step reached in a flow before follow-ups.
+    
+    Steps for lead_appointment flow:
+    - entry: Flow started (auto_welcome sent)
+    - city_selection: City selection list shown
+    - treatment: Treatment/concern selected
+    - concern_list: Concern list shown (if applicable)
+    - last_step: Final step before follow-ups (time slot selection or callback confirmation)
+    
+    Returns the created FlowLog id (as str) if successful, else empty string.
+    """
+    try:
+        log = FlowLog(
+            flow_type=flow_type,
+            step=step,
+            status_code=None,
+            wa_id=wa_id,
+            name=name,
+            description=f"Last step reached: {step}",
+            response_json=None,
+            created_at=datetime.utcnow(),
+        )
+        db.add(log)
+        db.commit()
+        return str(log.id)
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return ""

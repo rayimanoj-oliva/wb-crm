@@ -113,6 +113,22 @@ async def send_city_selection(db: Session, *, wa_id: str) -> Dict[str, Any]:
                     "timestamp": datetime.now().isoformat(),
                     "meta": {"kind": "list", "section": "Available Cities"}
                 })
+                
+                # Log last step reached: city_selection
+                try:
+                    from utils.flow_log import log_last_step_reached
+                    from services.customer_service import get_customer_record_by_wa_id
+                    _cust = get_customer_record_by_wa_id(db, wa_id)
+                    log_last_step_reached(
+                        db,
+                        flow_type="lead_appointment",
+                        step="city_selection",
+                        wa_id=wa_id,
+                        name=(getattr(_cust, "name", None) or "") if _cust else None,
+                    )
+                    print(f"[lead_appointment_flow] ✅ Logged last step: city_selection")
+                except Exception as e:
+                    print(f"[lead_appointment_flow] WARNING - Could not log last step: {e}")
             except Exception as e:
                 print(f"[lead_appointment_flow] WARNING - Database save or WebSocket broadcast failed: {e}")
             # Arm Follow-Up 1 after this outbound prompt in case user stops here

@@ -25,6 +25,23 @@ async def send_time_slot_selection(db: Session, *, wa_id: str) -> Dict[str, Any]
         # Use LEAD APPOINTMENT specific week list functionality
         from controllers.components.interactive_type import send_lead_week_list
         result = await send_lead_week_list(db, wa_id)
+        
+        # Log last step reached: last_step (time slot selection is the final step before follow-ups)
+        try:
+            from utils.flow_log import log_last_step_reached
+            from services.customer_service import get_customer_record_by_wa_id
+            _cust = get_customer_record_by_wa_id(db, wa_id)
+            log_last_step_reached(
+                db,
+                flow_type="lead_appointment",
+                step="last_step",
+                wa_id=wa_id,
+                name=(getattr(_cust, "name", None) or "") if _cust else None,
+            )
+            print(f"[lead_appointment_flow] ✅ Logged last step: last_step (time slot selection)")
+        except Exception as e:
+            print(f"[lead_appointment_flow] WARNING - Could not log last step: {e}")
+        
         # Arm Follow-Up 1 after this outbound prompt in case user stops here
         try:
             import asyncio

@@ -90,6 +90,20 @@ async def send_callback_confirmation(db: Session, *, wa_id: str) -> Dict[str, An
                         "options": ["📞 Yes, please call me", "💬 No, just keep my details"]
                     }
                 })
+                
+                # Log last step reached: last_step (callback confirmation is the final step before follow-ups)
+                try:
+                    from utils.flow_log import log_last_step_reached
+                    log_last_step_reached(
+                        db,
+                        flow_type="lead_appointment",
+                        step="last_step",
+                        wa_id=wa_id,
+                        name=(getattr(customer, "name", None) or "") if customer else None,
+                    )
+                    print(f"[lead_appointment_flow] ✅ Logged last step: last_step (callback confirmation)")
+                except Exception as e:
+                    print(f"[lead_appointment_flow] WARNING - Could not log last step: {e}")
             except Exception as e:
                 print(f"[lead_appointment_flow] WARNING - Database save or WebSocket broadcast failed: {e}")
             

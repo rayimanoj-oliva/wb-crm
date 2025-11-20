@@ -273,6 +273,22 @@ async def handle_text_message(
                 lead_appointment_state[wa_id]["selected_concern"] = matched_concern
                 lead_appointment_state[wa_id]["zoho_mapped_concern"] = matched_concern
                 print(f"[lead_appointment_flow] DEBUG - Mapped concern from starting point: {matched_concern}")
+                
+                # Log last step reached: concern_list (concern is set from ad message at entry)
+                try:
+                    from utils.flow_log import log_last_step_reached
+                    from services.customer_service import get_customer_record_by_wa_id
+                    _cust = get_customer_record_by_wa_id(db, wa_id)
+                    log_last_step_reached(
+                        db,
+                        flow_type="lead_appointment",
+                        step="concern_list",
+                        wa_id=wa_id,
+                        name=(getattr(_cust, "name", None) or "") if _cust else None,
+                    )
+                    print(f"[lead_appointment_flow] ✅ Logged last step: concern_list")
+                except Exception as e:
+                    print(f"[lead_appointment_flow] WARNING - Could not log last step: {e}")
             
             print(f"[lead_appointment_flow] DEBUG - Initialized lead appointment flow context for {wa_id}")
         except Exception as e:

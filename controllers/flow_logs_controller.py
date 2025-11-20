@@ -649,6 +649,57 @@ def get_completion_counts(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/last-step/{wa_id}")
+def get_last_step_reached(
+    wa_id: str,
+    db: Session = Depends(get_db),
+    flow_type: Optional[str] = Query("lead_appointment", description="Flow type to check"),
+):
+    """
+    Get the last step reached by a customer in a flow before follow-ups.
+    Returns the most recent step from: entry, city_selection, treatment, concern_list, last_step
+    """
+    try:
+        # Valid steps for lead appointment flow
+        valid_steps = ["entry", "city_selection", "treatment", "concern_list", "last_step"]
+        
+        # Query for the most recent valid step for this customer
+        log = (
+            db.query(FlowLog)
+            .filter(
+                and_(
+                    FlowLog.wa_id == wa_id,
+                    FlowLog.flow_type == flow_type,
+                    FlowLog.step.in_(valid_steps),
+                    FlowLog.description.like("Last step reached: %")
+                )
+            )
+            .order_by(FlowLog.created_at.desc())
+            .first()
+        )
+        
+        if not log:
+            return {
+                "success": True,
+                "wa_id": wa_id,
+                "flow_type": flow_type,
+                "last_step": None,
+                "message": "No step data found for this customer"
+            }
+        
+        return {
+            "success": True,
+            "wa_id": wa_id,
+            "flow_type": flow_type,
+            "last_step": log.step,
+            "step_name": log.step,
+            "reached_at": log.created_at.isoformat() if log.created_at else None,
+            "customer_name": log.name,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/{log_id}")
 def get_flow_log(
     log_id: UUID,

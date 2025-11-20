@@ -259,6 +259,20 @@ async def handle_clinic_location(
     # Send confirmation and proceed to time slot selection
     await send_message_to_waid(wa_id, f"✅ Perfect! You selected {clinic_name}.", db)
     
+    # Log last step reached: treatment (clinic selected, treatment/concern is used here)
+    try:
+        from utils.flow_log import log_last_step_reached
+        log_last_step_reached(
+            db,
+            flow_type="lead_appointment",
+            step="treatment",
+            wa_id=wa_id,
+            name=(getattr(customer, "name", None) or "") if customer else None,
+        )
+        print(f"[lead_appointment_flow] ✅ Logged last step: treatment")
+    except Exception as e:
+        print(f"[lead_appointment_flow] WARNING - Could not log last step: {e}")
+    
     # Proceed to time slot selection
     from .time_slot_selection import send_time_slot_selection
     result = await send_time_slot_selection(db, wa_id=wa_id)
