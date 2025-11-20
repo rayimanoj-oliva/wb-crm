@@ -308,9 +308,13 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         "message_id": message_id,
                     })
                     message_broadcasted = True  # Mark as broadcasted
-                    print(f"[ws_webhook] DEBUG - Customer text message broadcasted to WebSocket early: {message_id}")
+                    print(f"[ws_webhook] ✅ Customer text message broadcasted to WebSocket early: message_id={message_id}, body={body_text[:50]}")
                 except Exception as e:
-                    print(f"[ws_webhook] WARNING - WebSocket broadcast failed: {e}")
+                    print(f"[ws_webhook] ❌ ERROR - Early WebSocket broadcast failed: {e}")
+                    import traceback
+                    print(f"[ws_webhook] Traceback: {traceback.format_exc()}")
+                    # Don't mark as broadcasted if it failed - allow late broadcast to retry
+                    message_broadcasted = False
         elif message_type == "interactive" and interactive and i_type:
             # Save interactive messages early as well
             existing_msg = db.query(Message).filter(Message.message_id == message_id).first()
@@ -357,9 +361,11 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         message_broadcasted = True  # Mark as broadcasted
                         print(f"[ws_webhook] DEBUG - Customer interactive message broadcasted to WebSocket early: {message_id}")
                     except Exception as e:
-                        # Even if broadcast fails, mark as broadcasted to prevent duplicate attempts
-                        message_broadcasted = True
-                        print(f"[ws_webhook] WARNING - WebSocket broadcast failed: {e}")
+                        print(f"[ws_webhook] ❌ ERROR - Interactive WebSocket broadcast failed: {e}")
+                        import traceback
+                        print(f"[ws_webhook] Traceback: {traceback.format_exc()}")
+                        # Don't mark as broadcasted if it failed - allow late broadcast to retry
+                        message_broadcasted = False
 
         # Track referrer information on EVERY message
         if body_text:
@@ -841,6 +847,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     return {"status": "dummy_payment_failed", "message_id": message_id}
 
         # 4️⃣ Regular text messages - ALWAYS save to database regardless of handling
+        # Also ensure broadcast happens even if early broadcast was skipped or failed
         if message_type == "text":
             # Check if already saved to avoid duplicates
             existing_msg = db.query(Message).filter(Message.message_id == message_id).first()
@@ -1021,8 +1028,9 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     handled_text = True
                     return {"status": "treatment_interactive_prompted", "message_id": message_id}
 
-            # Only broadcast if not already broadcasted early and not handled by treatment flow
-            if not message_broadcasted and not handled_text:
+            # ALWAYS broadcast text messages to WebSocket - ensure frontend receives them
+            # Only skip if already successfully broadcasted early
+            if not message_broadcasted:
                 # Determine flow context for broadcast metadata
                 flow_context = "treatment" if is_treatment_flow_number else ("lead_appointment" if is_lead_appointment_number else "unknown")
                 try:
@@ -1039,9 +1047,12 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         }
                     })
                     message_broadcasted = True  # Mark as broadcasted
-                    print(f"[ws_webhook] DEBUG - Customer text message broadcasted to WebSocket (late): {message_id}")
+                    print(f"[ws_webhook] ✅ Customer text message broadcasted to WebSocket: message_id={message_id}, body={body_text[:50]}")
                 except Exception as e:
-                    print(f"[ws_webhook] WARNING - WebSocket broadcast failed: {e}")
+                    print(f"[ws_webhook] ❌ ERROR - WebSocket broadcast failed: {e}")
+                    import traceback
+                    print(f"[ws_webhook] Traceback: {traceback.format_exc()}")
+                    # Don't mark as broadcasted if it failed - allow retry or logging
 
             # Catalog link is sent only on explicit button clicks; no text keyword trigger
 
