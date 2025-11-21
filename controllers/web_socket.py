@@ -311,6 +311,9 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     print(f"[ws_webhook] DEBUG - Customer text message broadcasted to WebSocket early: {message_id}")
                 except Exception as e:
                     print(f"[ws_webhook] WARNING - WebSocket broadcast failed: {e}")
+            else:
+                # Message already processed in a previous webhook delivery
+                message_broadcasted = True
         elif message_type == "interactive" and interactive and i_type:
             # Save interactive messages early as well
             existing_msg = db.query(Message).filter(Message.message_id == message_id).first()
@@ -360,6 +363,9 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         # Even if broadcast fails, mark as broadcasted to prevent duplicate attempts
                         message_broadcasted = True
                         print(f"[ws_webhook] WARNING - WebSocket broadcast failed: {e}")
+            else:
+                # Duplicate webhook delivery; assume it was already broadcasted
+                message_broadcasted = True
 
         # Track referrer information on EVERY message
         if body_text:
@@ -1964,6 +1970,52 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                 lang_code=lang_code_fu,
                             )
                             
+                            # Persist mr_welcome template in DB and broadcast to frontend
+                            if resp_fu is not None and resp_fu.status_code == 200:
+                                try:
+                                    resp_data_fu = resp_fu.json()
+                                except Exception:
+                                    resp_data_fu = {}
+                                template_message_id = (
+                                    ((resp_data_fu.get("messages") or [{}])[0] or {}).get("id")
+                                    if isinstance(resp_data_fu, dict)
+                                    else None
+                                ) or f"outbound_{datetime.utcnow().timestamp()}"
+                                try:
+                                    display_from_fu = os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376")
+                                    try:
+                                        if isinstance(_MAP, dict) and str(phone_id_fu) in _MAP:
+                                            import re as _re
+                                            digits = _re.sub(r"\D", "", (_MAP[str(phone_id_fu)].get("name") or ""))
+                                            if digits:
+                                                display_from_fu = digits
+                                    except Exception:
+                                        pass
+                                    
+                                    outbound_template = MessageCreate(
+                                        message_id=template_message_id,
+                                        from_wa_id=display_from_fu,
+                                        to_wa_id=wa_id,
+                                        type="template",
+                                        body="Template: mr_welcome",
+                                        timestamp=datetime.utcnow(),
+                                        customer_id=customer.id,
+                                    )
+                                    message_service.create_message(db, outbound_template)
+                                    await manager.broadcast({
+                                        "from": display_from_fu,
+                                        "to": wa_id,
+                                        "type": "template",
+                                        "message": "Template: mr_welcome",
+                                        "timestamp": datetime.utcnow().isoformat(),
+                                        "meta": {
+                                            "template_name": "mr_welcome",
+                                            "flow": "treatment",
+                                        },
+                                    })
+                                except Exception as log_err:
+                                    print(f"[followup_yes] WARNING - Could not persist/broadcast mr_welcome template: {log_err}")
+                            
                             # Mark mr_welcome as sent to prevent duplicates and store phone id
                             try:
                                 st_fu_mark = appointment_state.get(wa_id) or {}
@@ -2021,7 +2073,54 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                     },
                                 },
                             }
-                            requests.post(get_messages_url(str(phone_id_fu)), headers=headers_btn, json=payload_btn)
+                            resp_btn = requests.post(get_messages_url(str(phone_id_fu)), headers=headers_btn, json=payload_btn)
+                            
+                            if resp_btn is not None and resp_btn.status_code == 200:
+                                try:
+                                    resp_btn_json = resp_btn.json()
+                                except Exception:
+                                    resp_btn_json = {}
+                                btn_message_id = (
+                                    ((resp_btn_json.get("messages") or [{}])[0] or {}).get("id")
+                                    if isinstance(resp_btn_json, dict)
+                                    else None
+                                ) or f"outbound_{datetime.utcnow().timestamp()}"
+                                try:
+                                    display_from_btn = os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376")
+                                    try:
+                                        if isinstance(_MAP, dict) and str(phone_id_fu) in _MAP:
+                                            import re as _re
+                                            digits = _re.sub(r"\D", "", (_MAP[str(phone_id_fu)].get("name") or ""))
+                                            if digits:
+                                                display_from_btn = digits
+                                    except Exception:
+                                        pass
+                                    
+                                    confirmation_body = "Are your name and contact number correct?"
+                                    outbound_btn = MessageCreate(
+                                        message_id=btn_message_id,
+                                        from_wa_id=display_from_btn,
+                                        to_wa_id=wa_id,
+                                        type="interactive",
+                                        body=confirmation_body,
+                                        timestamp=datetime.utcnow(),
+                                        customer_id=customer.id,
+                                    )
+                                    message_service.create_message(db, outbound_btn)
+                                    await manager.broadcast({
+                                        "from": display_from_btn,
+                                        "to": wa_id,
+                                        "type": "interactive",
+                                        "message": confirmation_body,
+                                        "timestamp": datetime.utcnow().isoformat(),
+                                        "meta": {
+                                            "kind": "buttons",
+                                            "options": ["Yes", "No"],
+                                            "flow": "treatment",
+                                        },
+                                    })
+                                except Exception as btn_log_err:
+                                    print(f"[followup_yes] WARNING - Could not persist/broadcast confirmation buttons: {btn_log_err}")
                             
                             # Set treatment_expect_interactive flag after buttons are sent
                             # This ensures error message is sent only when user types free text AFTER buttons are shown

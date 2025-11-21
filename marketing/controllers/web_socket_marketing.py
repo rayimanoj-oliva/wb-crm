@@ -13,6 +13,10 @@ from marketing.whatsapp_numbers import (
 
 from controllers.components.number_flows.mr_welcome.flow import run_mr_welcome_number_flow
 from marketing.treament_flow import run_treament_flow
+from services import customer_service, message_service
+from schemas.customer_schema import CustomerCreate
+from schemas.message_schema import MessageCreate
+from models.models import Message
 
 
 
@@ -131,6 +135,52 @@ async def handle_marketing_event(db: Session, *, value: Dict[str, Any]) -> Dict[
     # 2) Delegate to treatment text prefill validator ONLY for text messages
     if message_type == "text":
         body_text = (message.get(message_type, {}) or {}).get("body", "") if isinstance(message.get(message_type, {}), dict) else ""
+        message_ts = datetime_from_ts(timestamp)
+
+        # Persist inbound message if not already saved
+        try:
+            existing_msg = db.query(Message).filter(Message.message_id == message_id).first()
+        except Exception:
+            existing_msg = None
+        if not existing_msg:
+            try:
+                customer = customer_service.get_or_create_customer(
+                    db,
+                    CustomerCreate(wa_id=wa_id, name=(contact.get("profile") or {}).get("name")),
+                )
+            except Exception:
+                customer = None
+            try:
+                inbound = MessageCreate(
+                    message_id=message_id,
+                    from_wa_id=from_wa_id,
+                    to_wa_id=to_wa_id,
+                    type="text",
+                    body=body_text,
+                    timestamp=message_ts,
+                    customer_id=(customer.id if customer else None),
+                )
+                message_service.create_message(db, inbound)
+            except Exception as e:
+                print(f"[ws_marketing] WARNING - Could not persist treatment text message: {e}")
+
+            try:
+                await manager.broadcast({
+                    "from": from_wa_id,
+                    "to": to_wa_id,
+                    "type": "text",
+                    "message": body_text,
+                    "timestamp": message_ts.isoformat(),
+                    "message_id": message_id,
+                    "meta": {
+                        "flow": "treatment",
+                        "action": "customer_message",
+                        "source": "marketing_handler",
+                    },
+                })
+            except Exception as e:
+                print(f"[ws_marketing] WARNING - Could not broadcast treatment text message: {e}")
+
         res2 = await run_treament_flow(
             db,
             message_type=message_type,
@@ -138,7 +188,7 @@ async def handle_marketing_event(db: Session, *, value: Dict[str, Any]) -> Dict[
             from_wa_id=from_wa_id,
             to_wa_id=to_wa_id,
             body_text=body_text,
-            timestamp=datetime_from_ts(timestamp),
+            timestamp=message_ts,
             customer=None,
             wa_id=wa_id,
             value=value,
