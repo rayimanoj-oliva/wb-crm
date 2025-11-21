@@ -22,14 +22,34 @@ FOLLOW_UP_1_TEXT = (
 )
 
 
-async def send_follow_up1(db: Session, *, wa_id: str, from_wa_id: str = "917729992376") -> Dict[str, Any]:
+async def send_follow_up1(
+    db: Session,
+    *,
+    wa_id: str,
+    from_wa_id: str = "917729992376",
+    phone_id_hint: Optional[str] = None,
+) -> Dict[str, Any]:
     """Send Follow-Up 1 as an interactive message with a single ✅ Yes button."""
     token_obj = whatsapp_service.get_latest_token(db)
     if not token_obj:
         raise HTTPException(status_code=400, detail="Token not available")
 
+    access_token = token_obj.token
+    phone_id = phone_id_hint or os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+    if phone_id_hint:
+        try:
+            from marketing.whatsapp_numbers import WHATSAPP_NUMBERS  # type: ignore
+
+            cfg = (WHATSAPP_NUMBERS or {}).get(str(phone_id_hint)) or {}
+            token_override = cfg.get("token")
+            if token_override:
+                access_token = token_override
+                phone_id = str(phone_id_hint)
+        except Exception:
+            phone_id = str(phone_id_hint)
+
     headers = {
-        "Authorization": f"Bearer {token_obj.token}",
+        "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
     }
 
@@ -48,7 +68,6 @@ async def send_follow_up1(db: Session, *, wa_id: str, from_wa_id: str = "9177299
         },
     }
 
-    phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
     res = requests.post(get_messages_url(phone_id), headers=headers, json=payload)
     if res.status_code != 200:
         raise HTTPException(status_code=500, detail=f"Failed to send follow-up 1 interactive: {res.text}")
@@ -71,7 +90,10 @@ async def send_follow_up1(db: Session, *, wa_id: str, from_wa_id: str = "9177299
     return {"success": True, "message_id": message_id}
 
 
-async def schedule_follow_up1_after_welcome(wa_id: str, sent_at: datetime) -> None:
+async def schedule_follow_up1_after_welcome(
+    wa_id: str,
+    sent_at: datetime,
+) -> None:
     """Wait FOLLOW_UP_1_DELAY_MINUTES, then send Follow-Up 1 if user hasn't replied.
 
     Conditions to send:
@@ -104,8 +126,25 @@ async def schedule_follow_up1_after_welcome(wa_id: str, sent_at: datetime) -> No
             if cust.last_interaction_time and cust.last_interaction_time > sent_at:
                 return
 
+            # Determine phone context for follow-up send
+            phone_id_hint = None
+            from_wa_display = os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376")
+            try:
+                from controllers.web_socket import lead_appointment_state  # type: ignore
+
+                state = (lead_appointment_state.get(wa_id) or {})
+                phone_id_hint = state.get("lead_phone_id")
+                from_wa_display = state.get("lead_display_number", from_wa_display)
+            except Exception:
+                pass
+
             # Send Follow-Up 1 now
-            await send_follow_up1(db, wa_id=wa_id)
+            await send_follow_up1(
+                db,
+                wa_id=wa_id,
+                from_wa_id=from_wa_display,
+                phone_id_hint=str(phone_id_hint) if phone_id_hint else None,
+            )
 
             # Chain Follow-Up 2 scheduling (30 minutes after FU1 if still no reply)
             try:
@@ -126,7 +165,10 @@ async def schedule_follow_up1_after_welcome(wa_id: str, sent_at: datetime) -> No
         return
 
 
-async def schedule_follow_up1_after_not_now(wa_id: str, sent_at: datetime) -> None:
+async def schedule_follow_up1_after_not_now(
+    wa_id: str,
+    sent_at: datetime,
+) -> None:
     """Wait FOLLOW_UP_1_DELAY_MINUTES after 'Not Now' message, then send Follow-Up 1.
 
     This is specifically for the 'Not Now' follow-up sequence.
@@ -158,8 +200,24 @@ async def schedule_follow_up1_after_not_now(wa_id: str, sent_at: datetime) -> No
             if cust.last_interaction_time and cust.last_interaction_time > sent_at:
                 return
 
+            phone_id_hint = None
+            from_wa_display = os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376")
+            try:
+                from controllers.web_socket import lead_appointment_state  # type: ignore
+
+                state = (lead_appointment_state.get(wa_id) or {})
+                phone_id_hint = state.get("lead_phone_id") or state.get("treatment_flow_phone_id")
+                from_wa_display = state.get("lead_display_number", from_wa_display)
+            except Exception:
+                pass
+
             # Send Follow-Up 1 now
-            await send_follow_up1(db, wa_id=wa_id)
+            await send_follow_up1(
+                db,
+                wa_id=wa_id,
+                from_wa_id=from_wa_display,
+                phone_id_hint=str(phone_id_hint) if phone_id_hint else None,
+            )
 
             # Chain Follow-Up 2 scheduling (after FU1 if still no reply)
             # Follow-Up 2 will create the lead after sending

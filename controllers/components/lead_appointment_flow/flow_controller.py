@@ -11,6 +11,8 @@ import re
 from sqlalchemy.orm import Session
 from utils.whatsapp import send_message_to_waid
 from utils.ws_manager import manager
+from services.followup_service import mark_customer_replied
+from .config import LEAD_APPOINTMENT_PHONE_ID, LEAD_APPOINTMENT_DISPLAY_LAST10
 
 
 async def run_lead_appointment_flow(
@@ -40,6 +42,32 @@ async def run_lead_appointment_flow(
     """
     
     try:
+        # Persist the lead-channel metadata so follow-ups reuse the same number
+        try:
+            from controllers.web_socket import lead_appointment_state  # type: ignore
+
+            is_lead_channel = False
+            if phone_number_id and str(phone_number_id) == str(LEAD_APPOINTMENT_PHONE_ID):
+                is_lead_channel = True
+            else:
+                to_digits = re.sub(r"\D", "", to_wa_id or "")
+                if to_digits.endswith(str(LEAD_APPOINTMENT_DISPLAY_LAST10)):
+                    is_lead_channel = True
+            if is_lead_channel:
+                if wa_id not in lead_appointment_state:
+                    lead_appointment_state[wa_id] = {}
+                if phone_number_id:
+                    lead_appointment_state[wa_id]["lead_phone_id"] = str(phone_number_id)
+                to_digits = re.sub(r"\D", "", to_wa_id or "") or str(LEAD_APPOINTMENT_DISPLAY_LAST10)
+                normalized_display = to_digits
+                if len(normalized_display) == 10:
+                    normalized_display = "91" + normalized_display
+                elif len(normalized_display) > 10 and normalized_display.endswith(str(LEAD_APPOINTMENT_DISPLAY_LAST10)):
+                    normalized_display = "91" + str(LEAD_APPOINTMENT_DISPLAY_LAST10)
+                lead_appointment_state[wa_id]["lead_display_number"] = normalized_display
+        except Exception:
+            pass
+
         # NOTE: Do NOT broadcast here - web_socket.py already handles broadcasting to avoid duplicates
         # Broadcast incoming customer messages to WebSocket
         # REMOVED: Duplicate broadcast - web_socket.py already broadcasts early (line 302)
@@ -135,9 +163,19 @@ async def run_lead_appointment_flow(
                             auto_reply_message,
                             db,
                             from_wa_id=from_wa_id,
-                            phone_id_hint=str(LEAD_APPOINTMENT_PHONE_ID)
+                            phone_id_hint=str(LEAD_APPOINTMENT_PHONE_ID),
+                            schedule_followup=False,
                         )
                         print(f"[lead_appointment_flow] ✅ Sent auto-reply for non-triggering message to {wa_id}")
+
+                        # Explicitly clear any pending follow-ups so scheduler doesn't send FU1/FU2
+                        try:
+                            customer_id = getattr(customer, "id", None)
+                            if customer_id:
+                                mark_customer_replied(db, customer_id=customer_id, reset_followup_timer=False)
+                                print(f"[lead_appointment_flow] DEBUG - Cleared pending follow-ups after auto-reply for {wa_id}")
+                        except Exception as followup_err:
+                            print(f"[lead_appointment_flow] WARNING - Could not clear follow-ups after auto-reply: {followup_err}")
                     except Exception as e:
                         print(f"[lead_appointment_flow] ❌ ERROR sending auto-reply: {str(e)}")
                         import traceback
