@@ -249,10 +249,18 @@ def run_template_campaign_quick(
     }
 
 
+class PersonalizedRecipientPayload(BaseModel):
+    wa_id: str
+    name: Optional[str] = None
+    body_params: Optional[List[str]] = None
+    header_text_params: Optional[List[str]] = None
+    header_media_id: Optional[str] = None
+
+
 class RunSavedTemplateRequest(BaseModel):
     template_name: str
     language: str = "en_US"
-    customer_wa_ids: List[str]
+    customer_wa_ids: Optional[List[str]] = None
     body_params: Optional[List[str]] = None
     header_text_params: Optional[List[str]] = None
     header_media_id: Optional[str] = None
@@ -262,6 +270,7 @@ class RunSavedTemplateRequest(BaseModel):
     campaign_name: Optional[str] = None
     campaign_description: Optional[str] = None
     campaign_cost_type: Optional[str] = None
+    personalized_recipients: Optional[List[PersonalizedRecipientPayload]] = None
 
 
 @router.post("/template/run-saved")
@@ -296,10 +305,10 @@ def run_saved_template_campaign(
 
     # Resolve customers
     customers = []
-    for wa in req.customer_wa_ids:
+    for wa in (req.customer_wa_ids or []):
         cust = customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa, name=""))
         customers.append(cust)
-    if not customers:
+    if not customers and not req.personalized_recipients:
         raise HTTPException(status_code=400, detail="No valid customers provided")
 
     # Build components with padding/trimming
@@ -361,6 +370,30 @@ def run_saved_template_campaign(
         campaign_cost_type=normalized_cost_type
     )
     campaign = campaign_service.create_campaign(db, campaign_payload, user_id=current_user.id)
+
+    # Attach personalized recipients if provided
+    personalized_entries = []
+    if req.personalized_recipients:
+        for rec in req.personalized_recipients:
+            params = {}
+            if rec.body_params is not None:
+                params["body_params"] = rec.body_params
+            if rec.header_text_params is not None:
+                params["header_text_params"] = rec.header_text_params
+            if rec.header_media_id is not None:
+                params["header_media_id"] = rec.header_media_id
+            personalized_entries.append(
+                CampaignRecipient(
+                    campaign_id=campaign.id,
+                    phone_number=rec.wa_id,
+                    name=rec.name,
+                    params=params or None,
+                )
+            )
+        if personalized_entries:
+            db.add_all(personalized_entries)
+            db.commit()
+            db.refresh(campaign)
     job = job_service.create_job(db, campaign.id, current_user)
     campaign_service.run_campaign(campaign, job, db)
     return {

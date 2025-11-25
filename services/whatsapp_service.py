@@ -1,4 +1,5 @@
 import json
+import copy
 
 import pika
 from sqlalchemy.orm import Session
@@ -45,17 +46,52 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
     """
     template_name = template_content.get("name")
     language_code = template_content.get("language", "en_US")
-    components = template_content.get("components", [])
+    base_components = template_content.get("components", [])
+    recipient_params = recipient.get('params') or {}
 
-    # For recipients, we need to replace placeholders with their custom params
-    if components and recipient.get('params'):
-        # Create a mock customer dict with recipient's params for placeholder replacement
+    def replace_component(components_list, comp_type, new_component):
+        filtered = [c for c in components_list if c.get("type", "").lower() != comp_type.lower()]
+        if new_component:
+            filtered.append(new_component)
+        return filtered
+
+    components = copy.deepcopy(base_components) if base_components else []
+
+    body_params = recipient_params.get("body_params")
+    header_text_params = recipient_params.get("header_text_params")
+    header_media_id = recipient_params.get("header_media_id")
+
+    if body_params is not None:
+        body_component = {
+            "type": "body",
+            "parameters": [{"type": "text", "text": v if v is not None else ""} for v in body_params]
+        }
+        components = replace_component(components, "body", body_component)
+
+    if header_media_id:
+        header_component = {
+            "type": "header",
+            "parameters": [
+                {"type": "image", "image": {"id": header_media_id}}
+            ]
+        }
+        components = replace_component(components, "header", header_component)
+    elif header_text_params is not None:
+        header_component = {
+            "type": "header",
+            "parameters": [{"type": "text", "text": v if v is not None else ""} for v in header_text_params]
+        }
+        components = replace_component(components, "header", header_component)
+
+    # Fallback to placeholder replacement if no structured params provided
+    if not body_params and not header_text_params and not header_media_id and recipient_params:
         mock_customer = {
             'wa_id': recipient['phone_number'],
             'name': recipient.get('name', ''),
-            **recipient.get('params', {})  # Include custom params
+            **recipient_params
         }
-        components = fill_placeholders(components, mock_customer)
+        if components:
+            components = fill_placeholders(components, mock_customer)
 
     payload = {
         "messaging_product": "whatsapp",
