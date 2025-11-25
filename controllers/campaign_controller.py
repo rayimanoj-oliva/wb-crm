@@ -305,8 +305,8 @@ def run_saved_template_campaign(
 
     # Resolve customers
     customers = []
-    for wa in (req.customer_wa_ids or []):
-        cust = customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa, name=""))
+    for wa in (req.personalized_recipients or []):
+        cust = customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa.wa_id, name=""))
         customers.append(cust)
     if not customers and not req.personalized_recipients:
         raise HTTPException(status_code=400, detail="No valid customers provided")

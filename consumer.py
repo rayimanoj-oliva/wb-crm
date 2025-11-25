@@ -14,17 +14,36 @@ def callback(ch, method, properties, body):
     Supports both generic and template messages.
     Handles both CRM customers and Excel-uploaded recipients.
     """
+    print(f"[CONSUMER] Received message from queue")
     db: Session = next(get_db())
-    task = json.loads(body)
-    job_id = task['job_id']
-    campaign_id = task['campaign_id']
+    try:
+        task = json.loads(body)
+    except Exception as e:
+        print(f"[CONSUMER ERROR] Failed to parse message body: {e}")
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+        return
+    
+    job_id = task.get('job_id')
+    campaign_id = task.get('campaign_id')
+    print(f"[CONSUMER] Processing task - Job ID: {job_id}, Campaign ID: {campaign_id}")
 
     start_time = time.time()  # Start timing
 
     # Determine if this is a customer or recipient task
     is_recipient_task = 'recipient' in task
-    target_info = task['recipient'] if is_recipient_task else task['customer']
-    target_wa_id = target_info.get('phone_number') if is_recipient_task else target_info['wa_id']
+    print(f"[CONSUMER] Task type: {'recipient' if is_recipient_task else 'customer'}")
+    
+    if is_recipient_task:
+        target_info = task.get('recipient', {})
+        target_wa_id = target_info.get('phone_number')
+    else:
+        target_info = task.get('customer', {})
+        target_wa_id = target_info.get('wa_id')
+    
+    if not target_wa_id:
+        print(f"[CONSUMER ERROR] No phone number/wa_id found in task: {json.dumps(task, indent=2, default=str)}")
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+        return
 
     try:
         # Get latest WhatsApp token
@@ -97,9 +116,25 @@ def callback(ch, method, properties, body):
     # Update recipient status if it's a recipient task
     if is_recipient_task:
         from models.models import CampaignRecipient
-        recipient = db.query(CampaignRecipient).filter_by(id=target_info['id']).first()
-        if recipient:
-            recipient.status = "SENT" if status == "success" else "FAILED"
+        from uuid import UUID
+        recipient_id = target_info.get('id')
+        if recipient_id:
+            try:
+                # Convert string UUID to UUID object if needed
+                if isinstance(recipient_id, str):
+                    recipient_id = UUID(recipient_id)
+                recipient = db.query(CampaignRecipient).filter_by(id=recipient_id).first()
+                if recipient:
+                    recipient.status = "SENT" if status == "success" else "FAILED"
+                    print(f"[CONSUMER] Updated recipient {recipient_id} status to: {recipient.status}")
+                else:
+                    print(f"[CONSUMER WARNING] Recipient with ID {recipient_id} not found in database")
+            except Exception as e:
+                print(f"[CONSUMER ERROR] Failed to update recipient status: {str(e)}")
+                import traceback
+                print(f"[CONSUMER ERROR] Traceback: {traceback.format_exc()}")
+        else:
+            print(f"[CONSUMER WARNING] No recipient ID found in target_info")
 
     db.commit()
     task_type = "recipient" if is_recipient_task else "customer"
