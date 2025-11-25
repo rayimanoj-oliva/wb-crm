@@ -310,10 +310,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     message_broadcasted = True  # Mark as broadcasted
                     print(f"[ws_webhook] DEBUG - Customer text message broadcasted to WebSocket early: {message_id}")
                 except Exception as e:
-                    print(f"[ws_webhook] WARNING - WebSocket broadcast failed (early): {e}")
-                    import traceback
-                    traceback.print_exc()
-                    # Don't set message_broadcasted = True here, so late broadcast can retry
+                    print(f"[ws_webhook] WARNING - WebSocket broadcast failed: {e}")
             else:
                 # Message already processed in a previous webhook delivery
                 message_broadcasted = True
@@ -330,23 +327,19 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     reply_text = interactive.get("list_reply", {}).get("title", "")
                     reply_id = interactive.get("list_reply", {}).get("id", "")
                 
-                # Use reply_id as fallback if reply_text is empty (e.g., for city selections)
-                display_text = reply_text if reply_text else (reply_id if reply_id else "Interactive reply")
-                
-                # Always save and broadcast interactive messages, even if title is empty
-                if reply_id or reply_text:
+                if reply_text:
                     msg_interactive = MessageCreate(
                         message_id=message_id,
                         from_wa_id=from_wa_id,
                         to_wa_id=to_wa_id,
                         type="interactive",
-                        body=display_text,
+                        body=reply_text,
                         timestamp=timestamp,
                         customer_id=customer.id,
                     )
                     message_service.create_message(db, msg_interactive)
                     db.commit()  # Explicitly commit the transaction
-                    print(f"[ws_webhook] DEBUG - Customer interactive message saved to database early: {message_id}, reply_id={reply_id}, reply_text={reply_text}")
+                    print(f"[ws_webhook] DEBUG - Customer interactive message saved to database early: {message_id}")
                     
                     # Broadcast to WebSocket so message appears in UI immediately
                     try:
@@ -354,24 +347,22 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                             "from": from_wa_id,
                             "to": to_wa_id,
                             "type": "interactive",
-                            "message": display_text,
+                            "message": reply_text,
                             "timestamp": timestamp.isoformat(),
                             "message_id": message_id,
                             "interactive_type": i_type,
                             "interactive_data": {
                                 "kind": i_type,
                                 "reply_id": reply_id,
-                                "reply_title": reply_text or reply_id,
+                                "reply_title": reply_text,
                             },
                         })
                         message_broadcasted = True  # Mark as broadcasted
-                        print(f"[ws_webhook] DEBUG - Customer interactive message broadcasted to WebSocket early: {message_id}, reply_id={reply_id}, display_text={display_text}")
+                        print(f"[ws_webhook] DEBUG - Customer interactive message broadcasted to WebSocket early: {message_id}")
                     except Exception as e:
                         # Even if broadcast fails, mark as broadcasted to prevent duplicate attempts
                         message_broadcasted = True
                         print(f"[ws_webhook] WARNING - WebSocket broadcast failed: {e}")
-                        import traceback
-                        traceback.print_exc()
             else:
                 # Duplicate webhook delivery; assume it was already broadcasted
                 message_broadcasted = True
@@ -759,44 +750,6 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         print(f"[ws_webhook] DEBUG - City selection routing check: rid={rid_norm} pid={pid_meta_g} disp={disp_num_g} allowed={allowed_num}")
                         if allowed_num:
                             print(f"[ws_webhook] DEBUG - Routing treatment city reply (rid={rid_norm}) to marketing handler")
-                            # Ensure city reply is broadcast to websocket with proper city name
-                            try:
-                                # Get the city name from reply_id for better display
-                                city_mapping = {
-                                    "city_hyderabad": "Hyderabad",
-                                    "city_bangalore": "Bangalore",
-                                    "city_chennai": "Chennai",
-                                    "city_kolkata": "Kolkata",
-                                    "city_pune": "Pune",
-                                    "city_kochi": "Kochi",
-                                    "city_ahmedabad": "Ahmedabad",
-                                    "city_ludhiana": "Ludhiana",
-                                    "city_vizag": "Vizag",
-                                    "city_vijayawada": "Vijayawada",
-                                }
-                                city_name = city_mapping.get(rid_norm, rid_guard or "City selected")
-                                # Broadcast city reply explicitly to ensure it appears in websocket
-                                from utils.ws_manager import manager
-                                await manager.broadcast({
-                                    "from": from_wa_id,
-                                    "to": to_wa_id,
-                                    "type": "interactive",
-                                    "message": city_name,
-                                    "timestamp": timestamp.isoformat(),
-                                    "message_id": message_id,
-                                    "interactive_type": i_type,
-                                    "interactive_data": {
-                                        "kind": i_type,
-                                        "reply_id": rid_guard,
-                                        "reply_title": city_name,
-                                    },
-                                })
-                                print(f"[ws_webhook] DEBUG - City reply broadcasted to websocket: {city_name} (reply_id={rid_guard})")
-                            except Exception as broadcast_err:
-                                print(f"[ws_webhook] WARNING - Failed to broadcast city reply: {broadcast_err}")
-                                import traceback
-                                traceback.print_exc()
-                            
                             try:
                                 from marketing.city_selection import handle_city_selection  # type: ignore
                                 city_result = await handle_city_selection(
@@ -893,12 +846,23 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     await send_message_to_waid(wa_id, "❌ Error creating test payment link.", db)
                     return {"status": "dummy_payment_failed", "message_id": message_id}
 
-        # 4️⃣ Regular text messages - Follow-up logic (message already saved earlier at line 296)
-        # Note: Message saving is handled earlier in the code (line 296) to avoid duplicates
+        # 4️⃣ Regular text messages - ALWAYS save to database regardless of handling
         if message_type == "text":
-            # Check if message was already saved (it should be, from the early save)
+            # Check if already saved to avoid duplicates
             existing_msg = db.query(Message).filter(Message.message_id == message_id).first()
-            if existing_msg:
+            if not existing_msg:
+                inbound_text_msg = MessageCreate(
+                    message_id=message_id,
+                    from_wa_id=from_wa_id,
+                    to_wa_id=to_wa_id,
+                    type="text",
+                    body=body_text,
+                    timestamp=timestamp,
+                    customer_id=customer.id
+                )
+                message_service.create_message(db, inbound_text_msg)
+                db.commit()  # Explicitly commit the transaction
+                
                 # Only mark customer as replied if they have previous OUTBOUND messages from us
                 # AND the follow-up wasn't just scheduled (to avoid clearing follow-ups for initial messages)
                 try:
@@ -1063,14 +1027,13 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     handled_text = True
                     return {"status": "treatment_interactive_prompted", "message_id": message_id}
 
-            # Always broadcast customer messages, even if handled by a flow
-            # This ensures initial messages from customers always appear in the websocket
-            if not message_broadcasted:
+            # Only broadcast if not already broadcasted early and not handled by treatment flow
+            if not message_broadcasted and not handled_text:
                 # Determine flow context for broadcast metadata
                 flow_context = "treatment" if is_treatment_flow_number else ("lead_appointment" if is_lead_appointment_number else "unknown")
                 try:
                     await manager.broadcast({
-                        "from": from_wa_id,  # Customer's WA ID (use from_wa_id for consistency)
+                        "from": wa_id,  # Customer's WA ID
                         "to": to_wa_id,  # Business number
                         "type": "text",
                         "message": body_text,
@@ -1078,16 +1041,13 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         "message_id": message_id,
                         "meta": {
                             "flow": flow_context,
-                            "action": "customer_message",
-                            "handled": handled_text
+                            "action": "customer_message"
                         }
                     })
                     message_broadcasted = True  # Mark as broadcasted
-                    print(f"[ws_webhook] DEBUG - Customer text message broadcasted to WebSocket (late): {message_id}, handled={handled_text}")
+                    print(f"[ws_webhook] DEBUG - Customer text message broadcasted to WebSocket (late): {message_id}")
                 except Exception as e:
-                    print(f"[ws_webhook] WARNING - WebSocket broadcast failed (late): {e}")
-                    import traceback
-                    traceback.print_exc()
+                    print(f"[ws_webhook] WARNING - WebSocket broadcast failed: {e}")
 
             # Catalog link is sent only on explicit button clicks; no text keyword trigger
 
