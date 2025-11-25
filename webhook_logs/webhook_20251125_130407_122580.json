@@ -1,0 +1,29 @@
+{
+    "object": "whatsapp_business_account",
+    "entry": [{
+      "id": "WABA_ID",
+      "changes": [{
+        "value": {
+          "messaging_product": "whatsapp",
+          "metadata": {
+            "display_phone_number": "7729992376",
+            "phone_number_id": "PHONE_ID"
+          },
+          "contacts": [{
+            "wa_id": "8309866859"
+          }],
+          "messages": [{
+            "from": "8309866859",
+            "id": "wamid.CITY01",
+            "timestamp": "1732500005",
+            "type": "interactive",
+            "interactive": {
+              "type": "button_reply",
+              "button_reply": { "id": "CITY_HYDERABAD", "title": "Hyderabad" }
+            }
+          }]
+        },
+        "field": "messages"
+      }]
+    }]
+  }

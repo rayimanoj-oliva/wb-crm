@@ -1,0 +1,37 @@
+{
+    "object": "whatsapp_business_account",
+    "entry": [
+      {
+        "id": "WHATSAPP_BUSINESS_ACCOUNT_ID",
+        "changes": [
+          {
+            "value": {
+              "messaging_product": "whatsapp",
+              "metadata": {
+                "display_phone_number": "7729992376",
+                "phone_number_id": "LOCAL_TEST_PHONE_NUMBER_ID"
+              },
+              "contacts": [
+                {
+                  "profile": { "name": "Test Customer" },
+                  "wa_id": "8309866859"
+                }
+              ],
+              "messages": [
+                {
+                  "from": "8309866859",
+                  "id": "wamid.TESTMESSAGE123",
+                  "timestamp": "1732440000",
+                  "text": {
+                    "body": "Hi! I saw your ad for Oliva's Precision+ Laser Hair Reduction and want to know more"
+                  },
+                  "type": "text"
+                }
+              ]
+            },
+            "field": "messages"
+          }
+        ]
+      }
+    ]
+  }
