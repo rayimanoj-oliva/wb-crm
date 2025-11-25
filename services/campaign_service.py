@@ -122,7 +122,7 @@ def run_campaign(campaign: Campaign, job: Job, db: Session):
                 "id": str(recipient.id),
                 "name": recipient.name,
                 "phone_number": recipient.phone_number,
-                "params": recipient.params
+                "params": recipient.params if recipient.params else {}  # Ensure params is always a dict
             },
             "content": campaign.content,
             "type": campaign.type

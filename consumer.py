@@ -55,10 +55,22 @@ def callback(ch, method, properties, body):
         status = "success" if res.status_code == 200 else "failure"
 
         if status == "failure":
-            print(f"Failed to send message to {target_wa_id}. Response: {res.text}")
+            try:
+                error_json = res.json()
+                error_msg = error_json.get("error", {}).get("message", res.text)
+                error_code = error_json.get("error", {}).get("code", res.status_code)
+                print(f"[FAILURE] Failed to send message to {target_wa_id}. Code: {error_code}, Message: {error_msg}")
+                print(f"[FAILURE] Payload sent: {json.dumps(payload, indent=2)}")
+            except:
+                print(f"[FAILURE] Failed to send message to {target_wa_id}. Status: {res.status_code}, Response: {res.text[:500]}")
+                print(f"[FAILURE] Payload sent: {json.dumps(payload, indent=2)}")
 
     except Exception as e:
-        print(f"Error sending to {target_wa_id}: {e}")
+        import traceback
+        print(f"[EXCEPTION] Error sending to {target_wa_id}: {str(e)}")
+        print(f"[EXCEPTION] Traceback: {traceback.format_exc()}")
+        if 'payload' in locals():
+            print(f"[EXCEPTION] Payload that caused error: {json.dumps(payload, indent=2)}")
         status = "failure"
 
     end_time = time.time()

@@ -55,35 +55,44 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
             filtered.append(new_component)
         return filtered
 
+    # Start with base components if available, otherwise empty list
     components = copy.deepcopy(base_components) if base_components else []
 
     body_params = recipient_params.get("body_params")
     header_text_params = recipient_params.get("header_text_params")
     header_media_id = recipient_params.get("header_media_id")
 
-    if body_params is not None:
-        body_component = {
-            "type": "body",
-            "parameters": [{"type": "text", "text": v if v is not None else ""} for v in body_params]
-        }
-        components = replace_component(components, "body", body_component)
+    # Only create body component if we have actual body params (non-empty list)
+    if body_params is not None and len(body_params) > 0:
+        # Filter out None/empty values and ensure all are strings
+        valid_params = [str(v).strip() if v is not None else "" for v in body_params]
+        if any(valid_params):  # Only add if at least one param has a value
+            body_component = {
+                "type": "body",
+                "parameters": [{"type": "text", "text": v} for v in valid_params]
+            }
+            components = replace_component(components, "body", body_component)
 
-    if header_media_id:
+    # Handle header - prioritize media_id over text params
+    if header_media_id and str(header_media_id).strip():
         header_component = {
             "type": "header",
             "parameters": [
-                {"type": "image", "image": {"id": header_media_id}}
+                {"type": "image", "image": {"id": str(header_media_id).strip()}}
             ]
         }
         components = replace_component(components, "header", header_component)
-    elif header_text_params is not None:
-        header_component = {
-            "type": "header",
-            "parameters": [{"type": "text", "text": v if v is not None else ""} for v in header_text_params]
-        }
-        components = replace_component(components, "header", header_component)
+    elif header_text_params is not None and len(header_text_params) > 0:
+        # Filter out None/empty values
+        valid_params = [str(v).strip() if v is not None else "" for v in header_text_params]
+        if any(valid_params):  # Only add if at least one param has a value
+            header_component = {
+                "type": "header",
+                "parameters": [{"type": "text", "text": v} for v in valid_params]
+            }
+            components = replace_component(components, "header", header_component)
 
-    # Fallback to placeholder replacement if no structured params provided
+    # Fallback to placeholder replacement if no structured params provided but recipient_params exist
     if not body_params and not header_text_params and not header_media_id and recipient_params:
         mock_customer = {
             'wa_id': recipient['phone_number'],
@@ -100,7 +109,7 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
         "template": {
             "name": template_name,
             "language": {"code": language_code},
-            "components": components
+            "components": components if components else []  # Ensure components is always a list
         }
     }
     return payload

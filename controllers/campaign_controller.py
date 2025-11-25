@@ -387,7 +387,7 @@ def run_saved_template_campaign(
                     campaign_id=campaign.id,
                     phone_number=rec.wa_id,
                     name=rec.name,
-                    params=params or None,
+                    params=params if params else {},  # Always store as dict, never None
                 )
             )
         if personalized_entries:
