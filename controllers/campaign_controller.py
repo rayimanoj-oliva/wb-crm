@@ -9,7 +9,7 @@ from database.db import get_db
 from schemas.campaign_schema import BulkTemplateRequest, CampaignOut, CampaignCreate, CampaignUpdate
 from services import whatsapp_service, job_service, customer_service
 from schemas.customer_schema import CustomerCreate
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel
 from fastapi import HTTPException, Body
 from models.models import Cost, Template, CampaignRecipient, Campaign
@@ -303,12 +303,33 @@ def run_saved_template_campaign(
         except Exception:
             pass
 
-    # Resolve customers
-    customers = []
-    for wa in (req.personalized_recipients or []):
-        cust = customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa.wa_id, name=""))
-        customers.append(cust)
-    if not customers and not req.personalized_recipients:
+    # Resolve customers from both direct wa_ids and personalized recipients
+    customers_by_wa: Dict[str, Any] = {}
+
+    def add_customer(wa_id: Optional[str], name: str = ""):
+        if not wa_id:
+            return None
+        normalized = str(wa_id).strip()
+        if not normalized:
+            return None
+        if normalized in customers_by_wa:
+            return customers_by_wa[normalized]
+        cust = customer_service.get_or_create_customer(
+            db,
+            CustomerCreate(wa_id=normalized, name=name or ""),
+        )
+        customers_by_wa[normalized] = cust
+        return cust
+
+    for wa in (req.customer_wa_ids or []):
+        add_customer(wa)
+
+    if req.personalized_recipients:
+        for rec in req.personalized_recipients:
+            add_customer(rec.wa_id, rec.name or "")
+
+    customers = list(customers_by_wa.values())
+    if not customers:
         raise HTTPException(status_code=400, detail="No valid customers provided")
 
     # Build components with padding/trimming
