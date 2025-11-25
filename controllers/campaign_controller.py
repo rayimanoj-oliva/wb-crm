@@ -12,7 +12,7 @@ from schemas.customer_schema import CustomerCreate
 from typing import List, Optional
 from pydantic import BaseModel
 from fastapi import HTTPException, Body
-from models.models import Cost, Template, CampaignRecipient
+from models.models import Cost, Template, CampaignRecipient, Campaign
 from services.campaign_service import (
     create_campaign,
     get_all_campaigns,
@@ -393,8 +393,22 @@ def run_saved_template_campaign(
         if personalized_entries:
             db.add_all(personalized_entries)
             db.commit()
+            # Explicitly refresh and load recipients relationship
             db.refresh(campaign)
+            # Force load recipients relationship
+            _ = campaign.recipients  # Access to trigger lazy load
+            print(f"[DEBUG] Loaded {len(campaign.recipients)} recipients for campaign {campaign.id}")
+    
     job = job_service.create_job(db, campaign.id, current_user)
+    
+    # Ensure recipients are loaded before running campaign
+    if req.personalized_recipients:
+        # Re-query to ensure recipients are loaded
+        from sqlalchemy.orm import joinedload
+        campaign_with_recipients = db.query(Campaign).options(joinedload(Campaign.recipients)).filter_by(id=campaign.id).first()
+        if campaign_with_recipients:
+            campaign = campaign_with_recipients
+    
     campaign_service.run_campaign(campaign, job, db)
     return {
         "status": "queued",

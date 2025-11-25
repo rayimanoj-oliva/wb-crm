@@ -114,10 +114,15 @@ def run_campaign(campaign: Campaign, job: Job, db: Session):
         publish_to_queue(task)
 
     # Handle uploaded Excel recipients
-    for recipient in campaign.recipients:
+    # Explicitly query recipients to ensure they're loaded
+    from models.models import CampaignRecipient
+    recipients = db.query(CampaignRecipient).filter_by(campaign_id=campaign.id).all()
+    print(f"[DEBUG] Publishing {len(recipients)} recipient tasks to queue for campaign {campaign.id}")
+    
+    for recipient in recipients:
         task = {
-            "job_id": job.id,
-            "campaign_id": campaign.id,
+            "job_id": str(job.id),
+            "campaign_id": str(campaign.id),
             "recipient": {
                 "id": str(recipient.id),
                 "name": recipient.name,
@@ -127,12 +132,14 @@ def run_campaign(campaign: Campaign, job: Job, db: Session):
             "content": campaign.content,
             "type": campaign.type
         }
+        print(f"[DEBUG] Publishing task for recipient {recipient.phone_number}: {json.dumps(task, indent=2)}")
         publish_to_queue(task)
 
-        # Optionally mark as queued
+        # Mark as queued
         recipient.status = "QUEUED"
 
     db.commit()
+    print(f"[DEBUG] Successfully queued {len(recipients)} recipient tasks")
     return job
 
 
