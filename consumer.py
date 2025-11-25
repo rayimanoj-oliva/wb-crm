@@ -38,7 +38,11 @@ def callback(ch, method, properties, body):
         if task['type'] == "template":
             if is_recipient_task:
                 # For Excel recipients, build template payload with their params
+                print(f"[DEBUG consumer] Building payload for recipient task")
+                print(f"[DEBUG consumer] Target info: {json.dumps(target_info, indent=2, default=str)}")
+                print(f"[DEBUG consumer] Task content: {json.dumps(task['content'], indent=2, default=str)}")
                 payload = whatsapp_service.build_template_payload_for_recipient(target_info, task['content'])
+                print(f"[DEBUG consumer] Built payload: {json.dumps(payload, indent=2, default=str)}")
             else:
                 payload = whatsapp_service.build_template_payload(target_info, task['content'])
         else:

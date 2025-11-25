@@ -62,6 +62,11 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
     header_text_params = recipient_params.get("header_text_params")
     header_media_id = recipient_params.get("header_media_id")
 
+    # Debug logging
+    print(f"[DEBUG build_template_payload_for_recipient] Recipient params: {json.dumps(recipient_params, indent=2)}")
+    print(f"[DEBUG build_template_payload_for_recipient] Body params: {body_params}")
+    print(f"[DEBUG build_template_payload_for_recipient] Base components: {base_components}")
+
     # Only create body component if we have actual body params (non-empty list)
     if body_params is not None and len(body_params) > 0:
         # Filter out None/empty values and ensure all are strings
@@ -72,6 +77,7 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
                 "parameters": [{"type": "text", "text": v} for v in valid_params]
             }
             components = replace_component(components, "body", body_component)
+            print(f"[DEBUG build_template_payload_for_recipient] Created body component: {json.dumps(body_component, indent=2)}")
 
     # Handle header - prioritize media_id over text params
     if header_media_id and str(header_media_id).strip():
@@ -102,6 +108,18 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
         if components:
             components = fill_placeholders(components, mock_customer)
 
+    # Ensure we have at least the body component if body_params were provided
+    # WhatsApp requires components array even if empty, but we should have body component if params exist
+    if not components and body_params and len(body_params) > 0:
+        # This shouldn't happen, but as a safety check, build body component
+        valid_params = [str(v).strip() if v is not None else "" for v in body_params]
+        if any(valid_params):
+            components = [{
+                "type": "body",
+                "parameters": [{"type": "text", "text": v} for v in valid_params]
+            }]
+            print(f"[DEBUG build_template_payload_for_recipient] Rebuilt body component as fallback")
+    
     payload = {
         "messaging_product": "whatsapp",
         "to": recipient['phone_number'],
@@ -112,6 +130,7 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
             "components": components if components else []  # Ensure components is always a list
         }
     }
+    print(f"[DEBUG build_template_payload_for_recipient] Final payload: {json.dumps(payload, indent=2)}")
     return payload
 
 def enqueue_template_message(to: str, template_name: str, parameters: list):
