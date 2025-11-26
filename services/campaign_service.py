@@ -111,34 +111,34 @@ def run_campaign(campaign: Campaign, job: Job, db: Session):
         print(f"[DEBUG] Publishing {len(recipients)} recipient tasks to queue for campaign {campaign.id}")
         
         for recipient in recipients:
-        # Ensure params is a proper dict (JSONB columns might need conversion)
-        recipient_params = recipient.params if recipient.params else {}
-        if not isinstance(recipient_params, dict):
-            # If params is stored as string or other format, try to parse it
-            try:
-                if isinstance(recipient_params, str):
-                    recipient_params = json.loads(recipient_params)
-                else:
-                    recipient_params = dict(recipient_params) if recipient_params else {}
-            except:
-                recipient_params = {}
-        
-        task = {
-            "job_id": str(job.id),
-            "campaign_id": str(campaign.id),
-            "recipient": {
-                "id": str(recipient.id),
-                "name": recipient.name,
-                "phone_number": recipient.phone_number,
-                "params": recipient_params  # Ensure params is always a dict
-            },
-            "content": campaign.content,
-            "type": campaign.type
-        }
-        print(f"[DEBUG] Publishing task for recipient {recipient.phone_number}")
-        print(f"[DEBUG] Recipient params type: {type(recipient_params)}, value: {recipient_params}")
-        print(f"[DEBUG] Full task: {json.dumps(task, indent=2, default=str)}")
-        publish_to_queue(task)
+            # Ensure params is a proper dict (JSONB columns might need conversion)
+            recipient_params = recipient.params if recipient.params else {}
+            if not isinstance(recipient_params, dict):
+                # If params is stored as string or other format, try to parse it
+                try:
+                    if isinstance(recipient_params, str):
+                        recipient_params = json.loads(recipient_params)
+                    else:
+                        recipient_params = dict(recipient_params) if recipient_params else {}
+                except:
+                    recipient_params = {}
+            
+            task = {
+                "job_id": str(job.id),
+                "campaign_id": str(campaign.id),
+                "recipient": {
+                    "id": str(recipient.id),
+                    "name": recipient.name,
+                    "phone_number": recipient.phone_number,
+                    "params": recipient_params  # Ensure params is always a dict
+                },
+                "content": campaign.content,
+                "type": campaign.type
+            }
+            print(f"[DEBUG] Publishing task for recipient {recipient.phone_number}")
+            print(f"[DEBUG] Recipient params type: {type(recipient_params)}, value: {recipient_params}")
+            print(f"[DEBUG] Full task: {json.dumps(task, indent=2, default=str)}")
+            publish_to_queue(task)
 
             # Mark as queued
             recipient.status = "QUEUED"
