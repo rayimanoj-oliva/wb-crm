@@ -25,14 +25,42 @@ from uuid import UUID
 
 
 
+def _enrich_campaign_with_counts(campaign: Campaign, db: Session) -> Campaign:
+    """
+    Add computed fields (total_recipients, total_cost) to campaign object.
+    This is done by setting attributes that will be serialized by Pydantic.
+    """
+    # Count customers and recipients
+    customers_count = len(campaign.customers) if campaign.customers else 0
+    recipients_count = db.query(func.count(CampaignRecipient.id)).filter(
+        CampaignRecipient.campaign_id == campaign.id
+    ).scalar() or 0
+    
+    total_recipients = customers_count + recipients_count
+    
+    # Calculate cost
+    total_cost = 0.0
+    if campaign.campaign_cost_type:
+        cost_obj = db.query(Cost).filter(Cost.type == campaign.campaign_cost_type).first()
+        if cost_obj and cost_obj.price:
+            total_cost = float(cost_obj.price) * float(total_recipients)
+    
+    # Set computed fields as attributes (Pydantic will serialize them)
+    campaign.total_recipients = total_recipients
+    campaign.total_cost = round(total_cost, 2)
+    
+    return campaign
+
 def get_all_campaigns(db: Session):
-    return db.query(Campaign).all()
+    campaigns = db.query(Campaign).all()
+    # Enrich each campaign with computed fields
+    return [_enrich_campaign_with_counts(campaign, db) for campaign in campaigns]
 
 def get_campaign(db: Session, campaign_id: UUID):
     campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    return campaign
+    return _enrich_campaign_with_counts(campaign, db)
 
 def create_campaign(db: Session, campaign: CampaignCreate, user_id: UUID):
 

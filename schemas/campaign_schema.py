@@ -66,6 +66,9 @@ class CampaignOut(CampaignBase):
     customers: List[CustomerOut] = []  # CRM linked customers
     recipients: List[CampaignRecipientOut] = []  # Excel-uploaded recipients
     last_job_id: Optional[UUID]
+    # Computed fields for display
+    total_recipients: Optional[int] = None  # customers + recipients count
+    total_cost: Optional[float] = None  # calculated cost based on total_recipients
 
     class Config:
         from_attributes = True
