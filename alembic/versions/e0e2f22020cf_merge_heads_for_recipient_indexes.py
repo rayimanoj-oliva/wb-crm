@@ -1,7 +1,7 @@
 """merge heads for recipient indexes
 
 Revision ID: e0e2f22020cf
-Revises: 1f3d8d21c6ab, 20251126_add_recipient_indexes
+Revises: 1f3d8d21c6ab
 Create Date: 2025-11-26 18:13:31.934318
 
 """
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = 'e0e2f22020cf'
-down_revision: Union[str, None] = ('1f3d8d21c6ab', '20251126_add_recipient_indexes')
+down_revision: Union[str, None] = '1f3d8d21c6ab'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
