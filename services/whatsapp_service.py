@@ -61,10 +61,15 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
     body_params = recipient_params.get("body_params")
     header_text_params = recipient_params.get("header_text_params")
     header_media_id = recipient_params.get("header_media_id")
+    # Optional button parameters (for template URL buttons, etc.)
+    button_params = recipient_params.get("button_params")
+    button_index = recipient_params.get("button_index", "1")
+    button_sub_type = recipient_params.get("button_sub_type", "url")
 
     # Debug logging
     print(f"[DEBUG build_template_payload_for_recipient] Recipient params: {json.dumps(recipient_params, indent=2)}")
     print(f"[DEBUG build_template_payload_for_recipient] Body params: {body_params}")
+    print(f"[DEBUG build_template_payload_for_recipient] Button params: {button_params}")
     print(f"[DEBUG build_template_payload_for_recipient] Base components: {base_components}")
 
     # Only create body component if we have actual body params (non-empty list)
@@ -98,8 +103,28 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
             }
             components = replace_component(components, "header", header_component)
 
+    # Handle template button parameters (e.g. URL buttons with dynamic param)
+    # This builds a WhatsApp "button" component similar to your working Postman payload:
+    # {
+    #   "type": "button",
+    #   "sub_type": "url",
+    #   "index": "1",
+    #   "parameters": [{ "type": "text", "text": "3WBCRqn" }]
+    # }
+    if button_params is not None and len(button_params) > 0:
+        valid_params = [str(v).strip() if v is not None else "" for v in button_params]
+        if any(valid_params):
+            button_component = {
+                "type": "button",
+                "sub_type": str(button_sub_type or "url"),
+                "index": str(button_index or "1"),
+                "parameters": [{"type": "text", "text": v} for v in valid_params]
+            }
+            components = replace_component(components, "button", button_component)
+            print(f"[DEBUG build_template_payload_for_recipient] Created button component: {json.dumps(button_component, indent=2)}")
+
     # Fallback to placeholder replacement if no structured params provided but recipient_params exist
-    if not body_params and not header_text_params and not header_media_id and recipient_params:
+    if not body_params and not header_text_params and not header_media_id and not button_params and recipient_params:
         mock_customer = {
             'wa_id': recipient['phone_number'],
             'name': recipient.get('name', ''),

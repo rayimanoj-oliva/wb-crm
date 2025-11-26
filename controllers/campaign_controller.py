@@ -255,6 +255,11 @@ class PersonalizedRecipientPayload(BaseModel):
     body_params: Optional[List[str]] = None
     header_text_params: Optional[List[str]] = None
     header_media_id: Optional[str] = None
+    # Optional template button support (e.g. URL button with dynamic parameter)
+    # These map directly to WhatsApp "button" component fields
+    button_params: Optional[List[str]] = None
+    button_index: Optional[str] = "1"
+    button_sub_type: Optional[str] = "url"
 
 
 class RunSavedTemplateRequest(BaseModel):
@@ -408,6 +413,13 @@ def run_saved_template_campaign(
                 params["header_text_params"] = rec.header_text_params
             if rec.header_media_id is not None:
                 params["header_media_id"] = rec.header_media_id
+            # Optional button params for templates that use dynamic button variables
+            if rec.button_params is not None:
+                params["button_params"] = rec.button_params
+            if rec.button_index is not None:
+                params["button_index"] = rec.button_index
+            if rec.button_sub_type is not None:
+                params["button_sub_type"] = rec.button_sub_type
             personalized_entries.append(
                 CampaignRecipient(
                     campaign_id=campaign.id,

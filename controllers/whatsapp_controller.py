@@ -73,6 +73,10 @@ async def send_whatsapp_message(
     template_body_expected: Optional[int] = Form(None),
     template_enforce_count: Optional[bool] = Form(False),
     template_media_id: Optional[str] = Form(None),
+    # Optional template button support (e.g. URL button with dynamic parameter)
+    template_button_params: Optional[str] = Form(None),  # CSV or single value, e.g. "3WBCRqn"
+    template_button_index: Optional[str] = Form("1"),
+    template_button_sub_type: Optional[str] = Form("url"),
     # Flow-specific (for type == "flow")
     flow_id: Optional[str] = Form(None),
     flow_cta: Optional[str] = Form("Provide Address"),
@@ -189,7 +193,7 @@ async def send_whatsapp_message(
 
             components = []
 
-            # ---------------- Parse template_params ----------------
+            # ---------------- Parse template_params (header/body) ----------------
             if template_params:
                 try:
                     reader = csv.reader(io.StringIO(template_params))
@@ -209,7 +213,7 @@ async def send_whatsapp_message(
                     elif len(body_vals) > expected:
                         body_vals = body_vals[:expected]
 
-                # Add text header params
+                # Add text header params (only if no media header)
                 if header_vals and not (template_media_id or media_id):
                     components.append({
                         "type": "header",
@@ -221,6 +225,26 @@ async def send_whatsapp_message(
                         "type": "body",
                         "parameters": [{"type": "text", "text": v} for v in body_vals]
                     })
+
+            # ---------------- Button parameters (e.g. URL button) ----------------
+            if template_button_params:
+                try:
+                    reader = csv.reader(io.StringIO(template_button_params))
+                    row = next(reader, [])
+                    btn_param_list = [p.strip() for p in row]
+                except Exception:
+                    btn_param_list = [p.strip() for p in template_button_params.split(",") if p]
+
+                if btn_param_list:
+                    button_component = {
+                        "type": "button",
+                        "sub_type": str(template_button_sub_type or "url"),
+                        "index": str(template_button_index or "1"),
+                        "parameters": [
+                            {"type": "text", "text": v} for v in btn_param_list
+                        ]
+                    }
+                    components.append(button_component)
 
             # ---------------- Image Header ----------------
             effective_media_id = template_media_id or media_id

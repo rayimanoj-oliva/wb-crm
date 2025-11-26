@@ -98,71 +98,39 @@ def publish_to_queue(message: dict, queue_name: str = "campaign_queue"):
     connection.close()
 
 def run_campaign(campaign: Campaign, job: Job, db: Session):
-    # Explicitly query recipients to check if campaign uses personalized recipients
     from models.models import CampaignRecipient
+
     recipients = db.query(CampaignRecipient).filter_by(campaign_id=campaign.id).all()
-    
-    # CRITICAL: If recipients exist, only process recipients (not customers)
-    # This prevents duplicate sends when personalized_recipients are used
-    # When personalized_recipients are provided, they are stored as CampaignRecipient,
-    # not as customers, to avoid processing the same phone numbers twice
+
     if recipients:
-        print(f"[DEBUG] Campaign has {len(recipients)} recipients - processing recipients only (skipping customers)")
-        print(f"[DEBUG] Publishing {len(recipients)} recipient tasks to queue for campaign {campaign.id}")
-        
-        for recipient in recipients:
-            # Ensure params is a proper dict (JSONB columns might need conversion)
-            recipient_params = recipient.params if recipient.params else {}
-            if not isinstance(recipient_params, dict):
-                # If params is stored as string or other format, try to parse it
-                try:
-                    if isinstance(recipient_params, str):
-                        recipient_params = json.loads(recipient_params)
-                    else:
-                        recipient_params = dict(recipient_params) if recipient_params else {}
-                except:
-                    recipient_params = {}
-            
+        print(f"[DEBUG] Campaign has {len(recipients)} recipients - queuing recipient IDs only")
+
+        for r in recipients:
             task = {
                 "job_id": str(job.id),
                 "campaign_id": str(campaign.id),
-                "recipient": {
-                    "id": str(recipient.id),
-                    "name": recipient.name,
-                    "phone_number": recipient.phone_number,
-                    "params": recipient_params  # Ensure params is always a dict
-                },
-                "content": campaign.content,
-                "type": campaign.type
+                "target_type": "recipient",        # <---
+                "target_id": str(r.id),            # <---
             }
-            print(f"[DEBUG] Publishing task for recipient {recipient.phone_number}")
-            print(f"[DEBUG] Recipient params type: {type(recipient_params)}, value: {recipient_params}")
-            print(f"[DEBUG] Full task: {json.dumps(task, indent=2, default=str)}")
             publish_to_queue(task)
-
-            # Mark as queued
-            recipient.status = "QUEUED"
+            r.status = "QUEUED"
 
         db.commit()
-        print(f"[DEBUG] Successfully queued {len(recipients)} recipient tasks")
         return job
-    
-    # If no recipients, process customers (normal CRM campaign flow)
-    print(f"[DEBUG] Campaign has {len(campaign.customers)} customers - processing customers only")
-    for customer in campaign.customers:
+
+    # No recipients → normal CRM customers
+    print(f"[DEBUG] Campaign has {len(campaign.customers)} customers - queuing customer IDs only")
+
+    for c in campaign.customers:
         task = {
-            "job_id": job.id,
-            "campaign_id": campaign.id,
-            "customer": {
-                "id": str(customer.id),
-                "name": customer.name,
-                "wa_id": customer.wa_id
-            },
-            "content": campaign.content,
-            "type": campaign.type
+            "job_id": str(job.id),
+            "campaign_id": str(campaign.id),
+            "target_type": "customer",           # <---
+            "target_id": str(c.id),              # <---
         }
         publish_to_queue(task)
-    
+
+    db.commit()
     return job
 
 
