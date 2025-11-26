@@ -321,16 +321,21 @@ def run_saved_template_campaign(
         customers_by_wa[normalized] = cust
         return cust
 
+    # Only add customers from customer_wa_ids (not from personalized_recipients)
+    # When personalized_recipients are used, we process them separately as recipients
+    # This prevents duplicate sends to the same phone numbers
     for wa in (req.customer_wa_ids or []):
         add_customer(wa)
 
-    if req.personalized_recipients:
-        for rec in req.personalized_recipients:
-            add_customer(rec.wa_id, rec.name or "")
+    # NOTE: We do NOT add personalized_recipients as customers here
+    # They will be processed as CampaignRecipient entries instead
+    # This prevents duplicate processing in run_campaign
 
     customers = list(customers_by_wa.values())
-    if not customers:
-        raise HTTPException(status_code=400, detail="No valid customers provided")
+    
+    # Validate: must have either customers OR personalized_recipients
+    if not customers and not req.personalized_recipients:
+        raise HTTPException(status_code=400, detail="No valid customers or recipients provided")
 
     # Build components with padding/trimming
     components: List[dict] = []

@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Dict, Any
 
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
@@ -6,7 +6,7 @@ from uuid import UUID
 
 from sqlalchemy.sql.functions import current_user
 
-from models.models import Campaign, Job, JobStatus
+from models.models import Campaign, Job, JobStatus, CampaignRecipient
 
 
 def create_job(db: Session, campaign_id: UUID,current_user) -> Job:
@@ -19,11 +19,22 @@ def create_job(db: Session, campaign_id: UUID,current_user) -> Job:
     db.add(job)
     db.flush()  # Get job.id before commit
 
-    statuses = [
-        JobStatus(job_id=job.id, customer_id=customer.id, status="pending")
-        for customer in campaign.customers
-    ]
-    db.add_all(statuses)
+    # Check if campaign has recipients (personalized_recipients)
+    # If recipients exist, don't create JobStatus entries for customers
+    # Recipients are tracked via CampaignRecipient.status, not JobStatus
+    from models.models import CampaignRecipient
+    recipients = db.query(CampaignRecipient).filter_by(campaign_id=campaign_id).all()
+    
+    if not recipients:
+        # Only create JobStatus entries if no recipients exist
+        # This is for normal CRM campaigns using customers
+        statuses = [
+            JobStatus(job_id=job.id, customer_id=customer.id, status="pending")
+            for customer in campaign.customers
+        ]
+        if statuses:
+            db.add_all(statuses)
+    
     db.commit()
     return job
 
@@ -34,9 +45,54 @@ def get_job(db: Session, job_id: UUID) -> Job:
     return job
 
 
-def get_jobs_by_campaign_id(db: Session, campaign_id: UUID) -> List[Job]:
+def get_jobs_by_campaign_id(db: Session, campaign_id: UUID) -> List[Dict[str, Any]]:
+    """
+    Get jobs for a campaign, including statuses from both JobStatus (customers) 
+    and CampaignRecipient (personalized recipients).
+    """
     jobs = db.query(Job).filter(Job.campaign_id == campaign_id).all()
-    return jobs
+    
+    # Check if campaign uses recipients
+    recipients = db.query(CampaignRecipient).filter_by(campaign_id=campaign_id).all()
+    uses_recipients = len(recipients) > 0
+    
+    result = []
+    for job in jobs:
+        job_dict = {
+            "id": job.id,
+            "campaign_id": job.campaign_id,
+            "created_at": job.created_at,
+            "last_attempted_by": job.last_attempted_by,
+            "last_triggered_time": job.last_triggered_time,
+            "statuses": []
+        }
+        
+        if uses_recipients:
+            # For campaigns with recipients, include recipient statuses
+            # Map recipient status to job status format
+            for recipient in recipients:
+                status_mapping = {
+                    "SENT": "success",
+                    "FAILED": "failure",
+                    "QUEUED": "pending",
+                    "PENDING": "pending"
+                }
+                job_status = status_mapping.get(recipient.status, "pending")
+                job_dict["statuses"].append({
+                    "customer_id": recipient.id,  # Use recipient.id as identifier
+                    "status": job_status
+                })
+        else:
+            # For normal campaigns, include JobStatus entries
+            for status in job.statuses:
+                job_dict["statuses"].append({
+                    "customer_id": status.customer_id,
+                    "status": status.status
+                })
+        
+        result.append(job_dict)
+    
+    return result
 
 def get_overall_job_stats(db: Session):
     total = db.query(func.count(JobStatus.job_id)).scalar()

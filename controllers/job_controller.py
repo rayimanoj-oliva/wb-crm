@@ -28,8 +28,12 @@ def get_job(job_id: UUID, db: Session = Depends(get_db)):
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-@router.get("/campaign/{campaign_id}", response_model=List[JobOut])
+@router.get("/campaign/{campaign_id}")
 def get_jobs_by_campaign_id(campaign_id: UUID, db: Session = Depends(get_db)):
+    """
+    Get jobs for a campaign. Returns custom format that includes both 
+    JobStatus (for customers) and CampaignRecipient statuses (for personalized recipients).
+    """
     try:
         return job_service.get_jobs_by_campaign_id(db, campaign_id)
     except ValueError as e:
