@@ -22,12 +22,13 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan ec2-13-234-38-173.ap-south-1.compute.amazonaws.com >> ~/.ssh/known_hosts
 
-      # 3. Pull latest code on EC2
+      # 3. Pull latest code on EC2 (force clean checkout)
       - name: Pull Latest Code on EC2
         run: |
           ssh -i ~/.ssh/id_rsa ubuntu@ec2-13-234-38-173.ap-south-1.compute.amazonaws.com << 'EOF'
           cd wb-crm
-          git pull origin main
+          git fetch origin main
+          git reset --hard origin/main
           EOF
 
       # 4. Install Python dependencies on EC2
