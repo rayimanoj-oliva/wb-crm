@@ -248,7 +248,14 @@ def publish_batch_to_queue(messages: List[dict], queue_name: str = "campaign_que
         return 0, len(messages)
 
 
-def run_campaign(campaign: Campaign, job: Job, db: Session):
+def run_campaign(
+    campaign: Campaign,
+    job: Job,
+    db: Session,
+    *,
+    batch_size: int = 0,
+    batch_delay: int = 0,
+):
     """
     Run a campaign by queuing messages to RabbitMQ.
     FIXED:
@@ -256,6 +263,7 @@ def run_campaign(campaign: Campaign, job: Job, db: Session):
     - Adds deduplication check
     - Creates CampaignLog entries for tracking
     - Validates phone numbers before queuing
+    - Supports batch_size and batch_delay for throttling
     """
     from models.models import CampaignRecipient, CampaignLog
 
@@ -271,7 +279,7 @@ def run_campaign(campaign: Campaign, job: Job, db: Session):
         # Track processed phone numbers to prevent duplicates
         processed_phones = set()
 
-        for r in recipients:
+        for idx, r in enumerate(recipients):
             # Skip already processed (SENT/FAILED) recipients - deduplication
             if r.status in ("SENT", "FAILED"):
                 skipped_count += 1
@@ -306,6 +314,8 @@ def run_campaign(campaign: Campaign, job: Job, db: Session):
                 "campaign_id": str(campaign.id),
                 "target_type": "recipient",
                 "target_id": str(r.id),
+                "batch_size": batch_size,
+                "batch_delay": batch_delay,
             }
             messages_to_queue.append((task, r))
 
@@ -369,6 +379,8 @@ def run_campaign(campaign: Campaign, job: Job, db: Session):
             "campaign_id": str(campaign.id),
             "target_type": "customer",
             "target_id": str(c.id),
+            "batch_size": batch_size,
+            "batch_delay": batch_delay,
         }
         messages_to_queue.append(task)
 

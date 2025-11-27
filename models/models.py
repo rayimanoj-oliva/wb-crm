@@ -203,6 +203,30 @@ class WhatsAppToken(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class NumberFlowConfig(Base):
+    """
+    Stores enable/disable state for each WhatsApp business number flow.
+    One row per dedicated business number.
+    """
+
+    __tablename__ = "number_flow_configs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    phone_number_id = Column(String, nullable=False, unique=True, index=True)
+    display_number = Column(String, nullable=False)
+    display_digits = Column(String(20), nullable=True, unique=True, index=True)
+    flow_key = Column(String(100), nullable=False)
+    flow_name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    priority = Column(Integer, default=0)
+    is_enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self) -> str:
+        return f"<NumberFlowConfig(flow_key={self.flow_key}, phone_number_id={self.phone_number_id}, enabled={self.is_enabled})>"
+
+
 # ------------------------------
 # Orders / Products
 # ------------------------------

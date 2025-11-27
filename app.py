@@ -61,6 +61,7 @@ from controllers.catalog import router as catalog_router
 from controllers.catalog import seed_categories, seed_subcategories
 from seed_zoho_mappings import seed_zoho_mappings
 from flow_integration import router as flow_router
+from controllers.flow_routes_controller import router as flow_routes_router
 from controllers.components.lead_appointment_flow.zoho_lead_api import router as zoho_leads_router
 from controllers.components.zoho_mapping_controller import router as zoho_mapping_router
 from controllers.followup_debug_controller import router as followup_debug_router
@@ -102,7 +103,8 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     user = authenticate_user(db, form_data.username, form_data.password)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid username or password")
-    token = create_access_token(data={"sub": str(user.id)}, expires_delta=timedelta(minutes=30))
+    # Extend session timeout to 8 hours to honor "no auto logout" requirement
+    token = create_access_token(data={"sub": str(user.id)}, expires_delta=timedelta(hours=8))
     return {"access_token": token, "token_type": "bearer"}
 
 # Include user routes
@@ -129,6 +131,7 @@ app.include_router(payment_router, prefix="/payments")
 # app.include_router(address_router, prefix="/address")
 app.include_router(catalog_router, prefix="/catalog")
 app.include_router(flow_router, prefix="/flow")
+app.include_router(flow_routes_router)
 app.include_router(zoho_leads_router)
 app.include_router(zoho_mapping_router, prefix="/zoho-mappings")
 app.include_router(followup_debug_router)  # Debug endpoints for follow-ups

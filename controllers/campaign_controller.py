@@ -2,11 +2,20 @@ import io
 from typing import List
 import pandas as pd
 from fastapi import APIRouter, Depends, File, UploadFile, Response
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from auth import get_current_user
 from database.db import get_db
-from schemas.campaign_schema import BulkTemplateRequest, CampaignOut, CampaignCreate, CampaignUpdate
+from schemas.campaign_schema import (
+    BulkTemplateRequest,
+    CampaignOut,
+    CampaignCreate,
+    CampaignUpdate,
+    TemplateCampaignCreateRequest,
+    TemplateExcelColumnsResponse,
+    TemplateCampaignRunRequest,
+)
 from services import whatsapp_service, job_service, customer_service
 from schemas.customer_schema import CustomerCreate
 from typing import Any, Dict, List, Optional
@@ -25,12 +34,16 @@ from services.campaign_service import (
 )
 import services.campaign_service as campaign_service
 from uuid import UUID
+from services.template_excel_service import (
+    build_excel_response,
+    get_template_metadata,
+    build_excel_columns,
+)
 router = APIRouter(tags=["Campaign"])
 
 # ------------------------------
 # Campaign Reports Endpoints (placed before dynamic /{campaign_id})
 # ------------------------------
-
 
 
 
@@ -78,6 +91,75 @@ def run_campaign(campaign_id:UUID,db :Session = Depends(get_db),current_user: di
     campaign = campaign_service.get_campaign(db,campaign_id)
     return campaign_service.run_campaign(campaign,job,db)
 
+
+@router.post("/template", response_model=CampaignOut)
+def create_template_campaign(
+    payload: TemplateCampaignCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    template_meta = get_template_metadata(db, payload.template_name)
+    template_body = template_meta["template"].template_body or {}
+    content = {
+        "name": payload.template_name,
+        "language": payload.template_language,
+        "components": template_body.get("components", []),
+        "image_id": payload.image_id,
+        "button_sub_type": payload.button_sub_type,
+        "button_index": payload.button_index,
+    }
+    campaign_payload = CampaignCreate(
+        name=payload.campaign_name,
+        description=payload.description,
+        customer_ids=[],
+        content=content,
+        type="template",
+        campaign_cost_type=payload.campaign_cost_type,
+    )
+    campaign = campaign_service.create_campaign(db, campaign_payload, user_id=current_user.id)
+    return campaign
+
+
+@router.get("/template/{template_name}/excel-columns", response_model=TemplateExcelColumnsResponse)
+def get_template_excel_columns(template_name: str, db: Session = Depends(get_db)):
+    meta = get_template_metadata(db, template_name)
+    columns = build_excel_columns(meta)
+    button_meta = meta["button_meta"]
+    return TemplateExcelColumnsResponse(
+        template_name=template_name,
+        columns=columns,
+        body_placeholder_count=meta["body_placeholder_count"],
+        header_placeholder_count=meta["header_text_placeholder_count"],
+        header_type=meta["header_type"],
+        has_buttons=button_meta.get("has_buttons", False),
+        button_type=button_meta.get("button_type"),
+    )
+
+
+@router.get("/template/{template_name}/excel")
+def download_template_excel(
+    template_name: str,
+    language: str = "en_US",
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    buffer, filename = build_excel_response(db, template_name, language)
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"'
+    }
+    return StreamingResponse(
+        buffer,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )
+
+def _normalize_phone(value: str) -> str:
+    digits = "".join(filter(str.isdigit, value or ""))
+    if digits.startswith("00"):
+        digits = digits[2:]
+    return digits
+
+
 @router.post("/{campaign_id}/upload-excel")
 async def upload_campaign_excel(
     campaign_id: UUID,
@@ -100,7 +182,6 @@ async def upload_campaign_excel(
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
-    # Read Excel file into DataFrame
     try:
         contents = await file.read()
         # Limit file size to 10MB
@@ -230,6 +311,27 @@ async def upload_campaign_excel(
         "skipped_duplicate": skipped_duplicate,
         "cleared_existing": clear_existing
     }
+
+
+@router.post("/{campaign_id}/run-template")
+def run_template_campaign(
+    campaign_id: UUID,
+    payload: TemplateCampaignRunRequest,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    campaign = campaign_service.get_campaign(db, campaign_id)
+    if campaign.type != "template":
+        raise HTTPException(status_code=400, detail="Campaign is not a template campaign")
+    job = job_service.create_job(db, campaign_id, current_user)
+    campaign_service.run_campaign(
+        campaign,
+        job,
+        db,
+        batch_size=payload.batch_size,
+        batch_delay=payload.batch_delay_seconds,
+    )
+    return {"status": "queued", "campaign_id": str(campaign.id), "job_id": str(job.id)}
 
 @router.get("/{campaign_id}/recipients")
 def get_campaign_recipients(
@@ -449,7 +551,7 @@ def run_saved_template_campaign(
     # This prevents duplicate processing in run_campaign
 
     customers = list(customers_by_wa.values())
-    
+
     # Validate: must have either customers OR personalized_recipients
     if not customers and not req.personalized_recipients:
         raise HTTPException(status_code=400, detail="No valid customers or recipients provided")

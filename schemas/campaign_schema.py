@@ -70,3 +70,30 @@ class CampaignOut(CampaignBase):
 
     class Config:
         from_attributes = True
+
+
+class TemplateCampaignCreateRequest(BaseModel):
+    template_name: str
+    template_language: str = "en_US"
+    campaign_name: str
+    description: Optional[str] = None
+    image_id: Optional[str] = None
+    button_sub_type: Optional[str] = "url"
+    button_index: Optional[str] = "1"
+    campaign_cost_type: Optional[str] = None
+
+
+class TemplateExcelColumnsResponse(BaseModel):
+    template_name: str
+    columns: List[str]
+    body_placeholder_count: int
+    header_placeholder_count: int
+    header_type: Optional[str]
+    has_buttons: bool
+    button_type: Optional[str]
+
+
+class TemplateCampaignRunRequest(BaseModel):
+    batch_size: int = 100
+    batch_delay_seconds: int = 60
+

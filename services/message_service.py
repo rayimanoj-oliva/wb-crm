@@ -1,8 +1,9 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import or_, and_
+from sqlalchemy import or_, and_, func
 
 from cache.service import increment_unread, reset_unread
 from models.models import Message, Customer
+from sqlalchemy import func, and_, over
 from schemas.message_schema import MessageCreate
 from datetime import datetime
 
@@ -243,3 +244,40 @@ def get_customer_wa_ids_by_business_number(db: Session, business_number: str) ->
                 customer_wa_ids_set.add(wa_id_tuple[0])
     
     return list(customer_wa_ids_set)
+
+
+def get_customer_wa_ids_pending_agent_reply(db: Session) -> list[str]:
+    """
+    Return customer wa_ids where the most recent message in the conversation was sent by the customer.
+    Uses row_number window to ensure we pick the true latest record even when timestamps match.
+    """
+    from sqlalchemy import desc
+
+    if not db.query(Message).filter(Message.customer_id.isnot(None)).first():
+        return []
+
+    latest_subquery = (
+        db.query(
+            Message.id.label("message_id"),
+            Message.customer_id.label("customer_id"),
+            Message.from_wa_id.label("from_wa_id"),
+            func.row_number()
+            .over(
+                partition_by=Message.customer_id,
+                order_by=(Message.timestamp.desc(), Message.id.desc()),
+            )
+            .label("row_num"),
+        )
+        .filter(Message.customer_id.isnot(None))
+        .subquery()
+    )
+
+    rows = (
+        db.query(Customer.wa_id)
+        .join(latest_subquery, Customer.id == latest_subquery.c.customer_id)
+        .filter(latest_subquery.c.row_num == 1)
+        .filter(latest_subquery.c.from_wa_id == Customer.wa_id)
+        .all()
+    )
+
+    return [wa_id for (wa_id,) in rows if wa_id]
