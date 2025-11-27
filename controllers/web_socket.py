@@ -763,7 +763,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             handled_text = status_val in {"handled"}
 
         # 3️⃣ LEAD-TO-APPOINTMENT FLOW - handle other lead appointment triggers
-        if not handled_text:
+        if not handled_text and not lead_flow_disabled:
             # Guard: do not route treatment city selections into lead flow
             try:
                 if message_type == "interactive" and i_type in {"list_reply", "button_reply"}:
@@ -839,6 +839,8 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 return lead_result
             handled_text = lead_status in {"auto_welcome_sent", "proceed_to_city_selection", "proceed_to_clinic_location", "proceed_to_time_slot", "waiting_for_custom_date", "callback_initiated", "lead_created_no_callback", "thank_you_sent", "week_list_sent", "day_list_sent", "time_slots_sent", "times_sent"}
             print(f"[ws_webhook] DEBUG - After lead flow: handled_text={handled_text}")
+        elif lead_flow_disabled:
+            print(f"[ws_webhook] INFO - Lead appointment flow disabled for phone={phone_number_id_str}; skipping automation block")
 
         # Manual date-time fallback parsing before other generic text handling
         if message_type == "text" and not handled_text:
@@ -1466,7 +1468,9 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             normalized_payload = (btn_text or "").strip().lower()
             mapped_id = template_btn_mapping.get(normalized_payload)
             
-            if mapped_id:
+            if lead_flow_disabled:
+                print(f"[ws_webhook] INFO - Lead appointment flow disabled; ignoring template button '{btn_text}'")
+            elif mapped_id:
                 print(f"[ws_webhook] DEBUG - Template button detected: '{btn_text}' → mapped to '{mapped_id}'")
                 
                 # Process as lead appointment flow interactive response
@@ -1523,16 +1527,19 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     print(f"[ws_webhook] WARNING - Failed to process template button in lead flow: {e}")
 
             # Delegate appointment button flows (book, callback, time)
-            from controllers.components.treament_flow import run_appointment_buttons_flow  # local import to avoid cycles
-            appt_result_ctrl = await run_appointment_buttons_flow(
-                db,
-                wa_id=wa_id,
-                btn_id=btn_id,
-                btn_text=btn_text,
-                btn_payload=(btn.get("payload") if isinstance(btn, dict) else None),
-            )
-            if (appt_result_ctrl or {}).get("status") in {"date_list_sent", "callback_ack", "appointment_captured", "need_date_first"}:
-                return appt_result_ctrl
+            if treatment_flow_disabled:
+                print(f"[ws_webhook] INFO - Treatment flow disabled; skipping appointment button automation for '{btn_text}'")
+            else:
+                from controllers.components.treament_flow import run_appointment_buttons_flow  # local import to avoid cycles
+                appt_result_ctrl = await run_appointment_buttons_flow(
+                    db,
+                    wa_id=wa_id,
+                    btn_id=btn_id,
+                    btn_text=btn_text,
+                    btn_payload=(btn.get("payload") if isinstance(btn, dict) else None),
+                )
+                if (appt_result_ctrl or {}).get("status") in {"date_list_sent", "callback_ack", "appointment_captured", "need_date_first"}:
+                    return appt_result_ctrl
 
             # Address collection buttons (legacy guidance removed); allow flows to proceed without interception
 
