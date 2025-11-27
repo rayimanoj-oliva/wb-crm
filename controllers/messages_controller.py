@@ -5,7 +5,7 @@ from uuid import UUID
 from schemas.message_schema import MessageCreate, MessageOut
 from services import message_service
 from database.db import get_db
-from services.message_service import get_messages, get_customer_wa_ids_by_business_number, get_customer_wa_ids_by_date
+from services.message_service import get_messages, get_customer_wa_ids_by_business_number, get_customer_wa_ids_by_date, get_customer_wa_ids_pending_agent_reply
 
 router = APIRouter(
     tags=["Messages"]
@@ -101,5 +101,17 @@ def get_customers_by_date(
     This endpoint is useful for filtering conversations by date on the frontend.
     """
     customer_wa_ids = get_customer_wa_ids_by_date(db, date)
+    return {"customer_wa_ids": customer_wa_ids}
+
+
+@router.get("/customers/pending-agent-reply")
+def get_customers_pending_agent_reply(
+    db: Session = Depends(get_db),
+):
+    """
+    Get all customer wa_ids where the latest message was sent by the customer,
+    indicating the conversation is awaiting an agent reply.
+    """
+    customer_wa_ids = get_customer_wa_ids_pending_agent_reply(db)
     return {"customer_wa_ids": customer_wa_ids}
 

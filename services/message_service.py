@@ -1,8 +1,9 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import or_, and_
+from sqlalchemy import or_, and_, func
 
 from cache.service import increment_unread, reset_unread
 from models.models import Message, Customer
+from sqlalchemy import func, and_
 from schemas.message_schema import MessageCreate
 from datetime import datetime
 
@@ -243,3 +244,36 @@ def get_customer_wa_ids_by_business_number(db: Session, business_number: str) ->
                 customer_wa_ids_set.add(wa_id_tuple[0])
     
     return list(customer_wa_ids_set)
+
+
+def get_customer_wa_ids_pending_agent_reply(db: Session) -> list[str]:
+    """
+    Return customer wa_ids where the latest message in the conversation was sent by the customer
+    (i.e., awaiting agent reply).
+    """
+    subquery = (
+        db.query(
+            Message.customer_id.label("customer_id"),
+            func.max(Message.timestamp).label("max_timestamp"),
+        )
+        .filter(Message.customer_id.isnot(None))
+        .group_by(Message.customer_id)
+        .subquery()
+    )
+
+    latest_messages = (
+        db.query(Message, Customer)
+        .join(subquery, and_(
+            Message.customer_id == subquery.c.customer_id,
+            Message.timestamp == subquery.c.max_timestamp,
+        ))
+        .join(Customer, Customer.id == Message.customer_id)
+        .filter(Message.from_wa_id == Customer.wa_id)
+        .all()
+    )
+
+    pending_customers = []
+    for message, customer in latest_messages:
+        if customer and customer.wa_id:
+            pending_customers.append(customer.wa_id)
+    return pending_customers
