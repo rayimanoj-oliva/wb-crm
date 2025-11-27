@@ -51,12 +51,16 @@ jobs:
           alembic upgrade head
           EOF
 
-      # 6. Restart FastAPI server
+      # 6. Restart FastAPI server with Gunicorn
       - name: Restart FastAPI Server
         run: |
           ssh -i ~/.ssh/id_rsa ubuntu@ec2-13-234-38-173.ap-south-1.compute.amazonaws.com << 'EOF'
           source ~/myenv/bin/activate
           cd wb-crm
+          pkill -f gunicorn || true
           pkill -f uvicorn || true
-          nohup uvicorn app:app --host 0.0.0.0 --port 8001 --log-level debug > logs.out 2>&1 &
+          sleep 2
+          nohup gunicorn app:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8001 --timeout 120 --access-logfile logs_access.out --error-logfile logs_error.out > logs.out 2>&1 &
+          sleep 3
+          pgrep -f gunicorn && echo "Gunicorn started successfully" || echo "Warning: Gunicorn may not have started"
           EOF
