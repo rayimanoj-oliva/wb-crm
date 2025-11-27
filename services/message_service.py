@@ -3,7 +3,7 @@ from sqlalchemy import or_, and_, func
 
 from cache.service import increment_unread, reset_unread
 from models.models import Message, Customer
-from sqlalchemy import func, and_
+from sqlalchemy import func, and_, over
 from schemas.message_schema import MessageCreate
 from datetime import datetime
 
@@ -248,32 +248,36 @@ def get_customer_wa_ids_by_business_number(db: Session, business_number: str) ->
 
 def get_customer_wa_ids_pending_agent_reply(db: Session) -> list[str]:
     """
-    Return customer wa_ids where the latest message in the conversation was sent by the customer
-    (i.e., awaiting agent reply).
+    Return customer wa_ids where the most recent message in the conversation was sent by the customer.
+    Uses row_number window to ensure we pick the true latest record even when timestamps match.
     """
-    subquery = (
+    from sqlalchemy import desc
+
+    if not db.query(Message).filter(Message.customer_id.isnot(None)).first():
+        return []
+
+    latest_subquery = (
         db.query(
+            Message.id.label("message_id"),
             Message.customer_id.label("customer_id"),
-            func.max(Message.timestamp).label("max_timestamp"),
+            Message.from_wa_id.label("from_wa_id"),
+            func.row_number()
+            .over(
+                partition_by=Message.customer_id,
+                order_by=(Message.timestamp.desc(), Message.id.desc()),
+            )
+            .label("row_num"),
         )
         .filter(Message.customer_id.isnot(None))
-        .group_by(Message.customer_id)
         .subquery()
     )
 
-    latest_messages = (
-        db.query(Message, Customer)
-        .join(subquery, and_(
-            Message.customer_id == subquery.c.customer_id,
-            Message.timestamp == subquery.c.max_timestamp,
-        ))
-        .join(Customer, Customer.id == Message.customer_id)
-        .filter(Message.from_wa_id == Customer.wa_id)
+    rows = (
+        db.query(Customer.wa_id)
+        .join(latest_subquery, Customer.id == latest_subquery.c.customer_id)
+        .filter(latest_subquery.c.row_num == 1)
+        .filter(latest_subquery.c.from_wa_id == Customer.wa_id)
         .all()
     )
 
-    pending_customers = []
-    for message, customer in latest_messages:
-        if customer and customer.wa_id:
-            pending_customers.append(customer.wa_id)
-    return pending_customers
+    return [wa_id for (wa_id,) in rows if wa_id]
