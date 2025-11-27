@@ -11,8 +11,9 @@ from services import whatsapp_service, job_service, customer_service
 from schemas.customer_schema import CustomerCreate
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel
-from fastapi import HTTPException, Body
-from models.models import Cost, Template, CampaignRecipient, Campaign
+from fastapi import HTTPException, Body, Query
+from models.models import Cost, Template, CampaignRecipient, Campaign, CampaignLog
+from sqlalchemy import func
 from services.campaign_service import (
     create_campaign,
     get_all_campaigns,
@@ -44,9 +45,16 @@ def send_bulk_template(req: BulkTemplateRequest):
         )
     return {"status": "queued", "count": len(req.clients)}
 
-@router.get("/", response_model=List[CampaignOut])
-def list_campaigns(db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
-    return campaign_service.get_all_campaigns(db)
+@router.get("/")
+def list_campaigns(
+    skip: int = Query(0, ge=0, description="Number of records to skip"),
+    limit: int = Query(50, ge=1, le=200, description="Max records to return"),
+    search: Optional[str] = Query(None, description="Search by campaign name or description"),
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    """List campaigns with pagination and optional search."""
+    return campaign_service.get_all_campaigns(db, skip=skip, limit=limit, search=search)
 
 @router.get("/{campaign_id}", response_model=CampaignOut)
 def get_campaign(campaign_id: UUID, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
@@ -74,10 +82,19 @@ def run_campaign(campaign_id:UUID,db :Session = Depends(get_db),current_user: di
 async def upload_campaign_excel(
     campaign_id: UUID,
     file: UploadFile = File(...),
+    clear_existing: bool = False,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
-    """Upload Excel with phone_number, name, params -> add recipients to campaign."""
+    """Upload Excel with phone_number, name, params -> add recipients to campaign.
+
+    Args:
+        campaign_id: Campaign UUID
+        file: Excel file with phone_number column (required), name and other params (optional)
+        clear_existing: If True, removes all existing recipients before adding new ones
+    """
+    import numpy as np
+
     # Ensure campaign exists
     campaign = campaign_service.get_campaign(db, campaign_id)
     if not campaign:
@@ -86,72 +103,158 @@ async def upload_campaign_excel(
     # Read Excel file into DataFrame
     try:
         contents = await file.read()
+        # Limit file size to 10MB
+        if len(contents) > 10 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="File size exceeds 10MB limit")
         df = pd.read_excel(io.BytesIO(contents))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid Excel file: {e}")
+
+    # Limit row count
+    if len(df) > 10000:
+        raise HTTPException(status_code=400, detail="Excel file exceeds 10,000 rows limit")
 
     # Validate required column
     if "phone_number" not in df.columns:
         raise HTTPException(status_code=400, detail="Excel must have 'phone_number' column")
 
-    # Iterate and create recipients
-    recipients = []
-    for _, row in df.iterrows():
-        phone = str(row.get("phone_number"))
-        if not phone:
-            continue
-        # Normalize pandas/numpy types in params to JSON-serializable primitives
-        def to_jsonable(val):
-            try:
-                import pandas as pd
-                import numpy as np
-                if isinstance(val, (pd.Timestamp,)):
-                    return val.isoformat()
-                if isinstance(val, (pd.Series, pd.DataFrame)):
-                    return val.to_dict()
-                if isinstance(val, (np.integer,)):
-                    return int(val)
-                if isinstance(val, (np.floating,)):
-                    return float(val)
-            except Exception:
-                pass
-            # Datetime from Python
-            try:
-                from datetime import datetime
-                if isinstance(val, datetime):
-                    return val.isoformat()
-            except Exception:
-                pass
-            return val
+    # Clear existing recipients if requested
+    if clear_existing:
+        db.query(CampaignRecipient).filter(CampaignRecipient.campaign_id == campaign_id).delete()
 
-        clean_params = {k: to_jsonable(row[k]) for k in df.columns if k not in ["phone_number", "name"] and pd.notnull(row[k])}
+    # Get existing phone numbers to check for duplicates
+    existing_phones = set()
+    if not clear_existing:
+        existing_recipients = db.query(CampaignRecipient.phone_number).filter(
+            CampaignRecipient.campaign_id == campaign_id
+        ).all()
+        existing_phones = {r.phone_number for r in existing_recipients}
+
+    # Phone number validation helper
+    def is_valid_phone(phone: str) -> bool:
+        if not phone:
+            return False
+        cleaned = phone.replace("+", "").replace(" ", "").replace("-", "")
+        return len(cleaned) >= 10 and cleaned.isdigit()
+
+    # Normalize pandas/numpy types in params to JSON-serializable primitives
+    def to_jsonable(val):
+        try:
+            # Handle pandas NaT and NaN
+            if pd.isna(val) or (isinstance(val, float) and np.isnan(val)):
+                return None
+            if isinstance(val, (pd.Timestamp,)):
+                return val.isoformat()
+            if isinstance(val, (pd.Series, pd.DataFrame)):
+                return val.to_dict()
+            if isinstance(val, (np.integer,)):
+                return int(val)
+            if isinstance(val, (np.floating,)):
+                return float(val) if not np.isnan(val) else None
+            if isinstance(val, (np.bool_,)):
+                return bool(val)
+        except Exception:
+            pass
+        # Datetime from Python
+        try:
+            from datetime import datetime
+            if isinstance(val, datetime):
+                return val.isoformat()
+        except Exception:
+            pass
+        return val
+
+    # Track statistics
+    recipients = []
+    skipped_invalid = 0
+    skipped_duplicate = 0
+    processed_phones_in_batch = set()
+
+    for _, row in df.iterrows():
+        # FIX: Properly handle None/NaN phone numbers
+        raw_phone = row.get("phone_number")
+        if pd.isna(raw_phone) or raw_phone is None:
+            skipped_invalid += 1
+            continue
+
+        phone = str(raw_phone).strip()
+
+        # Skip empty or invalid phone numbers
+        if not phone or phone.lower() in ("none", "nan", "null", ""):
+            skipped_invalid += 1
+            continue
+
+        # Validate phone number format
+        if not is_valid_phone(phone):
+            skipped_invalid += 1
+            continue
+
+        # Check for duplicates (existing + within this batch)
+        if phone in existing_phones or phone in processed_phones_in_batch:
+            skipped_duplicate += 1
+            continue
+
+        processed_phones_in_batch.add(phone)
+
+        # Handle name field - also check for NaN
+        raw_name = row.get("name")
+        name = str(raw_name).strip() if pd.notna(raw_name) and raw_name is not None else None
+        if name and name.lower() in ("none", "nan", "null"):
+            name = None
+
+        clean_params = {
+            k: to_jsonable(row[k])
+            for k in df.columns
+            if k not in ["phone_number", "name"] and pd.notnull(row[k])
+        }
 
         rec = CampaignRecipient(
             campaign_id=campaign_id,
             phone_number=phone,
-            name=row.get("name"),
+            name=name,
             params=clean_params,
             status="PENDING"
         )
         recipients.append(rec)
 
-    db.add_all(recipients)
-    db.commit()
+    if recipients:
+        db.add_all(recipients)
+        db.commit()
 
-    return {"status": "uploaded", "count": len(recipients)}
+    return {
+        "status": "uploaded",
+        "count": len(recipients),
+        "skipped_invalid_phone": skipped_invalid,
+        "skipped_duplicate": skipped_duplicate,
+        "cleared_existing": clear_existing
+    }
 
 @router.get("/{campaign_id}/recipients")
 def get_campaign_recipients(
     campaign_id: UUID,
+    skip: int = Query(0, ge=0, description="Number of records to skip"),
+    limit: int = Query(50, ge=1, le=200, description="Max records to return"),
+    status: Optional[str] = Query(None, description="Filter by status (PENDING, SENT, FAILED, QUEUED)"),
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
-    """Get all Excel-uploaded recipients for a campaign."""
+    """Get Excel-uploaded recipients for a campaign with pagination."""
     campaign = campaign_service.get_campaign(db, campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    
-    return campaign.recipients
+
+    # Build query with filters
+    query = db.query(CampaignRecipient).filter(CampaignRecipient.campaign_id == campaign_id)
+
+    if status:
+        query = query.filter(CampaignRecipient.status == status.upper())
+
+    total = query.count()
+    recipients = query.offset(skip).limit(limit).all()
+
+    return {"items": recipients, "total": total, "skip": skip, "limit": limit}
 
 class QuickTemplateRunRequest(BaseModel):
     template_name: str
@@ -237,16 +340,25 @@ def run_template_campaign_quick(
         type="template",
         campaign_cost_type=normalized_cost_type
     )
-    campaign = campaign_service.create_campaign(db, campaign_payload, user_id=current_user.id)
 
-    job = job_service.create_job(db, campaign.id, current_user)
-    campaign_service.run_campaign(campaign, job, db)
-    return {
-        "status": "queued",
-        "campaign_id": str(campaign.id),
-        "job_id": str(job.id),
-        "customer_count": len(customers)
-    }
+    try:
+        campaign = campaign_service.create_campaign(db, campaign_payload, user_id=current_user.id)
+        job = job_service.create_job(db, campaign.id, current_user)
+        campaign_service.run_campaign(campaign, job, db)
+
+        return {
+            "status": "queued",
+            "campaign_id": str(campaign.id),
+            "job_id": str(job.id),
+            "customer_count": len(customers)
+        }
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to create or run campaign: {str(e)}"
+        )
 
 
 class PersonalizedRecipientPayload(BaseModel):
@@ -391,7 +503,7 @@ def run_saved_template_campaign(
         if not exists:
             normalized_cost_type = None
 
-    # Create campaign and run
+    # Create campaign and run with transaction handling
     campaign_payload = CampaignCreate(
         name=req.campaign_name or f"Saved: {req.template_name}",
         description=req.campaign_description or "Run saved template campaign",
@@ -400,62 +512,72 @@ def run_saved_template_campaign(
         type="template",
         campaign_cost_type=normalized_cost_type
     )
-    campaign = campaign_service.create_campaign(db, campaign_payload, user_id=current_user.id)
 
-    # Attach personalized recipients if provided
-    personalized_entries = []
-    if req.personalized_recipients:
-        for rec in req.personalized_recipients:
-            params = {}
-            if rec.body_params is not None:
-                params["body_params"] = rec.body_params
-            if rec.header_text_params is not None:
-                params["header_text_params"] = rec.header_text_params
-            if rec.header_media_id is not None:
-                params["header_media_id"] = rec.header_media_id
-            # Optional button params for templates that use dynamic button variables
-            if rec.button_params is not None:
-                params["button_params"] = rec.button_params
-            if rec.button_index is not None:
-                params["button_index"] = rec.button_index
-            if rec.button_sub_type is not None:
-                params["button_sub_type"] = rec.button_sub_type
-            personalized_entries.append(
-                CampaignRecipient(
-                    campaign_id=campaign.id,
-                    phone_number=rec.wa_id,
-                    name=rec.name,
-                    params=params if params else {},  # Always store as dict, never None
+    try:
+        campaign = campaign_service.create_campaign(db, campaign_payload, user_id=current_user.id)
+
+        # Attach personalized recipients if provided
+        personalized_entries = []
+        if req.personalized_recipients:
+            for rec in req.personalized_recipients:
+                params = {}
+                if rec.body_params is not None:
+                    params["body_params"] = rec.body_params
+                if rec.header_text_params is not None:
+                    params["header_text_params"] = rec.header_text_params
+                if rec.header_media_id is not None:
+                    params["header_media_id"] = rec.header_media_id
+                # Optional button params for templates that use dynamic button variables
+                if rec.button_params is not None:
+                    params["button_params"] = rec.button_params
+                if rec.button_index is not None:
+                    params["button_index"] = rec.button_index
+                if rec.button_sub_type is not None:
+                    params["button_sub_type"] = rec.button_sub_type
+                personalized_entries.append(
+                    CampaignRecipient(
+                        campaign_id=campaign.id,
+                        phone_number=rec.wa_id,
+                        name=rec.name,
+                        params=params if params else {},  # Always store as dict, never None
+                    )
                 )
-            )
-        if personalized_entries:
-            db.add_all(personalized_entries)
-            db.commit()
-            # Explicitly refresh and load recipients relationship
-            db.refresh(campaign)
-            # Force load recipients relationship
-            _ = campaign.recipients  # Access to trigger lazy load
-            print(f"[DEBUG] Loaded {len(campaign.recipients)} recipients for campaign {campaign.id}")
-    
-    job = job_service.create_job(db, campaign.id, current_user)
-    
-    # Ensure recipients are loaded before running campaign
-    if req.personalized_recipients:
-        # Re-query to ensure recipients are loaded
-        from sqlalchemy.orm import joinedload
-        campaign_with_recipients = db.query(Campaign).options(joinedload(Campaign.recipients)).filter_by(id=campaign.id).first()
-        if campaign_with_recipients:
-            campaign = campaign_with_recipients
-    
-    campaign_service.run_campaign(campaign, job, db)
-    return {
-        "status": "queued",
-        "campaign_id": str(campaign.id),
-        "job_id": str(job.id),
-        "customer_count": len(customers),
-        "expected_body": expected_body,
-        "expected_header_text": expected_header_text
-    }
+            if personalized_entries:
+                db.add_all(personalized_entries)
+                db.commit()
+                # Explicitly refresh and load recipients relationship
+                db.refresh(campaign)
+                # Force load recipients relationship
+                _ = campaign.recipients  # Access to trigger lazy load
+
+        job = job_service.create_job(db, campaign.id, current_user)
+
+        # Ensure recipients are loaded before running campaign
+        if req.personalized_recipients:
+            # Re-query to ensure recipients are loaded
+            from sqlalchemy.orm import joinedload
+            campaign_with_recipients = db.query(Campaign).options(joinedload(Campaign.recipients)).filter_by(id=campaign.id).first()
+            if campaign_with_recipients:
+                campaign = campaign_with_recipients
+
+        campaign_service.run_campaign(campaign, job, db)
+
+        return {
+            "status": "queued",
+            "campaign_id": str(campaign.id),
+            "job_id": str(job.id),
+            "customer_count": len(customers),
+            "recipient_count": len(personalized_entries) if req.personalized_recipients else 0,
+            "expected_body": expected_body,
+            "expected_header_text": expected_header_text
+        }
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to create or run campaign: {str(e)}"
+        )
 
 
 # ------------------------------
@@ -523,3 +645,109 @@ def campaign_report_export(
         "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     }
     return Response(content=content, media_type=headers["Content-Type"], headers=headers)
+
+
+# ------------------------------
+# Campaign Logs Endpoints (Message Delivery Tracking)
+# ------------------------------
+
+@router.get("/{campaign_id}/logs")
+def get_campaign_logs(
+    campaign_id: UUID,
+    status: Optional[str] = Query(None, description="Filter by status (success, failure, pending, queued)"),
+    skip: int = Query(0, ge=0, description="Number of records to skip"),
+    limit: int = Query(100, ge=1, le=500, description="Max records to return"),
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get delivery logs for a campaign with pagination.
+
+    Returns:
+        Paginated log entries with delivery status, phone numbers, errors, etc.
+    """
+    # Verify campaign exists
+    campaign = campaign_service.get_campaign(db, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    # Build query
+    query = db.query(CampaignLog).filter(CampaignLog.campaign_id == campaign_id)
+
+    if status:
+        query = query.filter(CampaignLog.status == status)
+
+    # Get total count before pagination
+    total = query.count()
+
+    # Order by created_at desc and paginate
+    logs = query.order_by(CampaignLog.created_at.desc()).offset(skip).limit(limit).all()
+
+    items = [
+        {
+            "id": str(log.id),
+            "phone_number": log.phone_number,
+            "status": log.status,
+            "error_code": log.error_code,
+            "error_message": log.error_message,
+            "whatsapp_message_id": log.whatsapp_message_id,
+            "http_status_code": log.http_status_code,
+            "processing_time_ms": log.processing_time_ms,
+            "created_at": log.created_at.isoformat() if log.created_at else None,
+            "processed_at": log.processed_at.isoformat() if log.processed_at else None,
+        }
+        for log in logs
+    ]
+
+    return {"items": items, "total": total, "skip": skip, "limit": limit}
+
+
+@router.get("/{campaign_id}/stats")
+def get_campaign_stats(
+    campaign_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get delivery statistics for a campaign.
+
+    Returns:
+        {
+            "total": 100,
+            "success": 95,
+            "failure": 5,
+            "pending": 0,
+            "success_rate": 95.0
+        }
+    """
+    # Verify campaign exists
+    campaign = campaign_service.get_campaign(db, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    # Get counts by status
+    stats = db.query(
+        CampaignLog.status,
+        func.count(CampaignLog.id).label("count")
+    ).filter(
+        CampaignLog.campaign_id == campaign_id
+    ).group_by(CampaignLog.status).all()
+
+    # Build response
+    result = {
+        "total": 0,
+        "success": 0,
+        "failure": 0,
+        "pending": 0,
+        "queued": 0,
+    }
+
+    for status, count in stats:
+        result["total"] += count
+        if status in result:
+            result[status] = count
+
+    # Calculate success rate
+    result["success_rate"] = round((result["success"] / result["total"] * 100), 2) if result["total"] > 0 else 0.0
+
+    return result

@@ -11,7 +11,7 @@ import consumer
 # Configure logging to ensure messages appear in server logs
 # This must be done BEFORE any other imports that create loggers
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout)  # Explicitly use stdout
@@ -19,25 +19,26 @@ logging.basicConfig(
     force=True  # Override any existing configuration
 )
 
-# Ensure root logger is at DEBUG level
+# Ensure root logger is at INFO level
 root_logger = logging.getLogger()
-root_logger.setLevel(logging.DEBUG)
+root_logger.setLevel(logging.INFO)
 
 # Ensure stdout is unbuffered
 sys.stdout.reconfigure(line_buffering=True) if hasattr(sys.stdout, 'reconfigure') else None
 
-# Create logger for this module and set level explicitly
+# Create logger for this module
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
-# Set loggers for follow-up system to DEBUG level BEFORE they're imported
-followup_logger = logging.getLogger("followup_scheduler")
-followup_logger.setLevel(logging.DEBUG)
-followup_service_logger = logging.getLogger("followup_service")
-followup_service_logger.setLevel(logging.DEBUG)
+# Silence noisy follow-up scheduler logs (set to WARNING to only show important messages)
+logging.getLogger("followup_scheduler").setLevel(logging.WARNING)
+logging.getLogger("followup_service").setLevel(logging.WARNING)
 
-# Disable uvicorn's access logger noise (optional, but helps focus on our logs)
-logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+# Enable uvicorn access logs to see API requests
+logging.getLogger("uvicorn.access").setLevel(logging.INFO)
+
+# Silence other noisy loggers
+logging.getLogger("passlib").setLevel(logging.WARNING)
 from media import media_controller
 from zenoti.zenoti_controller import router as zenoti_router
 from starlette.middleware.cors import CORSMiddleware
@@ -64,6 +65,7 @@ from controllers.components.lead_appointment_flow.zoho_lead_api import router as
 from controllers.components.zoho_mapping_controller import router as zoho_mapping_router
 from controllers.followup_debug_controller import router as followup_debug_router
 from controllers.flow_logs_controller import router as flow_logs_router
+from controllers.analytics_controller import router as analytics_router
 from database.db import SessionLocal, engine, get_db
 from models import models
 from schemas.token_schema import Token
@@ -131,6 +133,7 @@ app.include_router(zoho_leads_router)
 app.include_router(zoho_mapping_router, prefix="/zoho-mappings")
 app.include_router(followup_debug_router)  # Debug endpoints for follow-ups
 app.include_router(flow_logs_router)  # Flow logs API
+app.include_router(analytics_router)  # Analytics API
 
 
 
@@ -157,35 +160,16 @@ async def start_followup_scheduler():
             db = None
             try:
                 iteration += 1
-                scheduler_logger.info(f"Starting iteration {iteration}")
+                # Only log every 100 iterations to reduce noise
+                if iteration % 100 == 1:
+                    scheduler_logger.info(f"Follow-up scheduler running (iteration {iteration})")
                 
                 db = SessionLocal()
                 customers = due_customers_for_followup(db)
                 
                 if customers:
                     scheduler_logger.info(f"Found {len(customers)} customer(s) due for follow-up")
-                else:
-                    # Always log when no customers are due (debug messages come from due_customers_for_followup)
-                    scheduler_logger.debug("No customers due for follow-up at this time")
-                    # Additional detailed check every 10 iterations
-                    if iteration % 10 == 0:
-                        from models.models import Customer
-                        from datetime import datetime as dt
-                        total_scheduled = db.query(Customer).filter(Customer.next_followup_time.isnot(None)).count()
-                        if total_scheduled > 0:
-                            now = dt.utcnow()
-                            future_count = db.query(Customer).filter(
-                                Customer.next_followup_time.isnot(None),
-                                Customer.next_followup_time > now
-                            ).count()
-                            past_count = db.query(Customer).filter(
-                                Customer.next_followup_time.isnot(None),
-                                Customer.next_followup_time <= now
-                            ).count()
-                            scheduler_logger.debug(f"[Detailed check] {total_scheduled} customer(s) have follow-up scheduled")
-                            scheduler_logger.debug(f"[Detailed check] {past_count} due now, {future_count} in the future")
-                            if past_count > 0:
-                                scheduler_logger.warning(f"[Detailed check] Found {past_count} due customers but query returned 0 - possible timezone issue!")
+                # No need to log when no customers are due - reduces noise
                 
                 for c in customers:
                     lock_value = None
@@ -279,6 +263,6 @@ async def start_followup_scheduler():
                 # Wait before retrying after error
                 await asyncio.sleep(30)
 
-    logger.info("Starting follow-up scheduler background task")
+    # Start follow-up scheduler silently
     asyncio.create_task(_runner())
 

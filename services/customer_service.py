@@ -61,11 +61,147 @@ def get_unread_count(wa_id: str) -> int:
     except Exception:
         return 0
 
-def get_all_customers(db: Session):
-    customers = db.query(Customer).order_by(Customer.last_message_at.desc().nullslast()).all()
+def get_all_customers(db: Session, skip: int = 0, limit: int = 50, search: str = None,
+                       include_flow_step: bool = False, flow_type: str = None):
+    """Get all customers with pagination, optional search, and optional flow step data."""
+    query = db.query(Customer)
+
+    # Apply search filter if provided
+    if search:
+        search_term = f"%{search}%"
+        query = query.filter(
+            (Customer.name.ilike(search_term)) |
+            (Customer.wa_id.ilike(search_term)) |
+            (Customer.email.ilike(search_term))
+        )
+
+    # Get total count before pagination
+    total = query.count()
+
+    # Apply ordering and pagination
+    customers = query.order_by(Customer.last_message_at.desc().nullslast()).offset(skip).limit(limit).all()
+
     for customer in customers:
-        customer.unread_count = get_unread_count(customer.wa_id)  # Inject attribute dynamically
-    return customers
+        customer.unread_count = get_unread_count(customer.wa_id)
+
+    # If flow step data is requested, fetch it in a single query
+    flow_step_map = {}
+    if include_flow_step and customers:
+        flow_step_map = get_flow_steps_for_customers(db, [c.wa_id for c in customers], flow_type)
+
+    return {
+        "items": customers,
+        "total": total,
+        "skip": skip,
+        "limit": limit,
+        "flow_steps": flow_step_map if include_flow_step else None
+    }
+
+
+def get_flow_steps_for_customers(db: Session, wa_ids: list, flow_type: str = None):
+    """
+    Get last flow step for multiple customers in a single optimized query.
+    Returns a dict mapping wa_id -> step data.
+    Joins with Customer and Lead tables to get customer name and Zoho lead info.
+    """
+    from models.models import FlowLog, Lead
+    from sqlalchemy import func, and_
+
+    if not wa_ids:
+        return {}
+
+    # Normalize flow_type
+    normalized_flow_type = flow_type or "lead_appointment"
+    if flow_type == "treatment_flow":
+        normalized_flow_type = "treatment"
+    elif flow_type == "lead_appointment_flow":
+        normalized_flow_type = "lead_appointment"
+
+    valid_steps = ["entry", "city_selection", "treatment", "concern_list", "last_step"]
+
+    # Subquery: get max created_at per wa_id for valid steps
+    subq = (
+        db.query(
+            FlowLog.wa_id,
+            func.max(FlowLog.created_at).label("max_created_at")
+        )
+        .filter(
+            and_(
+                FlowLog.wa_id.in_(wa_ids),
+                FlowLog.flow_type == normalized_flow_type,
+                FlowLog.step.in_(valid_steps)
+            )
+        )
+        .group_by(FlowLog.wa_id)
+        .subquery()
+    )
+
+    # Subquery: get latest lead per wa_id (in case of multiple leads)
+    lead_subq = (
+        db.query(
+            Lead.wa_id,
+            func.max(Lead.created_at).label("max_lead_created_at")
+        )
+        .filter(Lead.wa_id.in_(wa_ids))
+        .group_by(Lead.wa_id)
+        .subquery()
+    )
+
+    # Main query: join FlowLog with subquery, Customer table, and Lead table
+    results_query = (
+        db.query(
+            FlowLog,
+            Customer.name.label("customer_name"),
+            Lead.zoho_lead_id,
+            Lead.zoho_mapped_concern,
+            Lead.city.label("lead_city"),
+            Lead.lead_source
+        )
+        .join(
+            subq,
+            and_(
+                FlowLog.wa_id == subq.c.wa_id,
+                FlowLog.created_at == subq.c.max_created_at
+            )
+        )
+        .outerjoin(Customer, FlowLog.wa_id == Customer.wa_id)
+        .outerjoin(
+            lead_subq,
+            FlowLog.wa_id == lead_subq.c.wa_id
+        )
+        .outerjoin(
+            Lead,
+            and_(
+                Lead.wa_id == lead_subq.c.wa_id,
+                Lead.created_at == lead_subq.c.max_lead_created_at
+            )
+        )
+        .filter(
+            and_(
+                FlowLog.flow_type == normalized_flow_type,
+                FlowLog.step.in_(valid_steps)
+            )
+        )
+        .all()
+    )
+
+    # Build results map
+    results = {}
+    for log, customer_name, zoho_lead_id, zoho_mapped_concern, lead_city, lead_source in results_query:
+        results[log.wa_id] = {
+            "last_step": log.step,
+            "step_name": log.step,
+            "reached_at": log.created_at.isoformat() if log.created_at else None,
+            "customer_name": customer_name or log.name,
+            "description": log.description,
+            # Zoho lead info
+            "zoho_lead_id": zoho_lead_id,
+            "zoho_mapped_concern": zoho_mapped_concern,
+            "city": lead_city,
+            "lead_source": lead_source,
+        }
+
+    return results
 
 
 def update_customer(db: Session, customer_id: UUID, update_data: CustomerUpdate):
@@ -158,8 +294,9 @@ def update_customer_email(db: Session, customer_id: UUID, email: str) -> Custome
 
 
 
-def get_customers_for_user(db: Session, user_id: UUID) -> List[Customer]:
-    # Optional: Validate that the user exists
+def get_customers_for_user(db: Session, user_id: UUID, skip: int = 0, limit: int = 50, search: str = None):
+    """Get customers for a specific user with pagination and optional search."""
+    # Validate that the user exists
     user = db.query(User).filter(User.id == user_id).one_or_none()
     if not user:
         raise HTTPException(
@@ -167,9 +304,25 @@ def get_customers_for_user(db: Session, user_id: UUID) -> List[Customer]:
             detail=f"User with id {user_id} not found."
         )
 
-    # Fetch all customers assigned to this user
-    customers = db.query(Customer).filter(Customer.user_id == user_id).all()
-    return customers
+    # Build query for customers assigned to this user
+    query = db.query(Customer).filter(Customer.user_id == user_id)
+
+    # Apply search filter if provided
+    if search:
+        search_term = f"%{search}%"
+        query = query.filter(
+            (Customer.name.ilike(search_term)) |
+            (Customer.wa_id.ilike(search_term)) |
+            (Customer.email.ilike(search_term))
+        )
+
+    # Get total count before pagination
+    total = query.count()
+
+    # Fetch customers with pagination
+    customers = query.order_by(Customer.last_message_at.desc().nullslast()).offset(skip).limit(limit).all()
+
+    return {"items": customers, "total": total, "skip": skip, "limit": limit}
 
 
 def update_customer_status(db: Session, customer_id: UUID, new_status: CustomerStatusEnum) -> Customer:

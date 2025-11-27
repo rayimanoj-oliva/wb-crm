@@ -47,15 +47,20 @@ def get_job(db: Session, job_id: UUID) -> Job:
 
 def get_jobs_by_campaign_id(db: Session, campaign_id: UUID) -> List[Dict[str, Any]]:
     """
-    Get jobs for a campaign, including statuses from both JobStatus (customers) 
+    Get jobs for a campaign, including statuses from both JobStatus (customers)
     and CampaignRecipient (personalized recipients).
+
+    FIXED: Now correctly associates recipients with specific jobs using CampaignLog
+    instead of showing all recipients for every job.
     """
-    jobs = db.query(Job).filter(Job.campaign_id == campaign_id).all()
-    
+    from models.models import CampaignLog
+
+    jobs = db.query(Job).filter(Job.campaign_id == campaign_id).order_by(Job.created_at.desc()).all()
+
     # Check if campaign uses recipients
     recipients = db.query(CampaignRecipient).filter_by(campaign_id=campaign_id).all()
     uses_recipients = len(recipients) > 0
-    
+
     result = []
     for job in jobs:
         job_dict = {
@@ -64,34 +69,71 @@ def get_jobs_by_campaign_id(db: Session, campaign_id: UUID) -> List[Dict[str, An
             "created_at": job.created_at,
             "last_attempted_by": job.last_attempted_by,
             "last_triggered_time": job.last_triggered_time,
-            "statuses": []
+            "statuses": [],
+            "stats": {
+                "total": 0,
+                "success": 0,
+                "failure": 0,
+                "pending": 0
+            }
         }
-        
+
         if uses_recipients:
-            # For campaigns with recipients, include recipient statuses
-            # Map recipient status to job status format
-            for recipient in recipients:
-                status_mapping = {
-                    "SENT": "success",
-                    "FAILED": "failure",
-                    "QUEUED": "pending",
-                    "PENDING": "pending"
-                }
-                job_status = status_mapping.get(recipient.status, "pending")
-                job_dict["statuses"].append({
-                    "customer_id": recipient.id,  # Use recipient.id as identifier
-                    "status": job_status
-                })
+            # FIXED: Get statuses from CampaignLog for this specific job
+            logs = db.query(CampaignLog).filter_by(
+                campaign_id=campaign_id,
+                job_id=job.id
+            ).all()
+
+            if logs:
+                # Use logs to get accurate per-job status
+                for log in logs:
+                    status_mapping = {
+                        "success": "success",
+                        "failure": "failure",
+                        "queued": "pending",
+                        "pending": "pending"
+                    }
+                    mapped_status = status_mapping.get(log.status, "pending")
+                    job_dict["statuses"].append({
+                        "target_id": log.target_id,
+                        "phone_number": log.phone_number,
+                        "status": mapped_status,
+                        "error_message": log.error_message
+                    })
+                    job_dict["stats"]["total"] += 1
+                    job_dict["stats"][mapped_status] += 1
+            else:
+                # Fallback: If no logs yet, show recipients with their current status
+                # This handles the case where campaign just started
+                for recipient in recipients:
+                    status_mapping = {
+                        "SENT": "success",
+                        "FAILED": "failure",
+                        "QUEUED": "pending",
+                        "PENDING": "pending"
+                    }
+                    job_status = status_mapping.get(recipient.status, "pending")
+                    job_dict["statuses"].append({
+                        "target_id": recipient.id,
+                        "phone_number": recipient.phone_number,
+                        "status": job_status
+                    })
+                    job_dict["stats"]["total"] += 1
+                    job_dict["stats"][job_status] += 1
         else:
             # For normal campaigns, include JobStatus entries
             for status in job.statuses:
+                status_str = status.status if isinstance(status.status, str) else status.status.value
                 job_dict["statuses"].append({
                     "customer_id": status.customer_id,
-                    "status": status.status
+                    "status": status_str
                 })
-        
+                job_dict["stats"]["total"] += 1
+                job_dict["stats"][status_str] += 1
+
         result.append(job_dict)
-    
+
     return result
 
 def get_overall_job_stats(db: Session):

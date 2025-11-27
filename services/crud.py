@@ -15,8 +15,27 @@ def get_user_by_email(db: Session, email: str):
 def get_user_by_username(db: Session, username: str):
     return db.query(User).filter(User.username == username).first()
 
-def get_users(db: Session, skip: int = 0, limit: int = 100):
-    return db.query(User).offset(skip).limit(limit).all()
+def get_users(db: Session, skip: int = 0, limit: int = 50, search: str = None):
+    """Get all users with pagination and optional search."""
+    query = db.query(User)
+
+    # Apply search filter if provided
+    if search:
+        search_term = f"%{search}%"
+        query = query.filter(
+            (User.username.ilike(search_term)) |
+            (User.email.ilike(search_term)) |
+            (User.first_name.ilike(search_term)) |
+            (User.last_name.ilike(search_term))
+        )
+
+    # Get total count before pagination
+    total = query.count()
+
+    # Apply pagination
+    users = query.offset(skip).limit(limit).all()
+
+    return {"items": users, "total": total, "skip": skip, "limit": limit}
 
 
 def create_user(db: Session, user: UserCreate):

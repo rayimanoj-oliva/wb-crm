@@ -69,14 +69,11 @@ def seed_zoho_mappings():
     skipped_count = 0
     
     try:
-        print("\nStarting to seed Zoho mappings...")
-        
         for mapping in mappings:
             # Check if mapping already exists
             existing = get_zoho_mapping(db, mapping["treatment_name"])
-            
+
             if existing:
-                print(f"Skipping existing: {mapping['treatment_name']} -> {mapping['zoho_name']}")
                 skipped_count += 1
             else:
                 create_zoho_mapping(
@@ -85,13 +82,12 @@ def seed_zoho_mappings():
                     zoho_name=mapping["zoho_name"],
                     zoho_sub_concern=mapping.get("zoho_sub_concern")
                 )
-                print(f"Created: {mapping['treatment_name']} -> {mapping['zoho_name']}")
                 created_count += 1
-        
+
         db.commit()
-        print("\nSeeding complete!")
-        print(f"Created: {created_count} mappings")
-        print(f"Skipped: {skipped_count} existing mappings")
+        # Only print if new mappings were created
+        if created_count > 0:
+            print(f"Zoho mappings: Created {created_count} new mappings")
         
     except Exception as e:
         print(f"\nError during seeding: {str(e)}")

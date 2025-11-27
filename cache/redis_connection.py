@@ -40,10 +40,9 @@ def get_redis_client() -> Optional[redis.StrictRedis]:
             )
         # Test connection
         redis_client.ping()
-        print(f"[Redis] Successfully connected to Redis at {REDIS_HOST}:{REDIS_PORT}")
         return redis_client
     except (redis.ConnectionError, redis.TimeoutError, Exception) as e:
-        print(f"[Redis] WARNING - Could not connect to Redis: {e}. Running without distributed locking.")
+        # Redis not available - continue without distributed locking
         redis_client = None
         return None
 

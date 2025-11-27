@@ -3,6 +3,7 @@ from typing import Optional, Any, Dict, List, Tuple, Set
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, HTTPException
+from pydantic import BaseModel
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, text
@@ -645,6 +646,134 @@ def get_completion_counts(
             "treatment": build_result(treatment_totals),
             "lead_appointment": build_result(lead_totals),
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class BatchLastStepRequest(BaseModel):
+    """Request model for batch last-step lookup"""
+    wa_ids: List[str]
+    flow_type: Optional[str] = "lead_appointment"
+
+
+@router.post("/last-step/batch")
+def get_last_step_batch(
+    request: BatchLastStepRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Get the last step reached for multiple customers in a single request.
+    Much faster than calling /last-step/{wa_id} for each customer individually.
+
+    Request body:
+    {
+        "wa_ids": ["919740498236", "919876543210", ...],
+        "flow_type": "lead_appointment"  // or "treatment"
+    }
+
+    Returns:
+    {
+        "success": true,
+        "total": 100,
+        "results": {
+            "919740498236": { "last_step": "city_selection", ... },
+            "919876543210": { "last_step": null, "message": "No data found" },
+            ...
+        }
+    }
+    """
+    try:
+        wa_ids = request.wa_ids
+        flow_type = request.flow_type
+
+        if not wa_ids:
+            return {"success": True, "total": 0, "results": {}}
+
+        # Limit to prevent abuse
+        if len(wa_ids) > 1000:
+            raise HTTPException(status_code=400, detail="Maximum 1000 wa_ids allowed per request")
+
+        # Normalize flow_type
+        normalized_flow_type = flow_type
+        if flow_type == "treatment_flow":
+            normalized_flow_type = "treatment"
+        elif flow_type == "lead_appointment_flow":
+            normalized_flow_type = "lead_appointment"
+
+        valid_steps = ["entry", "city_selection", "treatment", "concern_list", "last_step"]
+
+        # Single query to get the latest step for ALL wa_ids at once
+        # Using a subquery to get the max created_at per wa_id, then joining back
+        from sqlalchemy import func
+        from sqlalchemy.orm import aliased
+
+        # Subquery: get max created_at per wa_id for valid steps
+        subq = (
+            db.query(
+                FlowLog.wa_id,
+                func.max(FlowLog.created_at).label("max_created_at")
+            )
+            .filter(
+                and_(
+                    FlowLog.wa_id.in_(wa_ids),
+                    FlowLog.flow_type == normalized_flow_type,
+                    FlowLog.step.in_(valid_steps)
+                )
+            )
+            .group_by(FlowLog.wa_id)
+            .subquery()
+        )
+
+        # Main query: join back to get full log data
+        logs = (
+            db.query(FlowLog)
+            .join(
+                subq,
+                and_(
+                    FlowLog.wa_id == subq.c.wa_id,
+                    FlowLog.created_at == subq.c.max_created_at
+                )
+            )
+            .filter(
+                and_(
+                    FlowLog.flow_type == normalized_flow_type,
+                    FlowLog.step.in_(valid_steps)
+                )
+            )
+            .all()
+        )
+
+        # Build results map
+        results = {}
+        found_wa_ids = set()
+
+        for log in logs:
+            found_wa_ids.add(log.wa_id)
+            results[log.wa_id] = {
+                "last_step": log.step,
+                "step_name": log.step,
+                "reached_at": log.created_at.isoformat() if log.created_at else None,
+                "customer_name": log.name,
+                "description": log.description,
+            }
+
+        # Add null entries for wa_ids not found
+        for wa_id in wa_ids:
+            if wa_id not in found_wa_ids:
+                results[wa_id] = {
+                    "last_step": None,
+                    "message": "No step data found for this customer"
+                }
+
+        return {
+            "success": True,
+            "total": len(wa_ids),
+            "found": len(found_wa_ids),
+            "flow_type": normalized_flow_type,
+            "results": results
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

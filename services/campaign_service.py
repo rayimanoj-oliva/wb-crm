@@ -1,4 +1,6 @@
 import json
+import logging
+from contextlib import contextmanager
 
 import pika
 import requests
@@ -14,6 +16,7 @@ from models.models import (
     campaign_customers,
     CampaignRecipient,
     User,
+    CampaignLog,
 )
 from sqlalchemy import func, case, and_, or_, desc, cast, String
 from datetime import datetime, date
@@ -23,10 +26,98 @@ from typing import Any, Dict, List, Optional, Tuple
 from schemas.campaign_schema import CampaignCreate, CampaignUpdate
 from uuid import UUID
 
+# Configure logging
+logger = logging.getLogger(__name__)
 
 
-def get_all_campaigns(db: Session):
-    return db.query(Campaign).all()
+# ------------------------------
+# RabbitMQ Connection Manager (Fixes Connection Leak)
+# ------------------------------
+
+class RabbitMQConnectionManager:
+    """Manages RabbitMQ connections efficiently to prevent connection leaks"""
+
+    _instance = None
+    _connection = None
+    _channel = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def get_connection(self):
+        """Get or create a RabbitMQ connection"""
+        if self._connection is None or self._connection.is_closed:
+            try:
+                self._connection = pika.BlockingConnection(
+                    pika.ConnectionParameters(
+                        host="localhost",
+                        heartbeat=600,
+                        blocked_connection_timeout=300
+                    )
+                )
+                logger.info("RabbitMQ connection established")
+            except Exception as e:
+                logger.error(f"Failed to connect to RabbitMQ: {e}")
+                raise
+        return self._connection
+
+    def get_channel(self, queue_name: str = "campaign_queue"):
+        """Get or create a channel with queue declaration"""
+        try:
+            connection = self.get_connection()
+            if self._channel is None or self._channel.is_closed:
+                self._channel = connection.channel()
+                self._channel.queue_declare(queue=queue_name, durable=True)
+                logger.info(f"RabbitMQ channel created for queue: {queue_name}")
+            return self._channel
+        except Exception as e:
+            logger.error(f"Failed to get RabbitMQ channel: {e}")
+            # Reset connection on error
+            self._connection = None
+            self._channel = None
+            raise
+
+    def close(self):
+        """Close the connection"""
+        try:
+            if self._channel and not self._channel.is_closed:
+                self._channel.close()
+            if self._connection and not self._connection.is_closed:
+                self._connection.close()
+            logger.info("RabbitMQ connection closed")
+        except Exception as e:
+            logger.error(f"Error closing RabbitMQ connection: {e}")
+        finally:
+            self._connection = None
+            self._channel = None
+
+
+# Global connection manager instance
+rabbitmq_manager = RabbitMQConnectionManager()
+
+
+
+def get_all_campaigns(db: Session, skip: int = 0, limit: int = 50, search: str = None):
+    """Get all campaigns with pagination and optional search."""
+    query = db.query(Campaign)
+
+    # Apply search filter if provided
+    if search:
+        search_term = f"%{search}%"
+        query = query.filter(
+            (Campaign.name.ilike(search_term)) |
+            (Campaign.description.ilike(search_term))
+        )
+
+    # Get total count before pagination
+    total = query.count()
+
+    # Apply pagination with ordering by created_at desc
+    campaigns = query.order_by(Campaign.created_at.desc()).offset(skip).limit(limit).all()
+
+    return {"items": campaigns, "total": total, "skip": skip, "limit": limit}
 
 def get_campaign(db: Session, campaign_id: UUID):
     campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
@@ -35,7 +126,6 @@ def get_campaign(db: Session, campaign_id: UUID):
     return campaign
 
 def create_campaign(db: Session, campaign: CampaignCreate, user_id: UUID):
-
     new_campaign = Campaign(
         name=campaign.name,
         description=campaign.description,
@@ -47,12 +137,23 @@ def create_campaign(db: Session, campaign: CampaignCreate, user_id: UUID):
     )
     db.add(new_campaign)
 
+    # Validate and link customers
     if campaign.customer_ids:
-        new_campaign.customers = db.query(Customer).filter(Customer.id.in_(campaign.customer_ids)).all()
+        found_customers = db.query(Customer).filter(Customer.id.in_(campaign.customer_ids)).all()
+        found_ids = {c.id for c in found_customers}
+        missing_ids = [str(cid) for cid in campaign.customer_ids if cid not in found_ids]
 
-    print(new_campaign.customers)
+        if missing_ids:
+            logger.warning(f"Campaign {new_campaign.name}: {len(missing_ids)} customer IDs not found: {missing_ids[:5]}...")
+
+        new_campaign.customers = found_customers
+
     db.commit()
     db.refresh(new_campaign)
+
+    # Log campaign creation
+    logger.info(f"Campaign created: {new_campaign.id} with {len(new_campaign.customers)} customers")
+
     return new_campaign
 
 def update_campaign(db: Session, campaign_id: UUID, updates: CampaignUpdate, user_id: UUID):
@@ -74,61 +175,221 @@ def delete_campaign(db: Session, campaign_id: UUID):
     db.commit()
     return {"detail": "Campaign deleted"}
 
-import json
-import uuid
+import uuid as uuid_module
 
 class EnhancedJSONEncoder(json.JSONEncoder):
     def default(self, o):
-        if isinstance(o, uuid.UUID):
+        if isinstance(o, uuid_module.UUID):
             return str(o)
         return super().default(o)
 
+
+def validate_phone_number(phone: str) -> bool:
+    """Basic phone number validation"""
+    if not phone:
+        return False
+    # Remove common prefixes and check length
+    cleaned = phone.replace("+", "").replace(" ", "").replace("-", "")
+    return len(cleaned) >= 10 and cleaned.isdigit()
+
+
 def publish_to_queue(message: dict, queue_name: str = "campaign_queue"):
-    connection = pika.BlockingConnection(pika.ConnectionParameters("localhost"))
-    channel = connection.channel()
-    channel.queue_declare(queue=queue_name, durable=True)
-    channel.basic_publish(
-        exchange='',
-        routing_key=queue_name,
-        body=json.dumps(message,cls=EnhancedJSONEncoder),
-        properties=pika.BasicProperties(
-            delivery_mode=2,
+    """
+    Publish a message to RabbitMQ queue using connection manager.
+    FIXED: Now uses single connection instead of creating new one per message.
+    """
+    try:
+        channel = rabbitmq_manager.get_channel(queue_name)
+        channel.basic_publish(
+            exchange='',
+            routing_key=queue_name,
+            body=json.dumps(message, cls=EnhancedJSONEncoder),
+            properties=pika.BasicProperties(
+                delivery_mode=2,  # Make message persistent
+            )
         )
-    )
-    connection.close()
+        return True
+    except Exception as e:
+        logger.error(f"Failed to publish message to queue: {e}")
+        # Try to reconnect on next call
+        rabbitmq_manager._connection = None
+        rabbitmq_manager._channel = None
+        raise
+
+
+def publish_batch_to_queue(messages: List[dict], queue_name: str = "campaign_queue") -> Tuple[int, int]:
+    """
+    Publish multiple messages to RabbitMQ queue efficiently.
+    Returns (success_count, failure_count)
+    """
+    success_count = 0
+    failure_count = 0
+
+    try:
+        channel = rabbitmq_manager.get_channel(queue_name)
+
+        for message in messages:
+            try:
+                channel.basic_publish(
+                    exchange='',
+                    routing_key=queue_name,
+                    body=json.dumps(message, cls=EnhancedJSONEncoder),
+                    properties=pika.BasicProperties(delivery_mode=2)
+                )
+                success_count += 1
+            except Exception as e:
+                logger.error(f"Failed to publish individual message: {e}")
+                failure_count += 1
+
+        return success_count, failure_count
+
+    except Exception as e:
+        logger.error(f"Failed to get RabbitMQ channel for batch publish: {e}")
+        return 0, len(messages)
+
 
 def run_campaign(campaign: Campaign, job: Job, db: Session):
-    from models.models import CampaignRecipient
+    """
+    Run a campaign by queuing messages to RabbitMQ.
+    FIXED:
+    - Uses single connection for all messages (no connection leak)
+    - Adds deduplication check
+    - Creates CampaignLog entries for tracking
+    - Validates phone numbers before queuing
+    """
+    from models.models import CampaignRecipient, CampaignLog
 
     recipients = db.query(CampaignRecipient).filter_by(campaign_id=campaign.id).all()
+    messages_to_queue = []
+    logs_to_create = []
+    skipped_count = 0
+    invalid_phone_count = 0
 
     if recipients:
-        print(f"[DEBUG] Campaign has {len(recipients)} recipients - queuing recipient IDs only")
+        logger.info(f"Campaign {campaign.id} has {len(recipients)} recipients - preparing to queue")
+
+        # Track processed phone numbers to prevent duplicates
+        processed_phones = set()
 
         for r in recipients:
+            # Skip already processed (SENT/FAILED) recipients - deduplication
+            if r.status in ("SENT", "FAILED"):
+                skipped_count += 1
+                continue
+
+            # Validate phone number
+            if not validate_phone_number(r.phone_number):
+                invalid_phone_count += 1
+                r.status = "FAILED"
+                # Create log entry for invalid phone
+                logs_to_create.append(CampaignLog(
+                    campaign_id=campaign.id,
+                    job_id=job.id,
+                    target_type="recipient",
+                    target_id=r.id,
+                    phone_number=r.phone_number,
+                    status="failure",
+                    error_code="INVALID_PHONE",
+                    error_message=f"Invalid phone number format: {r.phone_number}",
+                    created_at=datetime.utcnow()
+                ))
+                continue
+
+            # Deduplication within this batch
+            if r.phone_number in processed_phones:
+                skipped_count += 1
+                continue
+            processed_phones.add(r.phone_number)
+
             task = {
                 "job_id": str(job.id),
                 "campaign_id": str(campaign.id),
-                "target_type": "recipient",        # <---
-                "target_id": str(r.id),            # <---
+                "target_type": "recipient",
+                "target_id": str(r.id),
             }
-            publish_to_queue(task)
-            r.status = "QUEUED"
+            messages_to_queue.append((task, r))
+
+            # Create queued log entry
+            logs_to_create.append(CampaignLog(
+                campaign_id=campaign.id,
+                job_id=job.id,
+                target_type="recipient",
+                target_id=r.id,
+                phone_number=r.phone_number,
+                status="queued",
+                created_at=datetime.utcnow()
+            ))
+
+        # Batch publish all messages
+        if messages_to_queue:
+            success, failure = publish_batch_to_queue([m[0] for m in messages_to_queue])
+            logger.info(f"Queued {success} messages, {failure} failed, {skipped_count} skipped, {invalid_phone_count} invalid phones")
+
+            # Update recipient statuses
+            for task, recipient in messages_to_queue:
+                recipient.status = "QUEUED"
+
+        # Save logs
+        if logs_to_create:
+            db.add_all(logs_to_create)
 
         db.commit()
         return job
 
     # No recipients → normal CRM customers
-    print(f"[DEBUG] Campaign has {len(campaign.customers)} customers - queuing customer IDs only")
+    logger.info(f"Campaign {campaign.id} has {len(campaign.customers)} customers - preparing to queue")
+
+    processed_wa_ids = set()
 
     for c in campaign.customers:
+        # Validate wa_id
+        if not validate_phone_number(c.wa_id):
+            invalid_phone_count += 1
+            logs_to_create.append(CampaignLog(
+                campaign_id=campaign.id,
+                job_id=job.id,
+                target_type="customer",
+                target_id=c.id,
+                phone_number=c.wa_id,
+                status="failure",
+                error_code="INVALID_PHONE",
+                error_message=f"Invalid wa_id format: {c.wa_id}",
+                created_at=datetime.utcnow()
+            ))
+            continue
+
+        # Deduplication
+        if c.wa_id in processed_wa_ids:
+            skipped_count += 1
+            continue
+        processed_wa_ids.add(c.wa_id)
+
         task = {
             "job_id": str(job.id),
             "campaign_id": str(campaign.id),
-            "target_type": "customer",           # <---
-            "target_id": str(c.id),              # <---
+            "target_type": "customer",
+            "target_id": str(c.id),
         }
-        publish_to_queue(task)
+        messages_to_queue.append(task)
+
+        logs_to_create.append(CampaignLog(
+            campaign_id=campaign.id,
+            job_id=job.id,
+            target_type="customer",
+            target_id=c.id,
+            phone_number=c.wa_id,
+            status="queued",
+            created_at=datetime.utcnow()
+        ))
+
+    # Batch publish
+    if messages_to_queue:
+        success, failure = publish_batch_to_queue(messages_to_queue)
+        logger.info(f"Queued {success} customer messages, {failure} failed, {skipped_count} skipped")
+
+    # Save logs
+    if logs_to_create:
+        db.add_all(logs_to_create)
 
     db.commit()
     return job

@@ -1,6 +1,6 @@
-from typing import List
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from uuid import UUID
 
@@ -32,14 +32,16 @@ def create_user(
 
     return crud.create_user(db, user)
 
-@router.get("/", response_model=list[UserRead])
+@router.get("/")
 def read_users(
-    skip: int = 0,
-    limit: int = 10,
+    skip: int = Query(0, ge=0, description="Number of records to skip"),
+    limit: int = Query(50, ge=1, le=200, description="Max records to return"),
+    search: Optional[str] = Query(None, description="Search by username, email, or name"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin_user),  # Only admins can list all users
 ):
-    return crud.get_users(db, skip=skip, limit=limit)
+    """List users with pagination and optional search."""
+    return crud.get_users(db, skip=skip, limit=limit, search=search)
 
 @router.get("/{user_id}", response_model=UserRead)
 def read_user(
@@ -103,15 +105,28 @@ def delete_user(
         raise HTTPException(status_code=404, detail="User not found")
     return {"ok": True}
 
-@router.get("/{user_id}/customers", response_model=List[CustomerOut])
-def get_user_customers(user_id: UUID, db: Session = Depends(get_db)):
-    return get_customers_for_user(db, user_id)
+@router.get("/{user_id}/customers")
+def get_user_customers(
+    user_id: UUID,
+    skip: int = Query(0, ge=0, description="Number of records to skip"),
+    limit: int = Query(50, ge=1, le=200, description="Max records to return"),
+    search: Optional[str] = Query(None, description="Search by name, phone, or email"),
+    db: Session = Depends(get_db)
+):
+    """Get customers assigned to a user with pagination and optional search."""
+    return get_customers_for_user(db, user_id, skip=skip, limit=limit, search=search)
 
 
-@router.get("/role/{role}", response_model=list[UserRead])
+@router.get("/role/{role}")
 def get_users_by_role(
         role: str,
+        skip: int = Query(0, ge=0, description="Number of records to skip"),
+        limit: int = Query(50, ge=1, le=200, description="Max records to return"),
         db: Session = Depends(get_db),
         current_user: User = Depends(get_current_admin_user)  # Only admins can filter by role
 ):
-    return db.query(User).filter(User.role == role.upper()).all()
+    """Get users by role with pagination."""
+    query = db.query(User).filter(User.role == role.upper())
+    total = query.count()
+    users = query.offset(skip).limit(limit).all()
+    return {"items": users, "total": total, "skip": skip, "limit": limit}

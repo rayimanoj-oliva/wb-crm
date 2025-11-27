@@ -1,5 +1,6 @@
 import json
 import copy
+import logging
 
 import pika
 from sqlalchemy.orm import Session
@@ -7,12 +8,20 @@ from models.models import WhatsAppToken
 from schemas.whatsapp_token_schema import WhatsAppTokenCreate
 from utils.json_placeholder import fill_placeholders
 
+# Configure logging
+logger = logging.getLogger(__name__)
+
+# Correct queue name - must match consumer.py
+CAMPAIGN_QUEUE_NAME = "campaign_queue"
+
+
 def create_whatsapp_token(db: Session, token_data: WhatsAppTokenCreate):
     token_entry = WhatsAppToken(token=token_data.token)
     db.add(token_entry)
     db.commit()
     db.refresh(token_entry)
     return token_entry
+
 
 def get_latest_token(db: Session):
     return db.query(WhatsAppToken).order_by(WhatsAppToken.created_at.desc()).first()
@@ -66,11 +75,9 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
     button_index = recipient_params.get("button_index", "1")
     button_sub_type = recipient_params.get("button_sub_type", "url")
 
-    # Debug logging
-    print(f"[DEBUG build_template_payload_for_recipient] Recipient params: {json.dumps(recipient_params, indent=2)}")
-    print(f"[DEBUG build_template_payload_for_recipient] Body params: {body_params}")
-    print(f"[DEBUG build_template_payload_for_recipient] Button params: {button_params}")
-    print(f"[DEBUG build_template_payload_for_recipient] Base components: {base_components}")
+    # Use logger instead of print for debugging
+    logger.debug(f"Building template payload for recipient: {recipient.get('phone_number')}")
+    logger.debug(f"Body params: {body_params}, Button params: {button_params}")
 
     # Only create body component if we have actual body params (non-empty list)
     if body_params is not None and len(body_params) > 0:
@@ -82,7 +89,7 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
                 "parameters": [{"type": "text", "text": v} for v in valid_params]
             }
             components = replace_component(components, "body", body_component)
-            print(f"[DEBUG build_template_payload_for_recipient] Created body component: {json.dumps(body_component, indent=2)}")
+            logger.debug(f"Created body component with {len(valid_params)} params")
 
     # Handle header - prioritize media_id over text params
     if header_media_id and str(header_media_id).strip():
@@ -121,7 +128,7 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
                 "parameters": [{"type": "text", "text": v} for v in valid_params]
             }
             components = replace_component(components, "button", button_component)
-            print(f"[DEBUG build_template_payload_for_recipient] Created button component: {json.dumps(button_component, indent=2)}")
+            logger.debug(f"Created button component with {len(valid_params)} params")
 
     # Fallback to placeholder replacement if no structured params provided but recipient_params exist
     if not body_params and not header_text_params and not header_media_id and not button_params and recipient_params:
@@ -143,8 +150,8 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
                 "type": "body",
                 "parameters": [{"type": "text", "text": v} for v in valid_params]
             }]
-            print(f"[DEBUG build_template_payload_for_recipient] Rebuilt body component as fallback")
-    
+            logger.debug("Rebuilt body component as fallback")
+
     payload = {
         "messaging_product": "whatsapp",
         "to": recipient['phone_number'],
@@ -155,22 +162,33 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
             "components": components if components else []  # Ensure components is always a list
         }
     }
-    print(f"[DEBUG build_template_payload_for_recipient] Final payload: {json.dumps(payload, indent=2)}")
+    logger.debug(f"Built template payload for {recipient['phone_number']}")
     return payload
 
+
 def enqueue_template_message(to: str, template_name: str, parameters: list):
+    """
+    Enqueue a template message to RabbitMQ.
+    FIXED: Now uses correct queue name 'campaign_queue' to match consumer.
+    """
     payload = {
         "to": to,
         "template_name": template_name,
         "parameters": [p.model_dump() for p in parameters]
     }
-    conn = pika.BlockingConnection(pika.ConnectionParameters("localhost"))
-    ch = conn.channel()
-    ch.queue_declare(queue="whatsapp_campaign", durable=True)
-    ch.basic_publish(
-        exchange='',
-        routing_key='whatsapp_campaign',
-        body=json.dumps(payload),
-        properties=pika.BasicProperties(delivery_mode=2)
-    )
-    conn.close()
+    try:
+        conn = pika.BlockingConnection(pika.ConnectionParameters("localhost"))
+        ch = conn.channel()
+        # FIXED: Use correct queue name that consumer listens to
+        ch.queue_declare(queue=CAMPAIGN_QUEUE_NAME, durable=True)
+        ch.basic_publish(
+            exchange='',
+            routing_key=CAMPAIGN_QUEUE_NAME,
+            body=json.dumps(payload),
+            properties=pika.BasicProperties(delivery_mode=2)
+        )
+        conn.close()
+        logger.info(f"Enqueued template message to {to}")
+    except Exception as e:
+        logger.error(f"Failed to enqueue template message: {e}")
+        raise

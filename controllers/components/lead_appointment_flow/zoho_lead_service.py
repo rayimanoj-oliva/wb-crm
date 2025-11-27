@@ -16,15 +16,29 @@ from utils.zoho_auth import get_valid_access_token
 
 class ZohoLeadService:
     """Service class for Zoho CRM lead operations"""
-    
+
     def __init__(self):
         self.base_url = "https://www.zohoapis.in/crm/v2.1/Leads"
         self.access_token = None
-    
+        self._token_fetched_at = None
+
     def _get_access_token(self) -> str:
-        """Get valid access token for Zoho API"""
-        if not self.access_token:
+        """Get valid access token for Zoho API with proactive refresh"""
+        from datetime import datetime, timedelta
+
+        # Proactively refresh if token is older than 50 minutes (tokens expire in ~60 mins)
+        token_max_age = timedelta(minutes=50)
+        needs_refresh = (
+            not self.access_token or
+            not self._token_fetched_at or
+            (datetime.utcnow() - self._token_fetched_at) > token_max_age
+        )
+
+        if needs_refresh:
             self.access_token = get_valid_access_token()
+            self._token_fetched_at = datetime.utcnow()
+            print(f"🔄 [ZOHO] Access token refreshed at {self._token_fetched_at}")
+
         return self.access_token
     
     def _prepare_lead_data(
@@ -597,9 +611,10 @@ async def create_lead_for_appointment(
         zoho_mapped_concern = None
         city = "Unknown"
         clinic = "Unknown"
+        location = None  # FIX: Initialize location outside try block to avoid scope issues
         appointment_date = "Not specified"
         appointment_time = "Not specified"
-        
+
         # Get appointment details from session state
         try:
             from controllers.web_socket import lead_appointment_state, appointment_state
@@ -834,7 +849,7 @@ async def create_lead_for_appointment(
                 "flow_type": (flow_type or "lead_appointment_flow"),
                 "selected_city": city,
                 "selected_clinic": clinic,
-                **({"selected_location": location} if 'location' in locals() and location else {}),
+                **({"selected_location": location} if location else {}),
                 "selected_week": session_data.get("selected_week", "Not specified"),
                 "custom_date": appointment_date,
                 "selected_time": appointment_time,
@@ -887,7 +902,7 @@ async def create_lead_for_appointment(
                         phone=phone_number,
                         mobile=phone_number,
                         city=city,
-            location=(location if 'location' in locals() else None),
+                        location=location,
                         lead_source=lead_source_val,
                         company="Oliva Skin & Hair Clinic",
                         wa_id=wa_id,
@@ -895,10 +910,12 @@ async def create_lead_for_appointment(
                         appointment_details={
                             "selected_city": city,
                             "selected_clinic": clinic,
-                **({"selected_location": location} if 'location' in locals() and location else {}),
+                            **({"selected_location": location} if location else {}),
                             "selected_concern": final_selected_concern,
                             "zoho_mapped_concern": final_mapped_concern
                         },
+                        # FIX: Store Zoho API response for debugging/tracking
+                        zoho_response=result.get('response'),
                         treatment_name=final_selected_concern,
                         zoho_mapped_concern=final_mapped_concern,
                         primary_concern=final_mapped_concern or final_selected_concern,
@@ -911,8 +928,11 @@ async def create_lead_for_appointment(
                 else:
                     print(f"⚠️ [LEAD APPOINTMENT FLOW] Lead already exists in database")
             except Exception as db_e:
-                print(f"⚠️ [LEAD APPOINTMENT FLOW] Could not save lead to local database: {db_e}")
+                print(f"❌ [LEAD APPOINTMENT FLOW] Could not save lead to local database: {db_e}")
                 db.rollback()
+                # FIX: Return with db_save_failed flag instead of silently continuing
+                result["db_save_failed"] = True
+                result["db_error"] = str(db_e)
         else:
             print(f"❌ [LEAD APPOINTMENT FLOW] FAILED! Lead creation failed!")
             print(f"🚨 [LEAD APPOINTMENT FLOW] Error: {result.get('error')}")

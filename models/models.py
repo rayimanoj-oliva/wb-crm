@@ -88,7 +88,7 @@ class Customer(Base):
     __tablename__ = "customers"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    wa_id = Column(String, unique=True, nullable=False)
+    wa_id = Column(String, unique=True, nullable=False, index=True)
     name = Column(String)
     # Primary and secondary phone numbers
     phone_1 = Column(String(20), nullable=True)
@@ -98,12 +98,12 @@ class Customer(Base):
     # Optional default address shortcut
     default_address_id = Column(UUID(as_uuid=True), ForeignKey("customer_addresses.id"), nullable=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
     last_message_at = Column(DateTime, nullable=True)
     # Follow-up automation tracking
     last_interaction_time = Column(DateTime, nullable=True)
     last_message_type = Column(String(50), nullable=True)
-    next_followup_time = Column(DateTime, nullable=True)
+    next_followup_time = Column(DateTime, nullable=True, index=True)  # Used by followup scheduler
 
     # Relations
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
@@ -211,14 +211,14 @@ class Order(Base):
     __tablename__ = "orders"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    customer_id = Column(UUID(as_uuid=True), ForeignKey("customers.id"))
+    customer_id = Column(UUID(as_uuid=True), ForeignKey("customers.id"), index=True)
     catalog_id = Column(String)
-    timestamp = Column(DateTime, default=datetime.utcnow)
+    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
     # Shipping address associated with the order
     shipping_address_id = Column(UUID(as_uuid=True), ForeignKey("customer_addresses.id"), nullable=True)
-    
+
     # Order status and payment tracking
-    status = Column(String(20), default="pending")  # pending, paid, shipped, delivered, cancelled
+    status = Column(String(20), default="pending", index=True)  # pending, paid, shipped, delivered, cancelled
     payment_completed_at = Column(DateTime, nullable=True)
     
     # Track modification state
@@ -289,14 +289,14 @@ class Payment(Base):
     __tablename__ = "payments"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="CASCADE"), nullable=True)  # Allow standalone payments
+    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.id", ondelete="CASCADE"), nullable=True, index=True)  # Allow standalone payments
     amount = Column(Float, nullable=False)
     currency = Column(String(10), nullable=False, default="INR")
-    razorpay_id = Column(String, nullable=True)
+    razorpay_id = Column(String, nullable=True, index=True)
     razorpay_short_url = Column(String, nullable=True)
-    status = Column(String, nullable=False, default="created")
+    status = Column(String, nullable=False, default="created", index=True)
     notification_sent = Column(Boolean, default=False)  # Track if payment link was sent to customer
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     order = relationship("Order", back_populates="payments")
@@ -517,14 +517,14 @@ class Campaign(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String(255), nullable=False)
     description = Column(String(1000), nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    created_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    created_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     updated_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
     campaign_cost_type = Column(String, ForeignKey("costs.type"))
     content = Column(JSONB, nullable=True)
-    type = Column(campaign_type_enum, nullable=False)
+    type = Column(campaign_type_enum, nullable=False, index=True)
 
     last_job_id = Column(UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True)
 
@@ -557,11 +557,11 @@ class CampaignRecipient(Base):
     __tablename__ = "campaign_recipients"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    campaign_id = Column(UUID(as_uuid=True), ForeignKey("campaigns.id", ondelete="CASCADE"))
-    phone_number = Column(String(20), nullable=False)
+    campaign_id = Column(UUID(as_uuid=True), ForeignKey("campaigns.id", ondelete="CASCADE"), index=True)
+    phone_number = Column(String(20), nullable=False, index=True)
     name = Column(String(100), nullable=True)
     params = Column(JSON, nullable=True)  # flexible key/value for template params
-    status = Column(String(20), default="PENDING")  # PENDING, SENT, FAILED
+    status = Column(String(20), default="PENDING", index=True)  # PENDING, SENT, FAILED
     created_at = Column(DateTime, default=datetime.utcnow)
 
     campaign = relationship("Campaign", back_populates="recipients")
@@ -592,8 +592,8 @@ class Job(Base):
     __tablename__ = "jobs"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    campaign_id = Column(UUID(as_uuid=True), ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    campaign_id = Column(UUID(as_uuid=True), ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
     last_attempted_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     last_triggered_time = Column(DateTime, nullable=True)
 
@@ -643,39 +643,88 @@ class ZohoMapping(Base):
 
 class Lead(Base):
     __tablename__ = "leads"
-    
+
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     zoho_lead_id = Column(String, unique=True, nullable=False, index=True)
-    
+
     # Lead information
     first_name = Column(String(100), nullable=False)
     last_name = Column(String(100), nullable=True)
     email = Column(String(255), nullable=True)
     phone = Column(String(20), nullable=False, index=True)
     mobile = Column(String(20), nullable=True)
-    
+
     # Lead details
     city = Column(String(100), nullable=True)
     location = Column(String(100), nullable=True)
     lead_source = Column(String(100), nullable=True)
     company = Column(String(100), nullable=True)
-    
+
     # WhatsApp information
     wa_id = Column(String, nullable=False, index=True)
     customer_id = Column(UUID(as_uuid=True), nullable=True)
-    
+
     # Appointment details stored as JSON
     appointment_details = Column(JSONB, nullable=True)
-    
+
     # Treatment/Concern information
     treatment_name = Column(String(255), nullable=True)
     zoho_mapped_concern = Column(String(255), nullable=True)
     primary_concern = Column(String(255), nullable=True)
     sub_source = Column(String(50), nullable=True, default="Chats")
-    
+
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
+
     def __repr__(self):
         return f"<Lead(zoho_lead_id='{self.zoho_lead_id}', name='{self.first_name} {self.last_name}')>"
+
+
+# ------------------------------
+# Campaign Logs (Detailed logging for bulk campaigns)
+# ------------------------------
+
+class CampaignLog(Base):
+    """Detailed logging for campaign message sending"""
+    __tablename__ = "campaign_logs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    # Campaign/Job reference
+    campaign_id = Column(UUID(as_uuid=True), ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False, index=True)
+    job_id = Column(UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=True, index=True)
+
+    # Target information
+    target_type = Column(String(20), nullable=False)  # "recipient" or "customer"
+    target_id = Column(UUID(as_uuid=True), nullable=True)
+    phone_number = Column(String(20), nullable=True, index=True)
+
+    # Status and result
+    status = Column(String(20), nullable=False, default="pending", index=True)  # pending, success, failure, queued
+    error_code = Column(String(50), nullable=True)
+    error_message = Column(Text, nullable=True)
+
+    # WhatsApp API details
+    whatsapp_message_id = Column(String(100), nullable=True)
+    http_status_code = Column(Integer, nullable=True)
+
+    # Request/Response data for debugging
+    request_payload = Column(JSONB, nullable=True)
+    response_data = Column(JSONB, nullable=True)
+
+    # Timing
+    processing_time_ms = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    processed_at = Column(DateTime, nullable=True)
+
+    # Retry tracking
+    retry_count = Column(Integer, default=0)
+    last_retry_at = Column(DateTime, nullable=True)
+
+    # Relationships
+    campaign = relationship("Campaign", backref="logs")
+    job = relationship("Job", backref="logs")
+
+    def __repr__(self):
+        return f"<CampaignLog(id={self.id}, campaign_id={self.campaign_id}, phone={self.phone_number}, status='{self.status}')>"

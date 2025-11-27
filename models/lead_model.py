@@ -34,7 +34,10 @@ class Lead(Base):
     
     # Appointment details stored as JSON
     appointment_details = Column(JSONB, nullable=True)
-    
+
+    # Zoho API response stored for debugging/tracking
+    zoho_response = Column(JSONB, nullable=True)
+
     # Treatment/Concern information
     treatment_name = Column(String(255), nullable=True)
     zoho_mapped_concern = Column(String(255), nullable=True)

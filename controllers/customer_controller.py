@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from models.models import Customer, User
@@ -23,9 +24,29 @@ def read_customer(customer_id: UUID, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Customer not found")
     return customer
 
-@router.get("/", response_model=list[CustomerOut])
-def list_customers(db: Session = Depends(get_db)):
-    return customer_service.get_all_customers(db)
+@router.get("/")
+def list_customers(
+    skip: int = Query(0, ge=0, description="Number of records to skip"),
+    limit: int = Query(50, ge=1, le=200, description="Max records to return"),
+    search: Optional[str] = Query(None, description="Search by name, phone, or email"),
+    include_flow_step: bool = Query(False, description="Include last flow step data for each customer"),
+    flow_type: Optional[str] = Query(None, description="Flow type: treatment or lead_appointment"),
+    db: Session = Depends(get_db)
+):
+    """
+    List customers with pagination and optional search.
+
+    Use include_flow_step=true to get flow step data in a single API call:
+    GET /customer/?include_flow_step=true&flow_type=treatment
+
+    Response includes:
+    - items: list of customers
+    - flow_steps: dict mapping wa_id -> {last_step, reached_at, ...}
+    """
+    return customer_service.get_all_customers(
+        db, skip=skip, limit=limit, search=search,
+        include_flow_step=include_flow_step, flow_type=flow_type
+    )
 
 @router.put("/{customer_id}")
 def update_customer(customer_id: UUID, update_data: CustomerUpdate, db: Session = Depends(get_db)):

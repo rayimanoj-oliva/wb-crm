@@ -5,13 +5,14 @@ from schemas.template_schema import TemplateParameter
 from uuid import UUID
 
 # ---- Bulk template sending (direct to wa_ids) ----
-class CampaignRecipient(BaseModel):
+class BulkTemplateRecipient(BaseModel):
+    """Recipient for bulk template sending - renamed to avoid conflict with SQLAlchemy model"""
     wa_id: str
     parameters: List[TemplateParameter]
 
 class BulkTemplateRequest(BaseModel):
     template_name: str
-    clients: List[CampaignRecipient]
+    clients: List[BulkTemplateRecipient]
 
 # ---- Customer output ----
 class CustomerOut(BaseModel):
