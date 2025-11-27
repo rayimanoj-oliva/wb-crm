@@ -101,7 +101,8 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     user = authenticate_user(db, form_data.username, form_data.password)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid username or password")
-    token = create_access_token(data={"sub": str(user.id)}, expires_delta=timedelta(minutes=30))
+    # Extend session timeout to 8 hours to honor "no auto logout" requirement
+    token = create_access_token(data={"sub": str(user.id)}, expires_delta=timedelta(hours=8))
     return {"access_token": token, "token_type": "bearer"}
 
 # Include user routes
