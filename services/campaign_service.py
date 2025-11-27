@@ -133,15 +133,15 @@ def get_all_campaigns(db: Session, skip: int = 0, limit: int = 50, search: str =
                 jobs_by_campaign[job.campaign_id] = []
             jobs_by_campaign[job.campaign_id].append(job)
 
-    # Fetch all job statuses in one query
+    # Fetch all campaign logs (statuses) in one query - use CampaignLog instead of JobStatus
     job_ids = [j.id for jobs in jobs_by_campaign.values() for j in jobs]
     statuses_by_job = {}
     if job_ids:
-        all_statuses = db.query(JobStatus).filter(JobStatus.job_id.in_(job_ids)).all()
-        for status in all_statuses:
-            if status.job_id not in statuses_by_job:
-                statuses_by_job[status.job_id] = []
-            statuses_by_job[status.job_id].append(status)
+        all_logs = db.query(CampaignLog).filter(CampaignLog.job_id.in_(job_ids)).all()
+        for log in all_logs:
+            if log.job_id not in statuses_by_job:
+                statuses_by_job[log.job_id] = []
+            statuses_by_job[log.job_id].append(log)
 
     # Build response with jobs and stats
     for campaign in campaigns:
