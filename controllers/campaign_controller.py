@@ -184,9 +184,9 @@ async def upload_campaign_excel(
 
     try:
         contents = await file.read()
-        # Limit file size to 10MB
-        if len(contents) > 10 * 1024 * 1024:
-            raise HTTPException(status_code=400, detail="File size exceeds 10MB limit")
+        # Limit file size to 50MB (for up to 50,000 rows)
+        if len(contents) > 50 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="File size exceeds 50MB limit")
         df = pd.read_excel(io.BytesIO(contents))
     except HTTPException:
         raise
@@ -194,8 +194,8 @@ async def upload_campaign_excel(
         raise HTTPException(status_code=400, detail=f"Invalid Excel file: {e}")
 
     # Limit row count
-    if len(df) > 10000:
-        raise HTTPException(status_code=400, detail="Excel file exceeds 10,000 rows limit")
+    if len(df) > 50000:
+        raise HTTPException(status_code=400, detail="Excel file exceeds 50,000 rows limit")
 
     # Validate required column
     if "phone_number" not in df.columns:
