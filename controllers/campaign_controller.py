@@ -63,11 +63,20 @@ def list_campaigns(
     skip: int = Query(0, ge=0, description="Number of records to skip"),
     limit: int = Query(50, ge=1, le=200, description="Max records to return"),
     search: Optional[str] = Query(None, description="Search by campaign name or description"),
+    include_jobs: bool = Query(True, description="Include job details with statuses and stats"),
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
-    """List campaigns with pagination and optional search."""
-    return campaign_service.get_all_campaigns(db, skip=skip, limit=limit, search=search)
+    """
+    List campaigns with pagination and optional search.
+
+    Set include_jobs=true (default) to get full job details:
+    - jobs[].statuses: list of {target_id, phone_number, status, error_message}
+    - jobs[].stats: {total, success, failure, pending}
+
+    Set include_jobs=false for basic campaign list only.
+    """
+    return campaign_service.get_all_campaigns(db, skip=skip, limit=limit, search=search, include_jobs=include_jobs)
 
 @router.get("/{campaign_id}", response_model=CampaignOut)
 def get_campaign(campaign_id: UUID, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):

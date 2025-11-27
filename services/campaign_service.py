@@ -99,8 +99,8 @@ rabbitmq_manager = RabbitMQConnectionManager()
 
 
 
-def get_all_campaigns(db: Session, skip: int = 0, limit: int = 50, search: str = None):
-    """Get all campaigns with pagination and optional search."""
+def get_all_campaigns(db: Session, skip: int = 0, limit: int = 50, search: str = None, include_jobs: bool = True):
+    """Get all campaigns with pagination, optional search, and job details."""
     query = db.query(Campaign)
 
     # Apply search filter if provided
@@ -117,7 +117,85 @@ def get_all_campaigns(db: Session, skip: int = 0, limit: int = 50, search: str =
     # Apply pagination with ordering by created_at desc
     campaigns = query.order_by(Campaign.created_at.desc()).offset(skip).limit(limit).all()
 
-    return {"items": campaigns, "total": total, "skip": skip, "limit": limit}
+    if not include_jobs:
+        return {"items": campaigns, "total": total, "skip": skip, "limit": limit}
+
+    # Build detailed campaign data with jobs
+    campaign_items = []
+    campaign_ids = [c.id for c in campaigns]
+
+    # Fetch all jobs for these campaigns in one query
+    jobs_by_campaign = {}
+    if campaign_ids:
+        all_jobs = db.query(Job).filter(Job.campaign_id.in_(campaign_ids)).order_by(Job.created_at.desc()).all()
+        for job in all_jobs:
+            if job.campaign_id not in jobs_by_campaign:
+                jobs_by_campaign[job.campaign_id] = []
+            jobs_by_campaign[job.campaign_id].append(job)
+
+    # Fetch all job statuses in one query
+    job_ids = [j.id for jobs in jobs_by_campaign.values() for j in jobs]
+    statuses_by_job = {}
+    if job_ids:
+        all_statuses = db.query(JobStatus).filter(JobStatus.job_id.in_(job_ids)).all()
+        for status in all_statuses:
+            if status.job_id not in statuses_by_job:
+                statuses_by_job[status.job_id] = []
+            statuses_by_job[status.job_id].append(status)
+
+    # Build response with jobs and stats
+    for campaign in campaigns:
+        campaign_data = {
+            "id": str(campaign.id),
+            "name": campaign.name,
+            "description": campaign.description,
+            "type": campaign.type,
+            "content": campaign.content,
+            "campaign_cost_type": campaign.campaign_cost_type,
+            "created_at": campaign.created_at.isoformat() if campaign.created_at else None,
+            "updated_at": campaign.updated_at.isoformat() if campaign.updated_at else None,
+            "created_by": str(campaign.created_by) if campaign.created_by else None,
+            "jobs": []
+        }
+
+        # Add jobs for this campaign
+        campaign_jobs = jobs_by_campaign.get(campaign.id, [])
+        for job in campaign_jobs:
+            job_statuses = statuses_by_job.get(job.id, [])
+
+            # Calculate stats
+            stats = {"total": 0, "success": 0, "failure": 0, "pending": 0}
+            statuses_list = []
+            for s in job_statuses:
+                stats["total"] += 1
+                if s.status == "success":
+                    stats["success"] += 1
+                elif s.status == "failure":
+                    stats["failure"] += 1
+                elif s.status == "pending":
+                    stats["pending"] += 1
+
+                statuses_list.append({
+                    "target_id": str(s.target_id) if s.target_id else None,
+                    "phone_number": s.phone_number,
+                    "status": s.status,
+                    "error_message": s.error_message
+                })
+
+            job_data = {
+                "id": str(job.id),
+                "campaign_id": str(job.campaign_id),
+                "created_at": job.created_at.isoformat() if job.created_at else None,
+                "last_attempted_by": str(job.last_attempted_by) if job.last_attempted_by else None,
+                "last_triggered_time": job.last_triggered_time.isoformat() if job.last_triggered_time else None,
+                "statuses": statuses_list,
+                "stats": stats
+            }
+            campaign_data["jobs"].append(job_data)
+
+        campaign_items.append(campaign_data)
+
+    return {"items": campaign_items, "total": total, "skip": skip, "limit": limit}
 
 def get_campaign(db: Session, campaign_id: UUID):
     campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
