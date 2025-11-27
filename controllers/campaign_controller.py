@@ -2,11 +2,20 @@ import io
 from typing import List
 import pandas as pd
 from fastapi import APIRouter, Depends, File, UploadFile, Response
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from auth import get_current_user
 from database.db import get_db
-from schemas.campaign_schema import BulkTemplateRequest, CampaignOut, CampaignCreate, CampaignUpdate
+from schemas.campaign_schema import (
+    BulkTemplateRequest,
+    CampaignOut,
+    CampaignCreate,
+    CampaignUpdate,
+    TemplateCampaignCreateRequest,
+    TemplateExcelColumnsResponse,
+    TemplateCampaignRunRequest,
+)
 from services import whatsapp_service, job_service, customer_service
 from schemas.customer_schema import CustomerCreate
 from typing import Any, Dict, List, Optional
@@ -24,6 +33,11 @@ from services.campaign_service import (
 )
 import services.campaign_service as campaign_service
 from uuid import UUID
+from services.template_excel_service import (
+    build_excel_response,
+    get_template_metadata,
+    build_excel_columns,
+)
 router = APIRouter(tags=["Campaign"])
 
 # ------------------------------
@@ -70,6 +84,75 @@ def run_campaign(campaign_id:UUID,db :Session = Depends(get_db),current_user: di
     campaign = campaign_service.get_campaign(db,campaign_id)
     return campaign_service.run_campaign(campaign,job,db)
 
+
+@router.post("/template", response_model=CampaignOut)
+def create_template_campaign(
+    payload: TemplateCampaignCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    template_meta = get_template_metadata(db, payload.template_name)
+    template_body = template_meta["template"].template_body or {}
+    content = {
+        "name": payload.template_name,
+        "language": payload.template_language,
+        "components": template_body.get("components", []),
+        "image_id": payload.image_id,
+        "button_sub_type": payload.button_sub_type,
+        "button_index": payload.button_index,
+    }
+    campaign_payload = CampaignCreate(
+        name=payload.campaign_name,
+        description=payload.description,
+        customer_ids=[],
+        content=content,
+        type="template",
+        campaign_cost_type=payload.campaign_cost_type,
+    )
+    campaign = campaign_service.create_campaign(db, campaign_payload, user_id=current_user.id)
+    return campaign
+
+
+@router.get("/template/{template_name}/excel-columns", response_model=TemplateExcelColumnsResponse)
+def get_template_excel_columns(template_name: str, db: Session = Depends(get_db)):
+    meta = get_template_metadata(db, template_name)
+    columns = build_excel_columns(meta)
+    button_meta = meta["button_meta"]
+    return TemplateExcelColumnsResponse(
+        template_name=template_name,
+        columns=columns,
+        body_placeholder_count=meta["body_placeholder_count"],
+        header_placeholder_count=meta["header_text_placeholder_count"],
+        header_type=meta["header_type"],
+        has_buttons=button_meta.get("has_buttons", False),
+        button_type=button_meta.get("button_type"),
+    )
+
+
+@router.get("/template/{template_name}/excel")
+def download_template_excel(
+    template_name: str,
+    language: str = "en_US",
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    buffer, filename = build_excel_response(db, template_name, language)
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"'
+    }
+    return StreamingResponse(
+        buffer,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )
+
+def _normalize_phone(value: str) -> str:
+    digits = "".join(filter(str.isdigit, value or ""))
+    if digits.startswith("00"):
+        digits = digits[2:]
+    return digits
+
+
 @router.post("/{campaign_id}/upload-excel")
 async def upload_campaign_excel(
     campaign_id: UUID,
@@ -77,68 +160,93 @@ async def upload_campaign_excel(
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
-    """Upload Excel with phone_number, name, params -> add recipients to campaign."""
-    # Ensure campaign exists
+    """Upload Excel with phone_number + template params -> add recipients to campaign."""
     campaign = campaign_service.get_campaign(db, campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
-    # Read Excel file into DataFrame
     try:
         contents = await file.read()
         df = pd.read_excel(io.BytesIO(contents))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid Excel file: {e}")
 
-    # Validate required column
     if "phone_number" not in df.columns:
         raise HTTPException(status_code=400, detail="Excel must have 'phone_number' column")
 
-    # Iterate and create recipients
+    template_name = (campaign.content or {}).get("name")
+    if not template_name:
+        raise HTTPException(status_code=400, detail="Campaign is missing template metadata")
+    template_meta = get_template_metadata(db, template_name)
+
+    body_cols = [c for c in df.columns if c.lower().startswith("body_var_")]
+    header_cols = [c for c in df.columns if c.lower().startswith("header_var_")]
+    button_cols = [c for c in df.columns if c.lower().startswith("button_param")]
+
     recipients = []
     for _, row in df.iterrows():
-        phone = str(row.get("phone_number"))
+        raw_phone = str(row.get("phone_number") or "").strip()
+        phone = _normalize_phone(raw_phone)
         if not phone:
             continue
-        # Normalize pandas/numpy types in params to JSON-serializable primitives
-        def to_jsonable(val):
-            try:
-                import pandas as pd
-                import numpy as np
-                if isinstance(val, (pd.Timestamp,)):
-                    return val.isoformat()
-                if isinstance(val, (pd.Series, pd.DataFrame)):
-                    return val.to_dict()
-                if isinstance(val, (np.integer,)):
-                    return int(val)
-                if isinstance(val, (np.floating,)):
-                    return float(val)
-            except Exception:
-                pass
-            # Datetime from Python
-            try:
-                from datetime import datetime
-                if isinstance(val, datetime):
-                    return val.isoformat()
-            except Exception:
-                pass
-            return val
 
-        clean_params = {k: to_jsonable(row[k]) for k in df.columns if k not in ["phone_number", "name"] and pd.notnull(row[k])}
+        body_params = [str(row.get(col, "") or "").strip() for col in sorted(body_cols)]
+        header_text_params = [str(row.get(col, "") or "").strip() for col in sorted(header_cols)]
+        header_media_id = str(row.get("header_media_id") or "").strip() if "header_media_id" in df.columns else None
+
+        button_params = None
+        if button_cols:
+            button_params = [str(row.get(button_cols[0], "") or "").strip()]
+        elif "button_url" in df.columns:
+            button_params = [str(row.get("button_url", "") or "").strip()]
+
+        params = {}
+        if any(body_params):
+            params["body_params"] = body_params
+        if any(header_text_params):
+            params["header_text_params"] = header_text_params
+        if header_media_id:
+            params["header_media_id"] = header_media_id
+        if button_params and any(button_params):
+            params["button_params"] = button_params
 
         rec = CampaignRecipient(
             campaign_id=campaign_id,
             phone_number=phone,
-            name=row.get("name"),
-            params=clean_params,
+            name=row.get("name") or row.get("Name"),
+            params=params,
             status="PENDING"
         )
         recipients.append(rec)
+
+    if not recipients:
+        raise HTTPException(status_code=400, detail="No valid rows found in Excel file")
 
     db.add_all(recipients)
     db.commit()
 
     return {"status": "uploaded", "count": len(recipients)}
+
+
+@router.post("/{campaign_id}/run-template")
+def run_template_campaign(
+    campaign_id: UUID,
+    payload: TemplateCampaignRunRequest,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    campaign = campaign_service.get_campaign(db, campaign_id)
+    if campaign.type != "template":
+        raise HTTPException(status_code=400, detail="Campaign is not a template campaign")
+    job = job_service.create_job(db, campaign_id, current_user)
+    campaign_service.run_campaign(
+        campaign,
+        job,
+        db,
+        batch_size=payload.batch_size,
+        batch_delay=payload.batch_delay_seconds,
+    )
+    return {"status": "queued", "campaign_id": str(campaign.id), "job_id": str(job.id)}
 
 @router.get("/{campaign_id}/recipients")
 def get_campaign_recipients(

@@ -97,7 +97,14 @@ def publish_to_queue(message: dict, queue_name: str = "campaign_queue"):
     )
     connection.close()
 
-def run_campaign(campaign: Campaign, job: Job, db: Session):
+def run_campaign(
+    campaign: Campaign,
+    job: Job,
+    db: Session,
+    *,
+    batch_size: int = 0,
+    batch_delay: int = 0,
+):
     from models.models import CampaignRecipient
 
     recipients = db.query(CampaignRecipient).filter_by(campaign_id=campaign.id).all()
@@ -105,12 +112,14 @@ def run_campaign(campaign: Campaign, job: Job, db: Session):
     if recipients:
         print(f"[DEBUG] Campaign has {len(recipients)} recipients - queuing recipient IDs only")
 
-        for r in recipients:
+        for idx, r in enumerate(recipients):
             task = {
                 "job_id": str(job.id),
                 "campaign_id": str(campaign.id),
-                "target_type": "recipient",        # <---
-                "target_id": str(r.id),            # <---
+                "target_type": "recipient",
+                "target_id": str(r.id),
+                "batch_size": batch_size,
+                "batch_delay": batch_delay,
             }
             publish_to_queue(task)
             r.status = "QUEUED"
@@ -125,8 +134,10 @@ def run_campaign(campaign: Campaign, job: Job, db: Session):
         task = {
             "job_id": str(job.id),
             "campaign_id": str(campaign.id),
-            "target_type": "customer",           # <---
-            "target_id": str(c.id),              # <---
+            "target_type": "customer",
+            "target_id": str(c.id),
+            "batch_size": batch_size,
+            "batch_delay": batch_delay,
         }
         publish_to_queue(task)
 

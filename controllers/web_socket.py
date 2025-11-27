@@ -18,7 +18,7 @@ from starlette.responses import PlainTextResponse
 
 from database.db import get_db
 from schemas.orders_schema import OrderItemCreate,OrderCreate, PaymentCreate
-from services import customer_service, message_service, order_service
+from services import customer_service, message_service, order_service, flow_config_service
 from services import payment_service
 from schemas.customer_schema import CustomerCreate
 from schemas.message_schema import MessageCreate
@@ -101,6 +101,28 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         debug_webhook_payload(body, raw_body_str)
         
         # Check if this is a status update (not a message) - skip it
+        flow_route = None
+        flow_disabled = False
+        flow_key = None
+
+        def resolve_flow_gate(phone_id: Any, display_number: Any):
+            nonlocal flow_route, flow_disabled, flow_key
+            try:
+                flow_route = flow_config_service.get_flow_for_incoming(
+                    db,
+                    phone_number_id=str(phone_id) if phone_id else None,
+                    display_number=display_number,
+                )
+                flow_disabled = bool(flow_route and not flow_route.is_enabled)
+                flow_key = flow_route.flow_key if flow_route else None
+                if flow_disabled and flow_route:
+                    print(f"[ws_webhook] INFO - Flow disabled for phone_id={flow_route.phone_number_id} ({flow_route.flow_key})")
+            except Exception as e:
+                flow_route = None
+                flow_disabled = False
+                flow_key = None
+                print(f"[ws_webhook] WARNING - Could not resolve flow gate: {e}")
+
         if "entry" in body:
             value = body["entry"][0]["changes"][0]["value"]
             # If value contains 'statuses' but no 'messages' or 'contacts', it's a status update
@@ -136,20 +158,26 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             # Extract phone_number_id from metadata
             phone_number_id = value.get("metadata", {}).get("phone_number_id")
             print(f"[ws_webhook] DEBUG - phone_number_id from metadata: {phone_number_id}")
+            resolve_flow_gate(phone_number_id, value.get("metadata", {}).get("display_phone_number"))
+
+            treatment_flow_disabled = flow_disabled and flow_key and flow_key.startswith("treatment")
 
             # EARLY: treatment-only marketing handler for the two numbers
-            try:
-                from marketing.controllers.web_socket_marketing import handle_marketing_event  # type: ignore
-                mk_res = await handle_marketing_event(db, value=value)
-                mk_status = (mk_res or {}).get("status")
-                if mk_status in {"welcome_restart", "handled"}:
-                    print(f"[ws_webhook] DEBUG - Marketing handler returned early with status={mk_status}")
-                    return mk_res
-                elif mk_status == "ignored":
-                    print(f"[ws_webhook] DEBUG - Marketing handler deferred (status=ignored), continuing to main handler")
-            except Exception as e:
-                print(f"[ws_webhook] WARNING - Marketing handler exception: {e}")
-                pass
+            if treatment_flow_disabled:
+                print("[ws_webhook] INFO - Skipping marketing handler because flow is disabled for this number")
+            else:
+                try:
+                    from marketing.controllers.web_socket_marketing import handle_marketing_event  # type: ignore
+                    mk_res = await handle_marketing_event(db, value=value)
+                    mk_status = (mk_res or {}).get("status")
+                    if mk_status in {"welcome_restart", "handled"}:
+                        print(f"[ws_webhook] DEBUG - Marketing handler returned early with status={mk_status}")
+                        return mk_res
+                    elif mk_status == "ignored":
+                        print(f"[ws_webhook] DEBUG - Marketing handler deferred (status=ignored), continuing to main handler")
+                except Exception as e:
+                    print(f"[ws_webhook] WARNING - Marketing handler exception: {e}")
+                    pass
         else:
             # Alternative payload structure (direct structure)
             print(f"[ws_webhook] DEBUG - Using alternative payload structure")
@@ -168,7 +196,11 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             to_wa_id = body.get("phone_number_id", "367633743092037")
             phone_number_id = body.get("phone_number_id")
             print(f"[ws_webhook] DEBUG - phone_number_id from body: {phone_number_id}")
+            resolve_flow_gate(phone_number_id, to_wa_id)
         
+        treatment_flow_disabled = bool(flow_disabled and flow_key and flow_key.startswith("treatment"))
+        lead_flow_disabled = bool(flow_disabled and flow_key == "lead_appointment")
+
         # =============================================================================
         # EARLY ROUTING BASED ON phone_number_id
         # =============================================================================
@@ -189,6 +221,11 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         is_treatment_flow_number = phone_number_id_str in TREATMENT_FLOW_ALLOWED_PHONE_IDS if phone_number_id_str else False
         is_lead_appointment_number = phone_number_id_str == str(LEAD_APPOINTMENT_PHONE_ID) if (phone_number_id_str and LEAD_APPOINTMENT_PHONE_ID) else False
         
+        if treatment_flow_disabled:
+            is_treatment_flow_number = False
+        if lead_flow_disabled:
+            is_lead_appointment_number = False
+
         print(f"[ws_webhook] DEBUG - Flow routing: is_treatment={is_treatment_flow_number}, is_lead_appointment={is_lead_appointment_number}")
         
         # Store flow context in state for downstream handlers
@@ -528,7 +565,9 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 except Exception:
                     lead_allowed = False
 
-                if not lead_allowed:
+                if lead_flow_disabled:
+                    print("[lead_appointment_flow] INFO - Lead appointment flow disabled for this number, skipping automation")
+                elif not lead_allowed:
                     print(f"[lead_appointment_flow] DEBUG - Skipping lead flow: not dedicated number (pid={phone_id_meta}, disp={display_num})")
                 else:
                     print(f"[lead_appointment_flow] DEBUG - ✅ Starting point detected on dedicated number! Running lead appointment flow...")
@@ -604,62 +643,68 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
 
         # 2️⃣ Ensure mr_welcome is sent FIRST on the dedicated number (one-time per user)
         # Only for the two allowed treatment flow numbers: 7617613030 and 8297882978
-        try:
-            from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
-            welcome_pid_env = os.getenv("WELCOME_PHONE_ID") or os.getenv("TREATMENT_FLOW_PHONE_ID")
-            phone_id_meta = (value or {}).get("metadata", {}).get("phone_number_id") if isinstance(value, dict) else None
-            
-            # Check if this is an allowed phone number for treatment flow
-            is_allowed_number = False
-            if phone_id_meta and str(phone_id_meta) in TREATMENT_FLOW_ALLOWED_PHONE_IDS:
-                is_allowed_number = True
-            else:
-                # Also check by display phone number as fallback - compare last 10 digits
-                try:
-                    display_num = ((value or {}).get("metadata", {}) or {}).get("display_phone_number") or to_wa_id or ""
-                    import re as _re
-                    from marketing.whatsapp_numbers import WHATSAPP_NUMBERS
-                    disp_digits = _re.sub(r"\D", "", display_num or "")
-                    # Get last 10 digits of display number (phone number without country code)
-                    disp_last10 = disp_digits[-10:] if len(disp_digits) >= 10 else disp_digits
-                    
-                    for pid in TREATMENT_FLOW_ALLOWED_PHONE_IDS:
-                        cfg = WHATSAPP_NUMBERS.get(pid)
-                        if cfg:
-                            name_digits = _re.sub(r"\D", "", (cfg.get("name") or ""))
-                            # Get last 10 digits of stored phone number
-                            name_last10 = name_digits[-10:] if len(name_digits) >= 10 else name_digits
-                            # Match if last 10 digits are the same
-                            if name_last10 and disp_last10 and name_last10 == disp_last10:
-                                is_allowed_number = True
-                                break
-                except Exception:
-                    pass
-            
-            already_welcomed = bool((appointment_state.get(wa_id) or {}).get("mr_welcome_sent"))
-            # Only send mr_welcome for allowed numbers and on the user's first inbound text (unless already sent)
-            should_send_welcome = is_allowed_number and not already_welcomed
-            if should_send_welcome:
-                welcome_result = await run_mr_welcome_number_flow(
-                    db,
-                    wa_id=wa_id,
-                    to_wa_id=to_wa_id,
-                    message_id=message_id,
-                    message_type=message_type,
-                    timestamp=timestamp,
-                    customer=customer,
-                    value=value,
-                )
-                if (welcome_result or {}).get("status") == "welcome_sent":
-                    st = appointment_state.get(wa_id) or {}
-                    st["mr_welcome_sent"] = True
-                    appointment_state[wa_id] = st
-                    return welcome_result
-        except Exception:
-            pass
+        if treatment_flow_disabled:
+            try:
+                print("[treatment_flow] INFO - Treatment automation disabled; skipping welcome bootstrap.")
+            except Exception:
+                pass
+        else:
+            try:
+                from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
+                welcome_pid_env = os.getenv("WELCOME_PHONE_ID") or os.getenv("TREATMENT_FLOW_PHONE_ID")
+                phone_id_meta = (value or {}).get("metadata", {}).get("phone_number_id") if isinstance(value, dict) else None
+                
+                # Check if this is an allowed phone number for treatment flow
+                is_allowed_number = False
+                if phone_id_meta and str(phone_id_meta) in TREATMENT_FLOW_ALLOWED_PHONE_IDS:
+                    is_allowed_number = True
+                else:
+                    # Also check by display phone number as fallback - compare last 10 digits
+                    try:
+                        display_num = ((value or {}).get("metadata", {}) or {}).get("display_phone_number") or to_wa_id or ""
+                        import re as _re
+                        from marketing.whatsapp_numbers import WHATSAPP_NUMBERS
+                        disp_digits = _re.sub(r"\D", "", display_num or "")
+                        # Get last 10 digits of display number (phone number without country code)
+                        disp_last10 = disp_digits[-10:] if len(disp_digits) >= 10 else disp_digits
+                        
+                        for pid in TREATMENT_FLOW_ALLOWED_PHONE_IDS:
+                            cfg = WHATSAPP_NUMBERS.get(pid)
+                            if cfg:
+                                name_digits = _re.sub(r"\D", "", (cfg.get("name") or ""))
+                                # Get last 10 digits of stored phone number
+                                name_last10 = name_digits[-10:] if len(name_digits) >= 10 else name_digits
+                                # Match if last 10 digits are the same
+                                if name_last10 and disp_last10 and name_last10 == disp_last10:
+                                    is_allowed_number = True
+                                    break
+                    except Exception:
+                        pass
+                
+                already_welcomed = bool((appointment_state.get(wa_id) or {}).get("mr_welcome_sent"))
+                # Only send mr_welcome for allowed numbers and on the user's first inbound text (unless already sent)
+                should_send_welcome = is_allowed_number and not already_welcomed
+                if should_send_welcome:
+                    welcome_result = await run_mr_welcome_number_flow(
+                        db,
+                        wa_id=wa_id,
+                        to_wa_id=to_wa_id,
+                        message_id=message_id,
+                        message_type=message_type,
+                        timestamp=timestamp,
+                        customer=customer,
+                        value=value,
+                    )
+                    if (welcome_result or {}).get("status") == "welcome_sent":
+                        st = appointment_state.get(wa_id) or {}
+                        st["mr_welcome_sent"] = True
+                        appointment_state[wa_id] = st
+                        return welcome_result
+            except Exception:
+                pass
 
         # 3️⃣ AUTO WELCOME VALIDATION - extracted to component function
-        if not handled_text and message_type == "text":
+        if (not treatment_flow_disabled) and (not handled_text) and message_type == "text":
             result = await run_treament_flow(
                 db,
                 message_type=message_type,
