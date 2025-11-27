@@ -1,42 +1,46 @@
-from typing import Dict, Any
+from datetime import datetime
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, root_validator
 from sqlalchemy.orm import Session
 
 from database.db import get_db
 from services import flow_config_service
-from models.models import NumberFlowConfig
 
 
 router = APIRouter(prefix="/flow/routes", tags=["flow-routes"])
 
 
-class FlowTogglePayload(BaseModel):
-    is_enabled: bool
+class FlowUpdatePayload(BaseModel):
+    is_enabled: Optional[bool] = None
+    auto_enable_from: Optional[datetime] = None
+    auto_enable_to: Optional[datetime] = None
+    clear_schedule: bool = False
 
+@root_validator(skip_on_failure=True)
+def validate_window(cls, values):
+        clear_schedule = values.get("clear_schedule")
+        start = values.get("auto_enable_from")
+        end = values.get("auto_enable_to")
 
-def _serialize(flow: NumberFlowConfig) -> Dict[str, Any]:
-    return {
-        "id": str(flow.id),
-        "phone_number_id": flow.phone_number_id,
-        "display_number": flow.display_number,
-        "display_digits": flow.display_digits,
-        "flow_key": flow.flow_key,
-        "flow_name": flow.flow_name,
-        "description": flow.description,
-        "priority": flow.priority,
-        "is_enabled": bool(flow.is_enabled),
-        "created_at": flow.created_at.isoformat() if flow.created_at else None,
-        "updated_at": flow.updated_at.isoformat() if flow.updated_at else None,
-    }
+        if clear_schedule:
+            values["auto_enable_from"] = None
+            values["auto_enable_to"] = None
+            return values
+
+        if (start is None) ^ (end is None):
+            raise ValueError("Both auto_enable_from and auto_enable_to must be provided together")
+        if start and end and end <= start:
+            raise ValueError("auto_enable_to must be after auto_enable_from")
+        return values
 
 
 @router.get("")
 def list_flow_routes(db: Session = Depends(get_db)):
     flows = flow_config_service.list_flows(db)
-    data = [_serialize(flow) for flow in flows]
-    enabled = sum(1 for flow in flows if flow.is_enabled)
+    data = [flow_config_service.serialize_flow(flow) for flow in flows]
+    enabled = sum(1 for flow in data if flow.get("is_live_now"))
     total = len(flows)
     return {
         "success": True,
@@ -50,13 +54,20 @@ def list_flow_routes(db: Session = Depends(get_db)):
 
 
 @router.patch("/{flow_id}")
-def update_flow_route(flow_id: str, payload: FlowTogglePayload, db: Session = Depends(get_db)):
+def update_flow_route(flow_id: str, payload: FlowUpdatePayload, db: Session = Depends(get_db)):
     try:
-        flow = flow_config_service.update_flow_status(db, flow_id, is_enabled=payload.is_enabled)
+        flow = flow_config_service.update_flow_settings(
+            db,
+            flow_id,
+            is_enabled=payload.is_enabled,
+            auto_enable_from=payload.auto_enable_from,
+            auto_enable_to=payload.auto_enable_to,
+            clear_schedule=payload.clear_schedule,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     return {
         "success": True,
-        "data": _serialize(flow),
+        "data": flow_config_service.serialize_flow(flow),
     }
 

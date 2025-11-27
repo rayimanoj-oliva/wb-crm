@@ -113,7 +113,15 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     phone_number_id=str(phone_id) if phone_id else None,
                     display_number=display_number,
                 )
-                flow_disabled = bool(flow_route and not flow_route.is_enabled)
+                if flow_route:
+                    is_live_now, auto_active = flow_config_service.compute_effective_state(flow_route)
+                    flow_disabled = not is_live_now
+                    if auto_active:
+                        print(
+                            f"[ws_webhook] INFO - Auto window active for phone_id={flow_route.phone_number_id} ({flow_route.flow_key})"
+                        )
+                else:
+                    flow_disabled = False
                 flow_key = flow_route.flow_key if flow_route else None
                 if flow_disabled and flow_route:
                     print(f"[ws_webhook] INFO - Flow disabled for phone_id={flow_route.phone_number_id} ({flow_route.flow_key})")

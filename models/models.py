@@ -220,6 +220,8 @@ class NumberFlowConfig(Base):
     description = Column(Text, nullable=True)
     priority = Column(Integer, default=0)
     is_enabled = Column(Boolean, default=True)
+    auto_enable_from = Column(DateTime, nullable=True)
+    auto_enable_to = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
