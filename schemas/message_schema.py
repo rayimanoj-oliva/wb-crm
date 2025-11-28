@@ -15,6 +15,7 @@ class MessageCreate(BaseModel):
     # Sender metadata
     agent_id: Optional[str] = None
     sender_type: Optional[str] = None
+    agent_role: Optional[str] = None
 
     # Optional location fields
     latitude: Optional[float] = None
@@ -46,6 +47,7 @@ class MessageOut(BaseModel):
     agent_id: Optional[str] = None
     sender_type: Optional[str] = None
     agent_name: Optional[str] = None
+    agent_role: Optional[str] = None
 
     class Config:
         from_attributes = True

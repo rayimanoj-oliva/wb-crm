@@ -351,6 +351,7 @@ async def send_whatsapp_message(
             mime_type=mime_type,
             agent_id=agent_identifier,
             sender_type="agent",
+            agent_role=current_user.role,
         )
         message = message_service.create_message(db, message_data)
 
@@ -367,6 +368,7 @@ async def send_whatsapp_message(
             "agent_id": agent_identifier,
             "agent_name": agent_display_name,
             "sender_type": "agent",
+            "agent_role": current_user.role,
         })
 
         return {

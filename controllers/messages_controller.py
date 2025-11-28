@@ -83,13 +83,17 @@ def get_chat(
         if parsed_ids:
             users = db.query(User).filter(User.id.in_(parsed_ids)).all()
             agent_map = {
-                str(user.id): (f"{user.first_name} {user.last_name}".strip() or user.username or user.email)
+                str(user.id): {
+                    "name": (f"{user.first_name} {user.last_name}".strip() or user.username or user.email),
+                    "role": user.role
+                }
                 for user in users
             }
             for message in messages:
-                agent_name = agent_map.get(getattr(message, "agent_id", None))
-                if agent_name:
-                    setattr(message, "agent_name", agent_name)
+                agent_meta = agent_map.get(getattr(message, "agent_id", None))
+                if agent_meta:
+                    setattr(message, "agent_name", agent_meta["name"])
+                    setattr(message, "agent_role", agent_meta["role"])
 
     return messages
 
