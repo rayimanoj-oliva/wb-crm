@@ -12,7 +12,7 @@ from sqlalchemy import (
     Enum as SAEnum, PrimaryKeyConstraint, Index
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ENUM
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, backref
 from sqlalchemy.sql import func
 from sqlalchemy.ext.declarative import declarative_base
 
@@ -575,8 +575,8 @@ class Campaign(Base):
 campaign_customers = Table(
     "campaign_customers",
     Base.metadata,
-    Column("campaign_id", UUID(as_uuid=True), ForeignKey("campaigns.id"), primary_key=True),
-    Column("customer_id", UUID(as_uuid=True), ForeignKey("customers.id"), primary_key=True),
+    Column("campaign_id", UUID(as_uuid=True), ForeignKey("campaigns.id", ondelete="CASCADE"), primary_key=True),
+    Column("customer_id", UUID(as_uuid=True), ForeignKey("customers.id", ondelete="CASCADE"), primary_key=True),
 )
 
 class CampaignRecipient(Base):
@@ -753,9 +753,9 @@ class CampaignLog(Base):
         Index('ix_campaign_logs_job_target', 'job_id', 'target_id'),
     )
 
-    # Relationships
-    campaign = relationship("Campaign", backref="logs")
-    job = relationship("Job", backref="logs")
+    # Relationships (passive_deletes=True to let DB handle CASCADE)
+    campaign = relationship("Campaign", backref=backref("logs", passive_deletes=True))
+    job = relationship("Job", backref=backref("logs", passive_deletes=True))
 
     def __repr__(self):
         return f"<CampaignLog(id={self.id}, campaign_id={self.campaign_id}, phone={self.phone_number}, status='{self.status}')>"
