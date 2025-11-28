@@ -29,6 +29,9 @@ from uuid import UUID
 # Configure logging
 logger = logging.getLogger(__name__)
 
+# Worker manager for auto-starting/stopping workers
+from services.worker_manager import ensure_workers_running, get_worker_status
+
 
 # ------------------------------
 # RabbitMQ Connection Manager (Fixes Connection Leak)
@@ -493,6 +496,14 @@ def run_campaign(
         else:
             logger.info(f"Queued {queued_count} messages, {skipped_count} skipped, {invalid_phone_count} invalid")
 
+        # Auto-start workers if messages were queued
+        if queued_count > 0:
+            workers_started = ensure_workers_running(num_workers=4)
+            if workers_started:
+                logger.info("🤖 Workers auto-started to process messages")
+            else:
+                logger.info("🤖 Workers already running")
+
         return job
 
     # No recipients → normal CRM customers
@@ -576,6 +587,14 @@ def run_campaign(
         logger.info(f"   ⏱️  Estimated send time: ~{max(1, queued_count // (80 * 60))} minutes (Meta limit: 80 msg/sec)")
     else:
         logger.info(f"Queued {queued_count} customer messages, {duplicate_count} duplicates, {invalid_phone_count} invalid")
+
+    # Auto-start workers if messages were queued
+    if queued_count > 0:
+        workers_started = ensure_workers_running(num_workers=4)
+        if workers_started:
+            logger.info("🤖 Workers auto-started to process messages")
+        else:
+            logger.info("🤖 Workers already running")
 
     return job
 

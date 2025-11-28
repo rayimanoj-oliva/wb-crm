@@ -948,3 +948,66 @@ def get_campaign_progress(
         "estimated_remaining_minutes": estimated_remaining_minutes,
         "status": status
     }
+
+
+# ------------------------------
+# Worker Management Endpoints
+# ------------------------------
+
+@router.get("/workers/status")
+def get_workers_status(
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get current status of campaign message workers.
+
+    Returns:
+        {
+            "is_running": true,
+            "worker_count": 4,
+            "worker_pids": [1234, 1235, 1236, 1237],
+            "queue_size": 5000
+        }
+    """
+    from services.worker_manager import get_worker_status
+    return get_worker_status()
+
+
+@router.post("/workers/start")
+def start_workers(
+    num_workers: int = Query(4, ge=1, le=8, description="Number of workers to start"),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Manually start campaign message workers.
+    Workers auto-stop when queue is empty for 30 seconds.
+    """
+    from services.worker_manager import ensure_workers_running, get_worker_status
+
+    started = ensure_workers_running(num_workers)
+    status = get_worker_status()
+
+    return {
+        "message": "Workers started" if started else "Workers already running",
+        "started": started,
+        **status
+    }
+
+
+@router.post("/workers/stop")
+def stop_workers(
+    force: bool = Query(False, description="Force kill workers immediately"),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Manually stop all campaign message workers.
+    """
+    from services.worker_manager import stop_all_workers, get_worker_status
+
+    stop_all_workers(force=force)
+    status = get_worker_status()
+
+    return {
+        "message": "Workers stopped",
+        **status
+    }
