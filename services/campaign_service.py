@@ -35,19 +35,38 @@ logger = logging.getLogger(__name__)
 # ------------------------------
 
 class RabbitMQConnectionManager:
-    """Manages RabbitMQ connections efficiently to prevent connection leaks"""
+    """
+    Manages RabbitMQ connections efficiently to prevent connection leaks.
+
+    IMPORTANT: Tracks process ID to handle gunicorn worker forks.
+    Each forked worker needs its own connection since the parent's
+    connection becomes invalid after fork.
+    """
 
     _instance = None
     _connection = None
     _channel = None
+    _pid = None  # Track the process ID to detect forks
 
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
 
+    def _check_fork(self):
+        """Reset connection if we're in a different process (forked worker)"""
+        import os
+        current_pid = os.getpid()
+        if self._pid is not None and self._pid != current_pid:
+            logger.info(f"Process fork detected (was {self._pid}, now {current_pid}). Resetting RabbitMQ connection.")
+            self._connection = None
+            self._channel = None
+        self._pid = current_pid
+
     def get_connection(self):
         """Get or create a RabbitMQ connection"""
+        self._check_fork()  # Check for fork before using connection
+
         if self._connection is None or self._connection.is_closed:
             try:
                 self._connection = pika.BlockingConnection(
@@ -57,7 +76,7 @@ class RabbitMQConnectionManager:
                         blocked_connection_timeout=300
                     )
                 )
-                logger.info("RabbitMQ connection established")
+                logger.info(f"RabbitMQ connection established (pid={self._pid})")
             except Exception as e:
                 logger.error(f"Failed to connect to RabbitMQ: {e}")
                 raise
@@ -65,6 +84,8 @@ class RabbitMQConnectionManager:
 
     def get_channel(self, queue_name: str = "campaign_queue"):
         """Get or create a channel with queue declaration and publisher confirms"""
+        self._check_fork()  # Check for fork before using channel
+
         try:
             connection = self.get_connection()
             if self._channel is None or self._channel.is_closed:
@@ -72,7 +93,7 @@ class RabbitMQConnectionManager:
                 self._channel.queue_declare(queue=queue_name, durable=True)
                 # Enable publisher confirms for guaranteed delivery
                 self._channel.confirm_delivery()
-                logger.info(f"RabbitMQ channel created for queue: {queue_name} (confirms enabled)")
+                logger.info(f"RabbitMQ channel created for queue: {queue_name} (confirms enabled, pid={self._pid})")
             return self._channel
         except Exception as e:
             logger.error(f"Failed to get RabbitMQ channel: {e}")
