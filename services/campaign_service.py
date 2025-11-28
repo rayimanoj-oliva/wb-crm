@@ -498,7 +498,13 @@ def run_campaign(
 
         # Now publish messages - logs already exist in DB for worker to update
         if messages_to_queue:
-            success, failure, failed_msgs = publish_batch_to_queue([m[0] for m in messages_to_queue])
+            tasks_to_publish = [m[0] for m in messages_to_queue]
+            logger.info(f"📤 Publishing {len(tasks_to_publish)} messages to queue:")
+            for idx, task in enumerate(tasks_to_publish):
+                logger.info(f"   [{idx+1}] target_id={task.get('target_id')}")
+
+            success, failure, failed_msgs = publish_batch_to_queue(tasks_to_publish)
+            logger.info(f"📤 Publish result: success={success}, failure={failure}, failed_count={len(failed_msgs)}")
 
             # Update campaign_logs for failed publishes
             if failed_msgs:

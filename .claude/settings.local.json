@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install:*)",
+      "Bash(sc query:*)",
+      "Bash(winget search:*)",
+      "Bash(ssh:*)",
+      "Bash(python:*)",
+      "Bash(curl:*)",
+      "Bash(TOKEN=\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJjYWViMmFiMi0wZDE3LTRhNmYtODg1OS0yM2E4YTQyMmQxM2IiLCJleHAiOjE3NjQyNDIxOTl9.zmc3rerQn8tLDFatQzaJ9UBlr0ZMHRo-nKFL6awFg_c\")"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

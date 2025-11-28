@@ -283,15 +283,16 @@ def callback(ch, method, properties, body):
     - Rate limiting
     - Token refresh
     """
-    logger.info("Received message from queue")
+    delivery_tag = method.delivery_tag
+    logger.info(f"📥 Received message from queue (delivery_tag={delivery_tag})")
     start_time = time.time()
 
     # Parse message
     try:
         task = json.loads(body)
     except Exception as e:
-        logger.error(f"Failed to parse message body: {e}")
-        ch.basic_ack(delivery_tag=method.delivery_tag)
+        logger.error(f"❌ Failed to parse message body: {e}")
+        ch.basic_ack(delivery_tag=delivery_tag)
         return
 
     job_id = task.get("job_id")
@@ -299,7 +300,7 @@ def callback(ch, method, properties, body):
     target_type = task.get("target_type")  # "recipient" | "customer"
     target_id = task.get("target_id")
 
-    logger.info(f"Processing Job {job_id}, Campaign {campaign_id}, Target {target_type}:{target_id}")
+    logger.info(f"📋 Processing: Campaign={campaign_id[:8]}..., Target={target_type}:{target_id[:8]}...")
 
     # Use context manager for proper session handling
     with get_db_session() as db:
@@ -567,7 +568,13 @@ def start_worker(worker_id: int = 1):
                 )
             )
             channel = connection.channel()
-            channel.queue_declare(queue="campaign_queue", durable=True)
+
+            # Check queue status before consuming
+            queue_state = channel.queue_declare(queue="campaign_queue", durable=True, passive=False)
+            msg_count = queue_state.method.message_count
+            consumer_count = queue_state.method.consumer_count
+            logger.info(f"Worker {worker_id}: Queue status - messages={msg_count}, consumers={consumer_count}")
+
             # Use configurable prefetch count for better throughput
             channel.basic_qos(prefetch_count=PREFETCH_COUNT)
             channel.basic_consume(queue="campaign_queue", on_message_callback=callback)
