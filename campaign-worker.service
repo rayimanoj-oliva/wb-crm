@@ -7,6 +7,7 @@ Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/wb-crm
 Environment="PATH=/home/ubuntu/myenv/bin:/usr/local/bin:/usr/bin:/bin"
+EnvironmentFile=/home/ubuntu/wb-crm/.env
 ExecStart=/home/ubuntu/myenv/bin/python consumer.py 4
 Restart=always
 RestartSec=5

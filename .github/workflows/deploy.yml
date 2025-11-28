@@ -85,6 +85,10 @@ jobs:
           ssh -i ~/.ssh/id_rsa ubuntu@ec2-13-234-38-173.ap-south-1.compute.amazonaws.com << 'EOF'
           cd wb-crm
 
+          # Check RabbitMQ is running
+          echo "Checking RabbitMQ status..."
+          sudo systemctl is-active rabbitmq-server && echo "RabbitMQ is running" || (echo "Starting RabbitMQ..." && sudo systemctl start rabbitmq-server)
+
           # Copy service file if changed
           sudo cp campaign-worker.service /etc/systemd/system/campaign-worker.service
           sudo systemctl daemon-reload
@@ -93,6 +97,15 @@ jobs:
           sudo systemctl enable campaign-worker
           sudo systemctl restart campaign-worker
 
-          sleep 2
+          sleep 3
+
+          # Show status
+          echo "=== Worker Service Status ==="
+          sudo systemctl status campaign-worker --no-pager || true
+
+          echo "=== Recent Worker Logs ==="
+          tail -20 /home/ubuntu/wb-crm/worker.log 2>/dev/null || echo "No worker logs yet"
+          tail -10 /home/ubuntu/wb-crm/worker_error.log 2>/dev/null || echo "No error logs"
+
           sudo systemctl is-active campaign-worker && echo "Campaign worker started successfully" || echo "Warning: Campaign worker may not have started"
           EOF
