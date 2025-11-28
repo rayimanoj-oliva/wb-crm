@@ -633,7 +633,11 @@ def _aggregations_subqueries(db: Session):
             CampaignLog.campaign_id.label("campaign_id"),
             func.sum(case((CampaignLog.status == "success", 1), else_=0)).label("success_count"),
             func.sum(case((CampaignLog.status == "failure", 1), else_=0)).label("failure_count"),
-            func.sum(case((CampaignLog.status.in_(["pending", "queued"]), 1), else_=0)).label("pending_count"),
+            func.sum(case(
+                (CampaignLog.status == "pending", 1),
+                (CampaignLog.status == "queued", 1),
+                else_=0
+            )).label("pending_count"),
             func.max(CampaignLog.processed_at).label("last_processed"),
         )
         .group_by(CampaignLog.campaign_id)
