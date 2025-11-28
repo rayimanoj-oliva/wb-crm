@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from utils.whatsapp import send_message_to_waid
 from utils.ws_manager import manager
 from services.followup_service import mark_customer_replied
+from services import flow_config_service
 from .config import LEAD_APPOINTMENT_PHONE_ID, LEAD_APPOINTMENT_DISPLAY_LAST10
 
 
@@ -42,6 +43,21 @@ async def run_lead_appointment_flow(
     """
     
     try:
+        is_flow_live = True
+        try:
+            is_flow_live = flow_config_service.is_flow_live_for_number(
+                db,
+                phone_number_id=phone_number_id,
+                display_number=to_wa_id,
+            )
+        except Exception as e:
+            print(f"[lead_appointment_flow] WARNING - Could not verify flow config: {e}")
+            is_flow_live = True
+
+        if not is_flow_live:
+            print(f"[lead_appointment_flow] INFO - Flow disabled mid-execution for phone={phone_number_id or to_wa_id}; skipping automation")
+            return {"status": "flow_disabled", "message_id": message_id}
+
         # Persist the lead-channel metadata so follow-ups reuse the same number
         try:
             from controllers.web_socket import lead_appointment_state  # type: ignore

@@ -13,6 +13,7 @@ import asyncio
 from services.whatsapp_service import get_latest_token
 from marketing.whatsapp_numbers import get_number_config
 from utils.ws_manager import manager
+from services import flow_config_service
 
 
 async def run_mr_welcome_number_flow(
@@ -32,6 +33,27 @@ async def run_mr_welcome_number_flow(
     """
 
     try:
+        phone_number_id = None
+        try:
+            phone_number_id = (value or {}).get("metadata", {}).get("phone_number_id")
+        except Exception:
+            phone_number_id = None
+
+        is_flow_live = True
+        try:
+            is_flow_live = flow_config_service.is_flow_live_for_number(
+                db,
+                phone_number_id=phone_number_id,
+                display_number=to_wa_id,
+            )
+        except Exception as e:
+            print(f"[mr_welcome_flow] WARNING - Could not verify flow config: {e}")
+            is_flow_live = True
+
+        if not is_flow_live:
+            print(f"[mr_welcome_flow] INFO - Flow disabled for phone={phone_number_id or to_wa_id}; skipping welcome automation")
+            return {"status": "flow_disabled", "message_id": message_id}
+
         # Resolve credentials prioritizing mapping by phone_number_id, then env override, then DB/env fallback
         def _resolve_credentials() -> tuple[str | None, str | None]:
             # A) webhook phone_number_id → mapping

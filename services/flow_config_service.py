@@ -95,6 +95,23 @@ def get_flow_for_incoming(
     return None
 
 
+def is_flow_live_for_number(
+    db: Session,
+    *,
+    phone_number_id: Optional[str],
+    display_number: Optional[str],
+) -> bool:
+    """
+    Convenience helper to determine if automation should run for the given number.
+    Returns True when the flow is live (enabled or auto window active) or when no flow config exists.
+    """
+    flow = get_flow_for_incoming(db, phone_number_id=phone_number_id, display_number=display_number)
+    if not flow:
+        return True
+    is_live, _ = compute_effective_state(flow)
+    return is_live
+
+
 def update_flow_status(db: Session, flow_id: str, *, is_enabled: bool) -> NumberFlowConfig:
     return update_flow_settings(db, flow_id, is_enabled=is_enabled)
 
