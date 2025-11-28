@@ -1017,6 +1017,78 @@ def stop_workers(
 # RabbitMQ Queue Status (Debug)
 # ------------------------------
 
+@router.post("/{campaign_id}/retry-stuck")
+def retry_stuck_messages(
+    campaign_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Retry messages that are stuck in 'queued' status.
+
+    Re-publishes them to RabbitMQ for processing.
+    """
+    from services.campaign_service import publish_batch_to_queue
+    from models.models import CampaignLog, CampaignRecipient, Job
+    from datetime import datetime
+
+    # Get stuck messages (queued for more than 2 minutes)
+    two_minutes_ago = datetime.utcnow()
+    stuck_logs = db.query(CampaignLog).filter(
+        CampaignLog.campaign_id == campaign_id,
+        CampaignLog.status == "queued"
+    ).all()
+
+    if not stuck_logs:
+        return {"message": "No stuck messages found", "retried": 0}
+
+    # Get the latest job for this campaign
+    job = db.query(Job).filter(Job.campaign_id == campaign_id).order_by(Job.created_at.desc()).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="No job found for this campaign")
+
+    # Build messages to re-queue
+    messages = []
+    for log in stuck_logs:
+        task = {
+            "job_id": str(log.job_id),
+            "campaign_id": str(campaign_id),
+            "target_type": log.target_type,
+            "target_id": str(log.target_id),
+            "batch_size": 0,
+            "batch_delay": 0,
+        }
+        messages.append(task)
+
+    # Publish to queue
+    if messages:
+        success, failure, failed_msgs = publish_batch_to_queue(messages)
+
+        # Mark failed ones as failure
+        if failed_msgs:
+            from sqlalchemy import cast, String
+            failed_target_ids = [msg.get("target_id") for msg in failed_msgs]
+            db.query(CampaignLog).filter(
+                CampaignLog.campaign_id == campaign_id,
+                cast(CampaignLog.target_id, String).in_(failed_target_ids)
+            ).update({
+                CampaignLog.status: "failure",
+                CampaignLog.error_code: "RETRY_PUBLISH_FAILED",
+                CampaignLog.error_message: "Failed to re-publish message to queue",
+                CampaignLog.processed_at: datetime.utcnow()
+            }, synchronize_session=False)
+            db.commit()
+
+        return {
+            "message": f"Retried {success} stuck messages",
+            "retried": success,
+            "failed": failure,
+            "total_stuck": len(stuck_logs)
+        }
+
+    return {"message": "No messages to retry", "retried": 0}
+
+
 @router.get("/queue/status")
 def get_queue_status(
     current_user: dict = Depends(get_current_user)

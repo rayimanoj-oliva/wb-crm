@@ -64,13 +64,15 @@ class RabbitMQConnectionManager:
         return self._connection
 
     def get_channel(self, queue_name: str = "campaign_queue"):
-        """Get or create a channel with queue declaration"""
+        """Get or create a channel with queue declaration and publisher confirms"""
         try:
             connection = self.get_connection()
             if self._channel is None or self._channel.is_closed:
                 self._channel = connection.channel()
                 self._channel.queue_declare(queue=queue_name, durable=True)
-                logger.info(f"RabbitMQ channel created for queue: {queue_name}")
+                # Enable publisher confirms for guaranteed delivery
+                self._channel.confirm_delivery()
+                logger.info(f"RabbitMQ channel created for queue: {queue_name} (confirms enabled)")
             return self._channel
         except Exception as e:
             logger.error(f"Failed to get RabbitMQ channel: {e}")
@@ -306,6 +308,7 @@ def publish_batch_to_queue(
 
     Optimized for high volume (50,000+ messages):
     - Processes in chunks to prevent memory issues
+    - Uses publisher confirms for guaranteed delivery
     - Logs progress for monitoring
     - Reconnects on failure
     - Returns failed messages for status update
@@ -317,55 +320,66 @@ def publish_batch_to_queue(
     failed_messages = []
     total_messages = len(messages)
 
-    if log_progress and total_messages > 1000:
-        logger.info(f"📤 Starting batch publish of {total_messages:,} messages in chunks of {chunk_size}")
+    logger.info(f"📤 Starting batch publish of {total_messages} messages")
 
     try:
         channel = rabbitmq_manager.get_channel(queue_name)
         properties = pika.BasicProperties(delivery_mode=2)
 
-        for i in range(0, total_messages, chunk_size):
-            chunk = messages[i:i + chunk_size]
-            chunk_success = 0
-            chunk_failure = 0
+        for i, message in enumerate(messages):
+            target_id = message.get('target_id', 'unknown')
+            try:
+                body = json.dumps(message, cls=EnhancedJSONEncoder)
+                channel.basic_publish(
+                    exchange='',
+                    routing_key=queue_name,
+                    body=body,
+                    properties=properties,
+                    mandatory=True  # Ensure message is routable
+                )
+                success_count += 1
+                logger.debug(f"✅ Published message {i+1}/{total_messages} for target {target_id}")
 
-            for message in chunk:
+            except pika.exceptions.UnroutableError as e:
+                logger.error(f"❌ Message unroutable for {target_id}: {e}")
+                failure_count += 1
+                failed_messages.append(message)
+
+            except pika.exceptions.NackError as e:
+                logger.error(f"❌ Message NACK'd for {target_id}: {e}")
+                failure_count += 1
+                failed_messages.append(message)
+
+            except pika.exceptions.AMQPChannelError as e:
+                logger.error(f"❌ Channel error for {target_id}: {e}")
+                failure_count += 1
+                failed_messages.append(message)
+                # Try to get a new channel
                 try:
-                    channel.basic_publish(
-                        exchange='',
-                        routing_key=queue_name,
-                        body=json.dumps(message, cls=EnhancedJSONEncoder),
-                        properties=properties
-                    )
-                    chunk_success += 1
-                except Exception as e:
-                    logger.error(f"Failed to publish message to {message.get('target_id')}: {e}")
-                    chunk_failure += 1
-                    failed_messages.append(message)
-                    # Try to reconnect on channel errors
-                    try:
-                        channel = rabbitmq_manager.get_channel(queue_name)
-                    except:
-                        pass
+                    rabbitmq_manager._channel = None
+                    channel = rabbitmq_manager.get_channel(queue_name)
+                except Exception as reconnect_err:
+                    logger.error(f"Failed to reconnect: {reconnect_err}")
 
-            success_count += chunk_success
-            failure_count += chunk_failure
+            except Exception as e:
+                logger.error(f"❌ Failed to publish message for {target_id}: {type(e).__name__}: {e}")
+                failure_count += 1
+                failed_messages.append(message)
+                # Try to reconnect on unknown errors
+                try:
+                    rabbitmq_manager._channel = None
+                    channel = rabbitmq_manager.get_channel(queue_name)
+                except:
+                    pass
 
-            # Log progress for large batches
-            if log_progress and total_messages > 1000:
-                progress = min(i + chunk_size, total_messages)
-                percent = (progress / total_messages) * 100
-                logger.info(f"📤 Progress: {progress:,}/{total_messages:,} ({percent:.1f}%) - Success: {success_count:,}, Failed: {failure_count}")
-
-        if log_progress and total_messages > 1000:
-            logger.info(f"✅ Batch publish complete: {success_count:,} queued, {failure_count} failed")
-
+        logger.info(f"✅ Batch publish complete: {success_count} queued, {failure_count} failed")
         return success_count, failure_count, failed_messages
 
     except Exception as e:
-        logger.error(f"Failed to get RabbitMQ channel for batch publish: {e}")
+        logger.error(f"❌ Failed to get RabbitMQ channel for batch publish: {e}")
         # Mark all remaining messages as failed
-        return success_count, failure_count + (total_messages - success_count - failure_count), messages[success_count:]
+        remaining = total_messages - success_count - failure_count
+        return success_count, failure_count + remaining, messages[success_count:]
 
 
 def run_campaign(
