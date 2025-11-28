@@ -459,26 +459,28 @@ def run_campaign(
                 created_at=datetime.utcnow()
             ))
 
-        # Batch publish all messages
-        if messages_to_queue:
-            success, failure = publish_batch_to_queue([m[0] for m in messages_to_queue])
-
-            # Update recipient statuses
-            for task, recipient in messages_to_queue:
-                recipient.status = "QUEUED"
-
-        # Save logs in batches for large campaigns
+        # IMPORTANT: Save logs FIRST before publishing to queue
+        # This prevents race condition where worker tries to update non-existent log
         if logs_to_create:
             if is_large_campaign:
                 # Batch commit logs for better performance
                 for i in range(0, len(logs_to_create), log_batch_size):
                     batch = logs_to_create[i:i + log_batch_size]
                     db.add_all(batch)
-                    db.flush()  # Flush but don't commit yet
+                    db.flush()
             else:
                 db.add_all(logs_to_create)
 
+        # Update recipient statuses
+        for task, recipient in messages_to_queue:
+            recipient.status = "QUEUED"
+
+        # Commit logs to DB BEFORE publishing to queue
         db.commit()
+
+        # Now publish messages - logs already exist in DB for worker to update
+        if messages_to_queue:
+            success, failure = publish_batch_to_queue([m[0] for m in messages_to_queue])
 
         # Log summary for large campaigns
         elapsed = time_module.time() - start_time
@@ -549,11 +551,8 @@ def run_campaign(
             created_at=datetime.utcnow()
         ))
 
-    # Batch publish
-    if messages_to_queue:
-        success, failure = publish_batch_to_queue(messages_to_queue)
-
-    # Save logs in batches for large campaigns
+    # IMPORTANT: Save logs FIRST before publishing to queue
+    # This prevents race condition where worker tries to update non-existent log
     if logs_to_create:
         if is_large_campaign:
             for i in range(0, len(logs_to_create), log_batch_size):
@@ -563,7 +562,12 @@ def run_campaign(
         else:
             db.add_all(logs_to_create)
 
+    # Commit logs to DB BEFORE publishing to queue
     db.commit()
+
+    # Now publish messages - logs already exist in DB for worker to update
+    if messages_to_queue:
+        success, failure = publish_batch_to_queue(messages_to_queue)
 
     # Log summary
     elapsed = time_module.time() - start_time
