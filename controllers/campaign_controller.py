@@ -1011,3 +1011,51 @@ def stop_workers(
         "message": "Workers stopped",
         **status
     }
+
+
+# ------------------------------
+# WhatsApp API Debug Logs
+# ------------------------------
+
+@router.get("/api-logs")
+def get_whatsapp_api_logs(
+    phone_number: Optional[str] = None,
+    campaign_id: Optional[UUID] = None,
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get WhatsApp API call logs for debugging.
+
+    Shows request/response details for all API calls to Meta.
+    """
+    from models.models import WhatsAppAPILog
+
+    query = db.query(WhatsAppAPILog).order_by(WhatsAppAPILog.created_at.desc())
+
+    if phone_number:
+        query = query.filter(WhatsAppAPILog.phone_number == phone_number)
+    if campaign_id:
+        query = query.filter(WhatsAppAPILog.campaign_id == campaign_id)
+
+    logs = query.limit(limit).all()
+
+    return [
+        {
+            "id": str(log.id),
+            "campaign_id": str(log.campaign_id) if log.campaign_id else None,
+            "phone_number": log.phone_number,
+            "request_url": log.request_url,
+            "request_payload": log.request_payload,
+            "response_status_code": log.response_status_code,
+            "response_body": log.response_body,
+            "whatsapp_message_id": log.whatsapp_message_id,
+            "error_code": log.error_code,
+            "error_message": log.error_message,
+            "duration_ms": log.duration_ms,
+            "request_time": log.request_time.isoformat() if log.request_time else None,
+            "created_at": log.created_at.isoformat() if log.created_at else None,
+        }
+        for log in logs
+    ]

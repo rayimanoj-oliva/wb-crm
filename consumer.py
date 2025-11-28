@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 from controllers.whatsapp_controller import WHATSAPP_API_URL
 from database.db import SessionLocal
 from models.models import (
-    JobStatus, Campaign, Job, Customer, CampaignRecipient, CampaignLog
+    JobStatus, Campaign, Job, Customer, CampaignRecipient, CampaignLog, WhatsAppAPILog
 )
 from services import whatsapp_service
 
@@ -225,6 +225,55 @@ def upsert_campaign_log(
         db.rollback()
 
 
+def log_whatsapp_api_call(
+    db: Session,
+    campaign_id,
+    job_id,
+    phone_number: str,
+    request_url: str,
+    request_payload: dict,
+    request_headers: dict,
+    response_status_code: int,
+    response_body: dict,
+    response_headers: dict,
+    whatsapp_message_id: str,
+    error_code: str,
+    error_message: str,
+    request_time: datetime,
+    response_time: datetime,
+    duration_ms: int
+):
+    """Log WhatsApp API request and response for debugging"""
+    try:
+        # Sanitize headers (remove auth token for security)
+        safe_headers = {k: v for k, v in (request_headers or {}).items() if k.lower() != 'authorization'}
+        safe_headers['authorization'] = 'Bearer ***REDACTED***'
+
+        log_entry = WhatsAppAPILog(
+            campaign_id=campaign_id,
+            job_id=job_id,
+            phone_number=phone_number,
+            request_url=request_url,
+            request_payload=request_payload,
+            request_headers=safe_headers,
+            response_status_code=response_status_code,
+            response_body=response_body,
+            response_headers=dict(response_headers) if response_headers else None,
+            whatsapp_message_id=whatsapp_message_id,
+            error_code=error_code,
+            error_message=error_message,
+            request_time=request_time,
+            response_time=response_time,
+            duration_ms=duration_ms
+        )
+        db.add(log_entry)
+        db.commit()
+        logger.debug(f"📋 API call logged for {phone_number}")
+    except Exception as e:
+        logger.error(f"Failed to log WhatsApp API call: {e}")
+        db.rollback()
+
+
 def callback(ch, method, properties, body):
     """
     Process a single message from the queue.
@@ -358,11 +407,21 @@ def callback(ch, method, properties, body):
             # Get HTTP session with connection pooling
             session = get_http_session()
 
+            # Track API call timing
+            api_request_time = datetime.utcnow()
+            api_response_time = None
+            api_duration_ms = 0
+            response_headers_dict = None
+
             # Send request with retry logic
             for attempt in range(MAX_RETRIES):
                 try:
+                    api_request_time = datetime.utcnow()
                     res = session.post(WHATSAPP_API_URL, json=payload, headers=headers, timeout=HTTP_TIMEOUT)
+                    api_response_time = datetime.utcnow()
+                    api_duration_ms = int((api_response_time - api_request_time).total_seconds() * 1000)
                     http_status_code = res.status_code
+                    response_headers_dict = dict(res.headers)
 
                     if res.status_code == 200:
                         status = "success"
@@ -397,6 +456,8 @@ def callback(ch, method, properties, body):
                         break
 
                 except requests.exceptions.Timeout:
+                    api_response_time = datetime.utcnow()
+                    api_duration_ms = int((api_response_time - api_request_time).total_seconds() * 1000)
                     error_code = "TIMEOUT"
                     error_message = f"Request timeout on attempt {attempt + 1}"
                     logger.warning(error_message)
@@ -404,10 +465,35 @@ def callback(ch, method, properties, body):
                         time.sleep(RETRY_DELAY_SECONDS)
                         continue
                 except requests.exceptions.RequestException as e:
+                    api_response_time = datetime.utcnow()
+                    api_duration_ms = int((api_response_time - api_request_time).total_seconds() * 1000)
                     error_code = "REQUEST_ERROR"
                     error_message = str(e)[:500]
                     logger.error(f"Request error: {e}")
                     break
+
+            # Log the API call for debugging
+            try:
+                log_whatsapp_api_call(
+                    db=db,
+                    campaign_id=campaign_id_uuid,
+                    job_id=job_id_uuid,
+                    phone_number=wa_id,
+                    request_url=WHATSAPP_API_URL,
+                    request_payload=payload,
+                    request_headers=headers,
+                    response_status_code=http_status_code,
+                    response_body=response_data,
+                    response_headers=response_headers_dict,
+                    whatsapp_message_id=whatsapp_message_id,
+                    error_code=error_code,
+                    error_message=error_message,
+                    request_time=api_request_time,
+                    response_time=api_response_time,
+                    duration_ms=api_duration_ms
+                )
+            except Exception as log_err:
+                logger.error(f"Failed to log API call: {log_err}")
 
         except Exception as e:
             import traceback

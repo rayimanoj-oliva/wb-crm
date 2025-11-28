@@ -759,3 +759,38 @@ class CampaignLog(Base):
 
     def __repr__(self):
         return f"<CampaignLog(id={self.id}, campaign_id={self.campaign_id}, phone={self.phone_number}, status='{self.status}')>"
+
+
+class WhatsAppAPILog(Base):
+    """Debug log for all WhatsApp API requests and responses"""
+    __tablename__ = "whatsapp_api_logs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    campaign_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    job_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    phone_number = Column(String(20), nullable=True, index=True)
+
+    # Request details
+    request_url = Column(String(500), nullable=True)
+    request_payload = Column(JSONB, nullable=True)
+    request_headers = Column(JSONB, nullable=True)
+
+    # Response details
+    response_status_code = Column(Integer, nullable=True)
+    response_body = Column(JSONB, nullable=True)
+    response_headers = Column(JSONB, nullable=True)
+
+    # Meta message details
+    whatsapp_message_id = Column(String(100), nullable=True)
+    error_code = Column(String(50), nullable=True)
+    error_message = Column(Text, nullable=True)
+
+    # Timing
+    request_time = Column(DateTime, nullable=True)
+    response_time = Column(DateTime, nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    def __repr__(self):
+        return f"<WhatsAppAPILog(id={self.id}, phone={self.phone_number}, status={self.response_status_code})>"
