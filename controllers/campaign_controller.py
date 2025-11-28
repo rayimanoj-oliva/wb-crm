@@ -1014,6 +1014,54 @@ def stop_workers(
 
 
 # ------------------------------
+# RabbitMQ Queue Status (Debug)
+# ------------------------------
+
+@router.get("/queue/status")
+def get_queue_status(
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get RabbitMQ queue status for debugging stuck messages.
+
+    Returns:
+        {
+            "queue_name": "campaign_queue",
+            "message_count": 5,
+            "consumer_count": 4,
+            "status": "active" | "empty" | "error"
+        }
+    """
+    import pika
+
+    try:
+        connection = pika.BlockingConnection(
+            pika.ConnectionParameters(host="localhost", heartbeat=5)
+        )
+        channel = connection.channel()
+        queue = channel.queue_declare(queue="campaign_queue", durable=True, passive=True)
+
+        result = {
+            "queue_name": "campaign_queue",
+            "message_count": queue.method.message_count,
+            "consumer_count": queue.method.consumer_count,
+            "status": "active" if queue.method.consumer_count > 0 else "no_consumers"
+        }
+
+        connection.close()
+        return result
+
+    except Exception as e:
+        return {
+            "queue_name": "campaign_queue",
+            "message_count": None,
+            "consumer_count": None,
+            "status": "error",
+            "error": str(e)
+        }
+
+
+# ------------------------------
 # WhatsApp API Debug Logs
 # ------------------------------
 
