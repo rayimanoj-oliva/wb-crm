@@ -1,0 +1,19 @@
+[Unit]
+Description=Campaign Message Worker Service
+After=network.target rabbitmq-server.service postgresql.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/wb-crm
+Environment="PATH=/home/ubuntu/myenv/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/home/ubuntu/myenv/bin/python consumer.py 4
+Restart=always
+RestartSec=5
+
+# Logging
+StandardOutput=append:/home/ubuntu/wb-crm/worker.log
+StandardError=append:/home/ubuntu/wb-crm/worker_error.log
+
+[Install]
+WantedBy=multi-user.target

@@ -78,3 +78,21 @@ jobs:
           sleep 3
           pgrep -f gunicorn && echo "Gunicorn started successfully" || echo "Warning: Gunicorn may not have started"
           EOF
+
+      # 7. Setup and restart Campaign Worker service
+      - name: Restart Campaign Worker
+        run: |
+          ssh -i ~/.ssh/id_rsa ubuntu@ec2-13-234-38-173.ap-south-1.compute.amazonaws.com << 'EOF'
+          cd wb-crm
+
+          # Copy service file if changed
+          sudo cp campaign-worker.service /etc/systemd/system/campaign-worker.service
+          sudo systemctl daemon-reload
+
+          # Enable and restart worker service
+          sudo systemctl enable campaign-worker
+          sudo systemctl restart campaign-worker
+
+          sleep 2
+          sudo systemctl is-active campaign-worker && echo "Campaign worker started successfully" || echo "Warning: Campaign worker may not have started"
+          EOF

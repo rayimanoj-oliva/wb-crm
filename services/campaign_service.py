@@ -29,9 +29,6 @@ from uuid import UUID
 # Configure logging
 logger = logging.getLogger(__name__)
 
-# Worker manager for auto-starting/stopping workers
-from services.worker_manager import ensure_workers_running, get_worker_status
-
 
 # ------------------------------
 # RabbitMQ Connection Manager (Fixes Connection Leak)
@@ -496,14 +493,6 @@ def run_campaign(
         else:
             logger.info(f"Queued {queued_count} messages, {skipped_count} skipped, {invalid_phone_count} invalid")
 
-        # Auto-start workers if messages were queued
-        if queued_count > 0:
-            workers_started = ensure_workers_running(num_workers=4)
-            if workers_started:
-                logger.info("🤖 Workers auto-started to process messages")
-            else:
-                logger.info("🤖 Workers already running")
-
         return job
 
     # No recipients → normal CRM customers
@@ -588,14 +577,6 @@ def run_campaign(
     else:
         logger.info(f"Queued {queued_count} customer messages, {duplicate_count} duplicates, {invalid_phone_count} invalid")
 
-    # Auto-start workers if messages were queued
-    if queued_count > 0:
-        workers_started = ensure_workers_running(num_workers=4)
-        if workers_started:
-            logger.info("🤖 Workers auto-started to process messages")
-        else:
-            logger.info("🤖 Workers already running")
-
     return job
 
 
@@ -646,17 +627,16 @@ def _build_campaign_base_query(
 
 
 def _aggregations_subqueries(db: Session):
-    # Job status aggregation per campaign
+    # Campaign log aggregation per campaign (using CampaignLog instead of JobStatus)
     job_status_agg = (
         db.query(
-            Job.campaign_id.label("campaign_id"),
-            func.sum(case((JobStatus.status == "success", 1), else_=0)).label("success_count"),
-            func.sum(case((JobStatus.status == "failure", 1), else_=0)).label("failure_count"),
-            func.sum(case((JobStatus.status == "pending", 1), else_=0)).label("pending_count"),
-            func.max(func.coalesce(Job.last_triggered_time, Job.created_at)).label("last_triggered"),
+            CampaignLog.campaign_id.label("campaign_id"),
+            func.sum(case((CampaignLog.status == "success", 1), else_=0)).label("success_count"),
+            func.sum(case((CampaignLog.status == "failure", 1), else_=0)).label("failure_count"),
+            func.sum(case((CampaignLog.status.in_(["pending", "queued"]), 1), else_=0)).label("pending_count"),
+            func.max(CampaignLog.processed_at).label("last_processed"),
         )
-        .join(JobStatus, JobStatus.job_id == Job.id)
-        .group_by(Job.campaign_id)
+        .group_by(CampaignLog.campaign_id)
         .subquery()
     )
 
@@ -680,20 +660,27 @@ def _aggregations_subqueries(db: Session):
         .subquery()
     )
 
-    # Latest job per campaign to fetch last_attempted_by aligned with last_triggered
+    # Latest job per campaign to fetch last_attempted_by and last_triggered_time
     last_time = func.coalesce(Job.last_triggered_time, Job.created_at).label("last_time")
     rn = func.row_number().over(partition_by=Job.campaign_id, order_by=desc(last_time)).label("rn")
     ranked = (
         db.query(
             Job.campaign_id.label("campaign_id"),
             Job.last_attempted_by.label("last_attempted_by"),
+            Job.last_triggered_time.label("last_triggered_time"),
+            Job.created_at.label("job_created_at"),
             last_time,
             rn,
         )
     ).subquery()
 
     last_job_sq = (
-        db.query(ranked.c.campaign_id, ranked.c.last_attempted_by)
+        db.query(
+            ranked.c.campaign_id,
+            ranked.c.last_attempted_by,
+            ranked.c.last_triggered_time,
+            ranked.c.job_created_at
+        )
         .filter(ranked.c.rn == 1)
         .subquery()
     )
@@ -737,7 +724,7 @@ def get_campaign_reports(
             job_agg.c.success_count,
             job_agg.c.failure_count,
             job_agg.c.pending_count,
-            job_agg.c.last_triggered,
+            job_agg.c.last_processed,
             cust_sq.c.customers_count,
             recip_sq.c.recipients_count,
             Cost.price,
@@ -745,11 +732,15 @@ def get_campaign_reports(
             User.last_name,
             User.username,
             last_job_sq.c.last_attempted_by,
+            last_job_sq.c.last_triggered_time,
+            last_job_sq.c.job_created_at,
         )
     )
 
     rows = []
-    for campaign, success_count, failure_count, pending_count, last_triggered, customers_count, recipients_count, price, ufn, uln, uname, last_attempted_by in q.all():
+    for campaign, success_count, failure_count, pending_count, last_processed, customers_count, recipients_count, price, ufn, uln, uname, last_attempted_by, last_triggered_time, job_created_at in q.all():
+        # Use last_processed (from CampaignLog) or fall back to job's last_triggered_time or job creation time
+        last_triggered = last_processed or last_triggered_time or job_created_at
         success_count = int(success_count or 0)
         failure_count = int(failure_count or 0)
         pending_count = int(pending_count or 0)
