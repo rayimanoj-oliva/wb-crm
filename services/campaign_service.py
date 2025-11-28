@@ -300,7 +300,7 @@ def publish_batch_to_queue(
     queue_name: str = "campaign_queue",
     chunk_size: int = 1000,
     log_progress: bool = True
-) -> Tuple[int, int]:
+) -> Tuple[int, int, List[dict]]:
     """
     Publish multiple messages to RabbitMQ queue efficiently with chunked processing.
 
@@ -308,11 +308,13 @@ def publish_batch_to_queue(
     - Processes in chunks to prevent memory issues
     - Logs progress for monitoring
     - Reconnects on failure
+    - Returns failed messages for status update
 
-    Returns (success_count, failure_count)
+    Returns (success_count, failure_count, failed_messages)
     """
     success_count = 0
     failure_count = 0
+    failed_messages = []
     total_messages = len(messages)
 
     if log_progress and total_messages > 1000:
@@ -337,8 +339,9 @@ def publish_batch_to_queue(
                     )
                     chunk_success += 1
                 except Exception as e:
-                    logger.error(f"Failed to publish message: {e}")
+                    logger.error(f"Failed to publish message to {message.get('target_id')}: {e}")
                     chunk_failure += 1
+                    failed_messages.append(message)
                     # Try to reconnect on channel errors
                     try:
                         channel = rabbitmq_manager.get_channel(queue_name)
@@ -357,11 +360,12 @@ def publish_batch_to_queue(
         if log_progress and total_messages > 1000:
             logger.info(f"✅ Batch publish complete: {success_count:,} queued, {failure_count} failed")
 
-        return success_count, failure_count
+        return success_count, failure_count, failed_messages
 
     except Exception as e:
         logger.error(f"Failed to get RabbitMQ channel for batch publish: {e}")
-        return success_count, failure_count + (total_messages - success_count - failure_count)
+        # Mark all remaining messages as failed
+        return success_count, failure_count + (total_messages - success_count - failure_count), messages[success_count:]
 
 
 def run_campaign(
@@ -480,7 +484,23 @@ def run_campaign(
 
         # Now publish messages - logs already exist in DB for worker to update
         if messages_to_queue:
-            success, failure = publish_batch_to_queue([m[0] for m in messages_to_queue])
+            success, failure, failed_msgs = publish_batch_to_queue([m[0] for m in messages_to_queue])
+
+            # Update campaign_logs for failed publishes
+            if failed_msgs:
+                failed_target_ids = [msg.get("target_id") for msg in failed_msgs]
+                db.query(CampaignLog).filter(
+                    CampaignLog.campaign_id == campaign.id,
+                    CampaignLog.job_id == job.id,
+                    cast(CampaignLog.target_id, String).in_(failed_target_ids)
+                ).update({
+                    CampaignLog.status: "failure",
+                    CampaignLog.error_code: "PUBLISH_FAILED",
+                    CampaignLog.error_message: "Failed to publish message to queue",
+                    CampaignLog.processed_at: datetime.utcnow()
+                }, synchronize_session=False)
+                db.commit()
+                logger.warning(f"⚠️ {len(failed_msgs)} messages failed to publish to queue")
 
         # Log summary for large campaigns
         elapsed = time_module.time() - start_time
@@ -567,7 +587,23 @@ def run_campaign(
 
     # Now publish messages - logs already exist in DB for worker to update
     if messages_to_queue:
-        success, failure = publish_batch_to_queue(messages_to_queue)
+        success, failure, failed_msgs = publish_batch_to_queue(messages_to_queue)
+
+        # Update campaign_logs for failed publishes
+        if failed_msgs:
+            failed_target_ids = [msg.get("target_id") for msg in failed_msgs]
+            db.query(CampaignLog).filter(
+                CampaignLog.campaign_id == campaign.id,
+                CampaignLog.job_id == job.id,
+                cast(CampaignLog.target_id, String).in_(failed_target_ids)
+            ).update({
+                CampaignLog.status: "failure",
+                CampaignLog.error_code: "PUBLISH_FAILED",
+                CampaignLog.error_message: "Failed to publish message to queue",
+                CampaignLog.processed_at: datetime.utcnow()
+            }, synchronize_session=False)
+            db.commit()
+            logger.warning(f"⚠️ {len(failed_msgs)} messages failed to publish to queue")
 
     # Log summary
     elapsed = time_module.time() - start_time
