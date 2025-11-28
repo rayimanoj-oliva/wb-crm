@@ -9,6 +9,20 @@ from datetime import datetime
 
 # Create a new message
 def create_message(db: Session, message_data: MessageCreate) -> Message:
+    customer = db.query(Customer).filter(Customer.id == message_data.customer_id).first()
+    sender_type = message_data.sender_type
+    if not sender_type and customer:
+        customer_wa = (customer.wa_id or "").strip()
+        from_wa = (message_data.from_wa_id or "").strip()
+        to_wa = (message_data.to_wa_id or "").strip()
+        if customer_wa:
+            if from_wa == customer_wa:
+                sender_type = "customer"
+            elif to_wa == customer_wa:
+                sender_type = "agent"
+    if not sender_type:
+        sender_type = "unknown"
+
     new_message = Message(
         message_id=message_data.message_id,
         from_wa_id=message_data.from_wa_id,
@@ -21,8 +35,11 @@ def create_message(db: Session, message_data: MessageCreate) -> Message:
         caption=message_data.caption,
         filename=message_data.filename,
         mime_type=message_data.mime_type,
+        latitude=message_data.latitude,
+        longitude=message_data.longitude,
+        agent_id=message_data.agent_id,
+        sender_type=sender_type,
     )
-    customer = db.query(Customer).filter(Customer.id == message_data.customer_id).first()
     if customer:
         customer.last_message_at = new_message.timestamp
 
@@ -77,6 +94,14 @@ def update_message(db: Session, message_id: int, updated_data: MessageCreate) ->
         message.body = updated_data.body
         message.timestamp = updated_data.timestamp
         message.customer_id = updated_data.customer_id
+        message.media_id = updated_data.media_id
+        message.caption = updated_data.caption
+        message.filename = updated_data.filename
+        message.mime_type = updated_data.mime_type
+        message.latitude = updated_data.latitude
+        message.longitude = updated_data.longitude
+        message.agent_id = updated_data.agent_id
+        message.sender_type = updated_data.sender_type or message.sender_type
         db.commit()
         db.refresh(message)
     return message

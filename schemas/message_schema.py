@@ -12,6 +12,14 @@ class MessageCreate(BaseModel):
     timestamp: datetime
     customer_id: UUID
 
+    # Sender metadata
+    agent_id: Optional[str] = None
+    sender_type: Optional[str] = None
+
+    # Optional location fields
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+
     # Optional media fields
     media_id: Optional[str] = None
     caption: Optional[str] = None
@@ -35,6 +43,9 @@ class MessageOut(BaseModel):
     caption: Optional[str] = None
     filename: Optional[str] = None
     mime_type: Optional[str] = None
+    agent_id: Optional[str] = None
+    sender_type: Optional[str] = None
+    agent_name: Optional[str] = None
 
     class Config:
         from_attributes = True

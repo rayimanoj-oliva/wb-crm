@@ -2,10 +2,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import List
 from uuid import UUID
+import uuid
 from schemas.message_schema import MessageCreate, MessageOut
 from services import message_service
 from database.db import get_db
 from services.message_service import get_messages, get_customer_wa_ids_by_business_number, get_customer_wa_ids_by_date, get_customer_wa_ids_pending_agent_reply
+from models.models import User
 
 router = APIRouter(
     tags=["Messages"]
@@ -69,6 +71,25 @@ def get_chat(
             status_code=404,
             detail="No messages found"
         )
+
+    agent_ids = {msg.agent_id for msg in messages if getattr(msg, "agent_id", None)}
+    if agent_ids:
+        parsed_ids = []
+        for agent_id in agent_ids:
+            try:
+                parsed_ids.append(uuid.UUID(str(agent_id)))
+            except (ValueError, TypeError):
+                continue
+        if parsed_ids:
+            users = db.query(User).filter(User.id.in_(parsed_ids)).all()
+            agent_map = {
+                str(user.id): (f"{user.first_name} {user.last_name}".strip() or user.username or user.email)
+                for user in users
+            }
+            for message in messages:
+                agent_name = agent_map.get(getattr(message, "agent_id", None))
+                if agent_name:
+                    setattr(message, "agent_name", agent_name)
 
     return messages
 

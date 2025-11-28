@@ -14,6 +14,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 import os
 from controllers.web_socket import manager
+from auth import get_current_user
+from models.models import User
 from schemas.campaign_schema import CampaignOut
 from schemas.customer_schema import CustomerCreate
 from schemas.message_schema import MessageCreate
@@ -82,7 +84,8 @@ async def send_whatsapp_message(
     flow_cta: Optional[str] = Form("Provide Address"),
     flow_token: Optional[str] = Form(None),
     flow_payload_json: Optional[str] = Form(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     try:
         token_obj = whatsapp_service.get_latest_token(db)
@@ -313,6 +316,9 @@ async def send_whatsapp_message(
         customer_data = CustomerCreate(wa_id=wa_id, name="")
         customer = customer_service.get_or_create_customer(db, customer_data)
 
+        agent_identifier = str(current_user.id)
+        agent_display_name = f"{current_user.first_name} {current_user.last_name}".strip() or current_user.username or current_user.email
+
         message_data = MessageCreate(
             message_id=message_id,
             from_wa_id=from_wa_id,
@@ -326,7 +332,9 @@ async def send_whatsapp_message(
             filename=file.filename if file else None,
             latitude=latitude,
             longitude=longitude,
-            mime_type=mime_type
+            mime_type=mime_type,
+            agent_id=agent_identifier,
+            sender_type="agent",
         )
         message = message_service.create_message(db, message_data)
 
@@ -339,7 +347,10 @@ async def send_whatsapp_message(
             "media_id": message.media_id,
             "caption": message.caption,
             "filename": message.filename,
-            "mime_type": message.mime_type
+            "mime_type": message.mime_type,
+            "agent_id": agent_identifier,
+            "agent_name": agent_display_name,
+            "sender_type": "agent",
         })
 
         return {
