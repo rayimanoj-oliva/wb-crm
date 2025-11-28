@@ -48,6 +48,19 @@ def get_urls_by_peer(peer: str):
         "phone_id": phone_id
     }
     
+def _coerce_float(value: Optional[str]) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    stripped = value.strip()
+    if stripped == "":
+        return None
+    try:
+        return float(stripped)
+    except (ValueError, TypeError):
+        return None
+
 @router.post("/token", status_code=201)
 def add_token(token_data: WhatsAppTokenCreate, db: Session = Depends(get_db)):
     try:
@@ -127,6 +140,9 @@ async def send_whatsapp_message(
             "type": type
         }
 
+        coerced_latitude = _coerce_float(latitude)
+        coerced_longitude = _coerce_float(longitude)
+
         # ---------------- Text Message ----------------
         if type == "text":
             if not body:
@@ -180,9 +196,9 @@ async def send_whatsapp_message(
 
         # ---------------- Location Message ----------------
         elif type == "location":
-            if not latitude or not longitude:
-                raise HTTPException(status_code=400, detail="Latitude and Longitude are required")
-            payload["location"] = {"latitude": latitude, "longitude": longitude}
+            if coerced_latitude is None or coerced_longitude is None:
+                raise HTTPException(status_code=400, detail="Latitude and Longitude must be numeric for location messages")
+            payload["location"] = {"latitude": str(coerced_latitude), "longitude": str(coerced_longitude)}
             if location_name:
                 payload["location"]["name"] = location_name
             if location_address:
@@ -330,8 +346,8 @@ async def send_whatsapp_message(
             media_id=effective_media_id,
             caption=body if type in ["image", "document", "video"] else None,
             filename=file.filename if file else None,
-            latitude=latitude,
-            longitude=longitude,
+            latitude=coerced_latitude,
+            longitude=coerced_longitude,
             mime_type=mime_type,
             agent_id=agent_identifier,
             sender_type="agent",
