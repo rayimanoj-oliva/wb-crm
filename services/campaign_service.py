@@ -295,35 +295,73 @@ def publish_to_queue(message: dict, queue_name: str = "campaign_queue"):
         raise
 
 
-def publish_batch_to_queue(messages: List[dict], queue_name: str = "campaign_queue") -> Tuple[int, int]:
+def publish_batch_to_queue(
+    messages: List[dict],
+    queue_name: str = "campaign_queue",
+    chunk_size: int = 1000,
+    log_progress: bool = True
+) -> Tuple[int, int]:
     """
-    Publish multiple messages to RabbitMQ queue efficiently.
+    Publish multiple messages to RabbitMQ queue efficiently with chunked processing.
+
+    Optimized for high volume (50,000+ messages):
+    - Processes in chunks to prevent memory issues
+    - Logs progress for monitoring
+    - Reconnects on failure
+
     Returns (success_count, failure_count)
     """
     success_count = 0
     failure_count = 0
+    total_messages = len(messages)
+
+    if log_progress and total_messages > 1000:
+        logger.info(f"📤 Starting batch publish of {total_messages:,} messages in chunks of {chunk_size}")
 
     try:
         channel = rabbitmq_manager.get_channel(queue_name)
+        properties = pika.BasicProperties(delivery_mode=2)
 
-        for message in messages:
-            try:
-                channel.basic_publish(
-                    exchange='',
-                    routing_key=queue_name,
-                    body=json.dumps(message, cls=EnhancedJSONEncoder),
-                    properties=pika.BasicProperties(delivery_mode=2)
-                )
-                success_count += 1
-            except Exception as e:
-                logger.error(f"Failed to publish individual message: {e}")
-                failure_count += 1
+        for i in range(0, total_messages, chunk_size):
+            chunk = messages[i:i + chunk_size]
+            chunk_success = 0
+            chunk_failure = 0
+
+            for message in chunk:
+                try:
+                    channel.basic_publish(
+                        exchange='',
+                        routing_key=queue_name,
+                        body=json.dumps(message, cls=EnhancedJSONEncoder),
+                        properties=properties
+                    )
+                    chunk_success += 1
+                except Exception as e:
+                    logger.error(f"Failed to publish message: {e}")
+                    chunk_failure += 1
+                    # Try to reconnect on channel errors
+                    try:
+                        channel = rabbitmq_manager.get_channel(queue_name)
+                    except:
+                        pass
+
+            success_count += chunk_success
+            failure_count += chunk_failure
+
+            # Log progress for large batches
+            if log_progress and total_messages > 1000:
+                progress = min(i + chunk_size, total_messages)
+                percent = (progress / total_messages) * 100
+                logger.info(f"📤 Progress: {progress:,}/{total_messages:,} ({percent:.1f}%) - Success: {success_count:,}, Failed: {failure_count}")
+
+        if log_progress and total_messages > 1000:
+            logger.info(f"✅ Batch publish complete: {success_count:,} queued, {failure_count} failed")
 
         return success_count, failure_count
 
     except Exception as e:
         logger.error(f"Failed to get RabbitMQ channel for batch publish: {e}")
-        return 0, len(messages)
+        return success_count, failure_count + (total_messages - success_count - failure_count)
 
 
 def run_campaign(
@@ -333,26 +371,39 @@ def run_campaign(
     *,
     batch_size: int = 0,
     batch_delay: int = 0,
+    log_batch_size: int = 500,  # Commit logs in batches for large campaigns
 ):
     """
     Run a campaign by queuing messages to RabbitMQ.
-    FIXED:
+
+    OPTIMIZED for high volume (50,000+ messages):
     - Uses single connection for all messages (no connection leak)
     - Adds deduplication check
-    - Creates CampaignLog entries for tracking
+    - Creates CampaignLog entries in batches for performance
     - Validates phone numbers before queuing
     - Supports batch_size and batch_delay for throttling
+    - Progress logging for large campaigns
     """
     from models.models import CampaignRecipient, CampaignLog
+    import time as time_module
+
+    start_time = time_module.time()
 
     recipients = db.query(CampaignRecipient).filter_by(campaign_id=campaign.id).all()
     messages_to_queue = []
     logs_to_create = []
     skipped_count = 0
     invalid_phone_count = 0
+    duplicate_count = 0
 
     if recipients:
-        logger.info(f"Campaign {campaign.id} has {len(recipients)} recipients - preparing to queue")
+        total_recipients = len(recipients)
+        is_large_campaign = total_recipients > 1000
+
+        if is_large_campaign:
+            logger.info(f"🚀 HIGH-VOLUME Campaign {campaign.id}: {total_recipients:,} recipients - starting queue process")
+        else:
+            logger.info(f"Campaign {campaign.id} has {total_recipients} recipients - preparing to queue")
 
         # Track processed phone numbers to prevent duplicates
         processed_phones = set()
@@ -383,7 +434,7 @@ def run_campaign(
 
             # Deduplication within this batch
             if r.phone_number in processed_phones:
-                skipped_count += 1
+                duplicate_count += 1
                 continue
             processed_phones.add(r.phone_number)
 
@@ -411,21 +462,47 @@ def run_campaign(
         # Batch publish all messages
         if messages_to_queue:
             success, failure = publish_batch_to_queue([m[0] for m in messages_to_queue])
-            logger.info(f"Queued {success} messages, {failure} failed, {skipped_count} skipped, {invalid_phone_count} invalid phones")
 
             # Update recipient statuses
             for task, recipient in messages_to_queue:
                 recipient.status = "QUEUED"
 
-        # Save logs
+        # Save logs in batches for large campaigns
         if logs_to_create:
-            db.add_all(logs_to_create)
+            if is_large_campaign:
+                # Batch commit logs for better performance
+                for i in range(0, len(logs_to_create), log_batch_size):
+                    batch = logs_to_create[i:i + log_batch_size]
+                    db.add_all(batch)
+                    db.flush()  # Flush but don't commit yet
+            else:
+                db.add_all(logs_to_create)
 
         db.commit()
+
+        # Log summary for large campaigns
+        elapsed = time_module.time() - start_time
+        queued_count = len(messages_to_queue)
+        if is_large_campaign:
+            logger.info(f"✅ Campaign {campaign.id} queuing complete in {elapsed:.1f}s:")
+            logger.info(f"   📤 Queued: {queued_count:,}")
+            logger.info(f"   ⏭️  Skipped (already sent): {skipped_count:,}")
+            logger.info(f"   🔄 Duplicates removed: {duplicate_count:,}")
+            logger.info(f"   ❌ Invalid phones: {invalid_phone_count}")
+            logger.info(f"   ⏱️  Estimated send time: ~{max(1, queued_count // (80 * 60))} minutes (Meta limit: 80 msg/sec)")
+        else:
+            logger.info(f"Queued {queued_count} messages, {skipped_count} skipped, {invalid_phone_count} invalid")
+
         return job
 
     # No recipients → normal CRM customers
-    logger.info(f"Campaign {campaign.id} has {len(campaign.customers)} customers - preparing to queue")
+    total_customers = len(campaign.customers)
+    is_large_campaign = total_customers > 1000
+
+    if is_large_campaign:
+        logger.info(f"🚀 HIGH-VOLUME Campaign {campaign.id}: {total_customers:,} customers - starting queue process")
+    else:
+        logger.info(f"Campaign {campaign.id} has {total_customers} customers - preparing to queue")
 
     processed_wa_ids = set()
 
@@ -448,7 +525,7 @@ def run_campaign(
 
         # Deduplication
         if c.wa_id in processed_wa_ids:
-            skipped_count += 1
+            duplicate_count += 1
             continue
         processed_wa_ids.add(c.wa_id)
 
@@ -475,13 +552,31 @@ def run_campaign(
     # Batch publish
     if messages_to_queue:
         success, failure = publish_batch_to_queue(messages_to_queue)
-        logger.info(f"Queued {success} customer messages, {failure} failed, {skipped_count} skipped")
 
-    # Save logs
+    # Save logs in batches for large campaigns
     if logs_to_create:
-        db.add_all(logs_to_create)
+        if is_large_campaign:
+            for i in range(0, len(logs_to_create), log_batch_size):
+                batch = logs_to_create[i:i + log_batch_size]
+                db.add_all(batch)
+                db.flush()
+        else:
+            db.add_all(logs_to_create)
 
     db.commit()
+
+    # Log summary
+    elapsed = time_module.time() - start_time
+    queued_count = len(messages_to_queue)
+    if is_large_campaign:
+        logger.info(f"✅ Campaign {campaign.id} queuing complete in {elapsed:.1f}s:")
+        logger.info(f"   📤 Queued: {queued_count:,}")
+        logger.info(f"   🔄 Duplicates removed: {duplicate_count:,}")
+        logger.info(f"   ❌ Invalid phones: {invalid_phone_count}")
+        logger.info(f"   ⏱️  Estimated send time: ~{max(1, queued_count // (80 * 60))} minutes (Meta limit: 80 msg/sec)")
+    else:
+        logger.info(f"Queued {queued_count} customer messages, {duplicate_count} duplicates, {invalid_phone_count} invalid")
+
     return job
 
 

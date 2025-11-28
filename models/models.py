@@ -9,7 +9,7 @@ import enum
 from datetime import datetime
 from sqlalchemy import (
     Column, Integer, String, Float, DateTime, ForeignKey, Text, Boolean, JSON, Table,
-    Enum as SAEnum, PrimaryKeyConstraint
+    Enum as SAEnum, PrimaryKeyConstraint, Index
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ENUM
 from sqlalchemy.orm import relationship
@@ -747,6 +747,11 @@ class CampaignLog(Base):
     # Retry tracking
     retry_count = Column(Integer, default=0)
     last_retry_at = Column(DateTime, nullable=True)
+
+    # Composite index for fast upsert lookups (job_id + target_id)
+    __table_args__ = (
+        Index('ix_campaign_logs_job_target', 'job_id', 'target_id'),
+    )
 
     # Relationships
     campaign = relationship("Campaign", backref="logs")

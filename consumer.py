@@ -37,10 +37,30 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Rate limiting configuration
-RATE_LIMIT_DELAY_MS = 100  # 100ms delay between messages (10 msg/sec)
+# =============================================================================
+# Rate Limiting Configuration - Meta WhatsApp API Limits
+# =============================================================================
+# Meta allows MAX 80 messages/second for WhatsApp Business API
+# Formula: RATE_LIMIT_DELAY_MS = 1000 / (80 / NUM_WORKERS)
+#
+# Examples:
+#   - 1 worker:  1000 / 80 = 12.5ms  -> use 15ms (safe margin)
+#   - 2 workers: 1000 / 40 = 25ms
+#   - 4 workers: 1000 / 20 = 50ms
+#   - 8 workers: 1000 / 10 = 100ms
+# =============================================================================
+META_MAX_MSG_PER_SECOND = 80
+DEFAULT_NUM_WORKERS = 4  # Adjust based on how many workers you run
+
+# Calculate delay per worker to stay within Meta's limit
+RATE_LIMIT_DELAY_MS = max(15, int(1000 / (META_MAX_MSG_PER_SECOND / DEFAULT_NUM_WORKERS)))  # 50ms for 4 workers
+
 MAX_RETRIES = 3
-RETRY_DELAY_SECONDS = 5
+RETRY_DELAY_SECONDS = 2  # Faster retries
+
+# Worker configuration for high volume
+PREFETCH_COUNT = 5  # Reduced to prevent overwhelming the API
+HTTP_TIMEOUT = 15  # Reduced timeout for faster failure detection
 
 # Token cache with expiry tracking
 _token_cache = {
@@ -48,6 +68,24 @@ _token_cache = {
     "fetched_at": None,
     "expires_in_seconds": 3600  # Assume 1 hour expiry
 }
+
+# HTTP Session with connection pooling for high throughput
+_http_session = None
+
+def get_http_session():
+    """Get or create HTTP session with connection pooling"""
+    global _http_session
+    if _http_session is None:
+        _http_session = requests.Session()
+        # Configure connection pooling for high volume
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=20,  # Number of connection pools
+            pool_maxsize=50,      # Connections per pool
+            max_retries=0         # We handle retries ourselves
+        )
+        _http_session.mount('https://', adapter)
+        _http_session.mount('http://', adapter)
+    return _http_session
 
 
 @contextmanager
@@ -117,7 +155,17 @@ def upsert_campaign_log(
     response_data: dict = None,
     processing_time_ms: int = None
 ):
-    """Create or update a log entry in campaign_logs table (upsert by job_id + target_id)"""
+    """
+    Create or update a log entry in campaign_logs table.
+
+    UPSERT LOGIC:
+    - Finds existing log by (job_id + target_id)
+    - If found: Updates status, error info, WhatsApp message ID, timestamps
+    - If not found: Creates new log entry
+
+    This ensures logs created during queuing (status='queued') are updated
+    when the message is actually sent (status='success' or 'failure').
+    """
     try:
         # Try to find existing log entry for this job + target
         existing_log = db.query(CampaignLog).filter(
@@ -125,8 +173,12 @@ def upsert_campaign_log(
             CampaignLog.target_id == target_id
         ).first()
 
+        now = datetime.utcnow()
+
         if existing_log:
-            # Update existing record
+            # Update existing record (queued -> success/failure)
+            logger.debug(f"Updating existing log {existing_log.id}: {existing_log.status} -> {status}")
+
             existing_log.status = status
             existing_log.error_code = error_code
             existing_log.error_message = error_message
@@ -135,13 +187,17 @@ def upsert_campaign_log(
             existing_log.request_payload = request_payload
             existing_log.response_data = response_data
             existing_log.processing_time_ms = processing_time_ms
-            existing_log.processed_at = datetime.utcnow() if status in ("success", "failure") else None
+            existing_log.processed_at = now if status in ("success", "failure") else None
+
+            # Track retries
             if existing_log.retry_count is None:
                 existing_log.retry_count = 0
             existing_log.retry_count += 1
-            existing_log.last_retry_at = datetime.utcnow()
+            existing_log.last_retry_at = now
+
+            logger.info(f"📝 Log UPDATED: {phone_number} -> {status.upper()} (wa_msg_id: {whatsapp_message_id or 'N/A'})")
         else:
-            # Create new record
+            # Create new record (should only happen if log wasn't created during queuing)
             log_entry = CampaignLog(
                 campaign_id=campaign_id,
                 job_id=job_id,
@@ -156,13 +212,16 @@ def upsert_campaign_log(
                 request_payload=request_payload,
                 response_data=response_data,
                 processing_time_ms=processing_time_ms,
-                processed_at=datetime.utcnow() if status in ("success", "failure") else None
+                processed_at=now if status in ("success", "failure") else None
             )
             db.add(log_entry)
+            logger.info(f"📝 Log CREATED: {phone_number} -> {status.upper()} (wa_msg_id: {whatsapp_message_id or 'N/A'})")
 
         db.commit()
+        logger.debug(f"Campaign log committed for {phone_number}")
+
     except Exception as e:
-        logger.error(f"Failed to upsert campaign log: {e}")
+        logger.error(f"❌ Failed to upsert campaign log for {phone_number}: {e}")
         db.rollback()
 
 
@@ -296,10 +355,13 @@ def callback(ch, method, properties, body):
             # Rate limiting delay
             time.sleep(RATE_LIMIT_DELAY_MS / 1000.0)
 
+            # Get HTTP session with connection pooling
+            session = get_http_session()
+
             # Send request with retry logic
             for attempt in range(MAX_RETRIES):
                 try:
-                    res = requests.post(WHATSAPP_API_URL, json=payload, headers=headers, timeout=30)
+                    res = session.post(WHATSAPP_API_URL, json=payload, headers=headers, timeout=HTTP_TIMEOUT)
                     http_status_code = res.status_code
 
                     if res.status_code == 200:
@@ -405,9 +467,9 @@ def callback(ch, method, properties, body):
     ch.basic_ack(delivery_tag=method.delivery_tag)
 
 
-def start_worker():
-    """Start the RabbitMQ consumer worker"""
-    logger.info("🚀 Campaign Worker started — listening for messages...")
+def start_worker(worker_id: int = 1):
+    """Start a single RabbitMQ consumer worker"""
+    logger.info(f"🚀 Campaign Worker {worker_id} started — prefetch={PREFETCH_COUNT}, rate_limit={RATE_LIMIT_DELAY_MS}ms")
 
     while True:
         try:
@@ -420,22 +482,66 @@ def start_worker():
             )
             channel = connection.channel()
             channel.queue_declare(queue="campaign_queue", durable=True)
-            channel.basic_qos(prefetch_count=1)
+            # Use configurable prefetch count for better throughput
+            channel.basic_qos(prefetch_count=PREFETCH_COUNT)
             channel.basic_consume(queue="campaign_queue", on_message_callback=callback)
 
-            logger.info("Connected to RabbitMQ, waiting for messages...")
+            logger.info(f"Worker {worker_id}: Connected to RabbitMQ, waiting for messages...")
             channel.start_consuming()
 
         except pika.exceptions.AMQPConnectionError as e:
-            logger.error(f"RabbitMQ connection error: {e}. Retrying in 5 seconds...")
+            logger.error(f"Worker {worker_id}: RabbitMQ connection error: {e}. Retrying in 5 seconds...")
             time.sleep(5)
         except KeyboardInterrupt:
-            logger.info("Worker stopped by user")
+            logger.info(f"Worker {worker_id}: Stopped by user")
             break
         except Exception as e:
-            logger.error(f"Unexpected error: {e}. Retrying in 5 seconds...")
+            logger.error(f"Worker {worker_id}: Unexpected error: {e}. Retrying in 5 seconds...")
             time.sleep(5)
+
+
+def start_multi_worker(num_workers: int = 4):
+    """
+    Start multiple consumer workers using threading for high throughput.
+
+    For 50,000 messages with 4 workers:
+    - Each worker: ~33 msg/sec
+    - Total: ~130 msg/sec
+    - Estimated time: ~6-7 minutes
+    """
+    import threading
+
+    logger.info(f"🚀 Starting {num_workers} campaign workers for high-volume processing...")
+    logger.info(f"   Config: prefetch={PREFETCH_COUNT}, rate_limit={RATE_LIMIT_DELAY_MS}ms/msg")
+    logger.info(f"   Estimated throughput: ~{num_workers * (1000 // RATE_LIMIT_DELAY_MS)} msg/sec")
+
+    threads = []
+    for i in range(num_workers):
+        t = threading.Thread(target=start_worker, args=(i + 1,), daemon=True)
+        t.start()
+        threads.append(t)
+        time.sleep(0.5)  # Stagger worker starts
+
+    # Wait for all threads (or until interrupted)
+    try:
+        for t in threads:
+            t.join()
+    except KeyboardInterrupt:
+        logger.info("Shutting down all workers...")
 
 
 if __name__ == "__main__":
-    start_worker()
+    import sys
+
+    # Parse command line arguments
+    num_workers = 1
+    if len(sys.argv) > 1:
+        try:
+            num_workers = int(sys.argv[1])
+        except ValueError:
+            pass
+
+    if num_workers > 1:
+        start_multi_worker(num_workers)
+    else:
+        start_worker()

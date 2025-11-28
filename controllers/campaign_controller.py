@@ -862,3 +862,89 @@ def get_campaign_stats(
     result["success_rate"] = round((result["success"] / result["total"] * 100), 2) if result["total"] > 0 else 0.0
 
     return result
+
+
+@router.get("/{campaign_id}/progress")
+def get_campaign_progress(
+    campaign_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get real-time progress for a campaign - optimized for monitoring high-volume campaigns.
+
+    Returns:
+        {
+            "campaign_id": "...",
+            "total_recipients": 50000,
+            "processed": 25000,
+            "pending": 25000,
+            "success": 24500,
+            "failure": 500,
+            "progress_percent": 50.0,
+            "success_rate": 98.0,
+            "estimated_remaining_minutes": 3,
+            "status": "in_progress"  # pending, in_progress, completed
+        }
+    """
+    # Verify campaign exists
+    campaign = campaign_service.get_campaign(db, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    # Get total recipients count
+    recipient_count = db.query(func.count(CampaignRecipient.id)).filter(
+        CampaignRecipient.campaign_id == campaign_id
+    ).scalar() or 0
+
+    # Get counts by status from CampaignLog (most accurate for progress)
+    log_stats = db.query(
+        CampaignLog.status,
+        func.count(CampaignLog.id).label("count")
+    ).filter(
+        CampaignLog.campaign_id == campaign_id
+    ).group_by(CampaignLog.status).all()
+
+    # Build stats
+    stats = {"queued": 0, "pending": 0, "success": 0, "failure": 0}
+    total_logged = 0
+    for status, count in log_stats:
+        total_logged += count
+        if status in stats:
+            stats[status] = count
+
+    # Calculate progress
+    processed = stats["success"] + stats["failure"]
+    pending = stats["queued"] + stats["pending"]
+    total = recipient_count if recipient_count > 0 else total_logged
+
+    progress_percent = round((processed / total * 100), 2) if total > 0 else 0.0
+    success_rate = round((stats["success"] / processed * 100), 2) if processed > 0 else 0.0
+
+    # Estimate remaining time based on Meta's 80 msg/sec limit
+    messages_per_minute = 80 * 60  # 4800/min (Meta WhatsApp API limit)
+    remaining_messages = pending
+    estimated_remaining_minutes = round(remaining_messages / messages_per_minute, 1) if remaining_messages > 0 else 0
+
+    # Determine status
+    if processed == 0 and pending == 0:
+        status = "not_started"
+    elif pending > 0:
+        status = "in_progress"
+    else:
+        status = "completed"
+
+    return {
+        "campaign_id": str(campaign_id),
+        "campaign_name": campaign.name,
+        "total_recipients": total,
+        "processed": processed,
+        "pending": pending,
+        "queued": stats["queued"],
+        "success": stats["success"],
+        "failure": stats["failure"],
+        "progress_percent": progress_percent,
+        "success_rate": success_rate,
+        "estimated_remaining_minutes": estimated_remaining_minutes,
+        "status": status
+    }
