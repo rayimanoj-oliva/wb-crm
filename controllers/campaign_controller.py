@@ -31,6 +31,7 @@ from services.campaign_service import (
     get_single_campaign_report,
     get_campaigns_running_in_date_range,
     export_single_campaign_report_excel,
+    normalize_phone_number,
 )
 import services.campaign_service as campaign_service
 from uuid import UUID
@@ -631,6 +632,9 @@ def run_saved_template_campaign(
         personalized_entries = []
         if req.personalized_recipients:
             for rec in req.personalized_recipients:
+                # Normalize phone number (add 91 country code if missing)
+                normalized_phone = normalize_phone_number(rec.wa_id)
+
                 params = {}
                 if rec.body_params is not None:
                     params["body_params"] = rec.body_params
@@ -648,7 +652,7 @@ def run_saved_template_campaign(
                 personalized_entries.append(
                     CampaignRecipient(
                         campaign_id=campaign.id,
-                        phone_number=rec.wa_id,
+                        phone_number=normalized_phone,  # Use normalized phone number
                         name=rec.name,
                         params=params if params else {},  # Always store as dict, never None
                     )

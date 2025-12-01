@@ -285,6 +285,27 @@ class EnhancedJSONEncoder(json.JSONEncoder):
         return super().default(o)
 
 
+def normalize_phone_number(phone: str) -> str:
+    """
+    Normalize phone number to include country code (91 for India).
+    - Removes +, spaces, dashes
+    - Adds 91 prefix if not present and number is 10 digits
+    - Returns cleaned phone number
+    """
+    if not phone:
+        return phone
+
+    # Remove common characters
+    cleaned = phone.replace("+", "").replace(" ", "").replace("-", "").strip()
+
+    # If it's a 10-digit number (Indian mobile without country code), add 91
+    if len(cleaned) == 10 and cleaned.isdigit():
+        cleaned = "91" + cleaned
+        logger.debug(f"Added country code 91 to phone: {phone} -> {cleaned}")
+
+    return cleaned
+
+
 def validate_phone_number(phone: str) -> bool:
     """Basic phone number validation"""
     if not phone:
@@ -453,6 +474,13 @@ def run_campaign(
                 skipped_count += 1
                 continue
 
+            # Normalize phone number (add 91 country code if missing)
+            original_phone = r.phone_number
+            normalized_phone = normalize_phone_number(r.phone_number)
+            if normalized_phone != original_phone:
+                r.phone_number = normalized_phone
+                logger.info(f"Normalized phone: {original_phone} -> {normalized_phone}")
+
             # Validate phone number
             if not validate_phone_number(r.phone_number):
                 invalid_phone_count += 1
@@ -471,7 +499,7 @@ def run_campaign(
                 ))
                 continue
 
-            # Deduplication within this batch
+            # Deduplication within this batch (use normalized phone)
             if r.phone_number in processed_phones:
                 duplicate_count += 1
                 continue
@@ -570,6 +598,13 @@ def run_campaign(
     processed_wa_ids = set()
 
     for c in campaign.customers:
+        # Normalize wa_id (add 91 country code if missing)
+        original_wa_id = c.wa_id
+        normalized_wa_id = normalize_phone_number(c.wa_id)
+        if normalized_wa_id != original_wa_id:
+            c.wa_id = normalized_wa_id
+            logger.info(f"Normalized wa_id: {original_wa_id} -> {normalized_wa_id}")
+
         # Validate wa_id
         if not validate_phone_number(c.wa_id):
             invalid_phone_count += 1
@@ -586,7 +621,7 @@ def run_campaign(
             ))
             continue
 
-        # Deduplication
+        # Deduplication (use normalized wa_id)
         if c.wa_id in processed_wa_ids:
             duplicate_count += 1
             continue
