@@ -13,6 +13,9 @@ import re
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 import os
+import tempfile
+import subprocess
+from pathlib import Path
 from controllers.web_socket import manager
 from auth import get_current_user
 from models.models import User
@@ -36,6 +39,74 @@ PHONE_ID_MAP = {
     "918297882978": "848542381673826",
     "917729992376": "367633743092037",
 }
+
+SUPPORTED_AUDIO_MIME_TYPES = {
+    "audio/aac",
+    "audio/mp4",
+    "audio/mpeg",
+    "audio/mp3",
+    "audio/amr",
+    "audio/ogg",
+    "audio/opus",
+}
+
+
+def _convert_audio_to_supported_format(file_bytes: bytes, filename: str, mime_type: str):
+    """
+    Converts unsupported audio (e.g. video/webm) to MP3 using ffmpeg so that Meta accepts it.
+    """
+    if mime_type in SUPPORTED_AUDIO_MIME_TYPES:
+        return file_bytes, filename, mime_type
+
+    src_suffix = Path(filename).suffix or (mimetypes.guess_extension(mime_type or "") or ".webm")
+    src_path = None
+    dst_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=src_suffix) as temp_src:
+            temp_src.write(file_bytes)
+            temp_src.flush()
+            src_path = temp_src.name
+
+        dst_path = f"{src_path}.mp3"
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            src_path,
+            "-vn",
+            "-acodec",
+            "libmp3lame",
+            dst_path,
+        ]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if result.returncode != 0:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Audio conversion failed: {result.stderr.decode('utf-8', 'ignore')}",
+            )
+
+        with open(dst_path, "rb") as converted_file:
+            converted_bytes = converted_file.read()
+
+        safe_name = Path(filename).stem or "audio"
+        new_filename = f"{safe_name}.mp3"
+        return converted_bytes, new_filename, "audio/mpeg"
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=500,
+            detail="Audio conversion requires ffmpeg to be installed on the server.",
+        )
+    finally:
+        try:
+            if os.path.exists(src_path):
+                os.remove(src_path)
+        except Exception:
+            pass
+        try:
+            if dst_path and os.path.exists(dst_path):
+                os.remove(dst_path)
+        except Exception:
+            pass
 
 def get_urls_by_peer(peer: str):
     phone_id = PHONE_ID_MAP.get(peer)
@@ -114,16 +185,25 @@ async def send_whatsapp_message(
         caption = None
         filename = None
         mime_type = None
+        uploaded_filename = None
         # Always define; used later when saving message even for non-template types
         effective_media_id = None
 
         # ---------------- Upload media if file is provided ----------------
         if file:
-            mime_type = mimetypes.guess_type(file.filename)[0]
+            uploaded_filename = file.filename or "upload"
+            mime_type = file.content_type or mimetypes.guess_type(uploaded_filename)[0]
             if not mime_type:
                 raise HTTPException(status_code=400, detail="Invalid file type")
+            file_bytes = await file.read()
+
+            if type == "audio":
+                file_bytes, uploaded_filename, mime_type = _convert_audio_to_supported_format(
+                    file_bytes, uploaded_filename, mime_type
+                )
+
             files = {
-                "file": (file.filename, await file.read(), mime_type),
+                "file": (uploaded_filename, file_bytes, mime_type),
                 "messaging_product": (None, "whatsapp")
             }
             upload_res = requests.post(MEDIA_URL, headers=headers, files=files)
@@ -159,7 +239,8 @@ async def send_whatsapp_message(
         elif type == "document":
             if not media_id:
                 raise HTTPException(status_code=400, detail="Document upload failed")
-            payload["document"] = {"id": media_id, "caption": body or "", "filename": file.filename}
+            doc_name = uploaded_filename or (file.filename if file else None)
+            payload["document"] = {"id": media_id, "caption": body or "", "filename": doc_name}
 
         # ---------------- Video Message ----------------
         elif type == "video":
@@ -352,7 +433,7 @@ async def send_whatsapp_message(
             customer_id=customer.id,
             media_id=effective_media_id,
             caption=body if type in ["image", "document", "video"] else None,
-            filename=file.filename if file else None,
+            filename=uploaded_filename if file else None,
             latitude=coerced_latitude,
             longitude=coerced_longitude,
             mime_type=mime_type,
