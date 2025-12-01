@@ -96,4 +96,3 @@ class TemplateExcelColumnsResponse(BaseModel):
 class TemplateCampaignRunRequest(BaseModel):
     batch_size: int = 100
     batch_delay_seconds: int = 60
-

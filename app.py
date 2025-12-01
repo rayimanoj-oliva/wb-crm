@@ -67,6 +67,7 @@ from controllers.components.zoho_mapping_controller import router as zoho_mappin
 from controllers.followup_debug_controller import router as followup_debug_router
 from controllers.flow_logs_controller import router as flow_logs_router
 from controllers.analytics_controller import router as analytics_router
+from controllers.quick_reply_controller import router as quick_reply_router
 from database.db import SessionLocal, engine, get_db
 from models import models
 from schemas.token_schema import Token
@@ -137,6 +138,7 @@ app.include_router(zoho_mapping_router, prefix="/zoho-mappings")
 app.include_router(followup_debug_router)  # Debug endpoints for follow-ups
 app.include_router(flow_logs_router)  # Flow logs API
 app.include_router(analytics_router)  # Analytics API
+app.include_router(quick_reply_router)
 
 
 

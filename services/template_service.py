@@ -1,5 +1,6 @@
 from fastapi import HTTPException
 
+import copy
 import requests
 from fastapi.params import Depends
 from sqlalchemy.orm import Session
@@ -93,6 +94,17 @@ def upsert_template_record(db: Session, *, template_name: str, template_body: Di
     db.refresh(rec)
     return rec
 
+def _strip_preview_fields(payload: Dict[str, Any]) -> Dict[str, Any]:
+    cleaned = copy.deepcopy(payload)
+    for component in cleaned.get("components", []):
+        example = component.get("example")
+        if isinstance(example, dict) and "preview_media_url" in example:
+            example.pop("preview_media_url", None)
+            if not example:
+                component.pop("example", None)
+    return cleaned
+
+
 def send_template_to_facebook(payload: Dict[str, Any], db: Session) -> Dict[str, Any]:
     token_entry = get_latest_token(db)
     if not token_entry:
@@ -101,7 +113,8 @@ def send_template_to_facebook(payload: Dict[str, Any], db: Session) -> Dict[str,
     token = token_entry.token
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-    response = requests.post(TEMPLATE_API_URL, json=payload, headers=headers)
+    sanitized_payload = _strip_preview_fields(payload)
+    response = requests.post(TEMPLATE_API_URL, json=sanitized_payload, headers=headers)
     
     # Better error handling to capture Facebook's actual error message
     if response.status_code != 200:

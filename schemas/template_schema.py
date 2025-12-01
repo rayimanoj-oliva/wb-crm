@@ -60,6 +60,7 @@ class TemplateExample(BaseModel):
     header_handle: Optional[List[str]] = None  # For IMAGE headers
     header_text: Optional[List[str]] = None
     body_text: Optional[List[str]] = None
+    preview_media_url: Optional[str] = None
 
 
 

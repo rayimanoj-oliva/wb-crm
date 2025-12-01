@@ -60,7 +60,7 @@ def _coerce_float(value: Optional[str]) -> Optional[float]:
         return float(stripped)
     except (ValueError, TypeError):
         return None
-
+    
 @router.post("/token", status_code=201)
 def add_token(token_data: WhatsAppTokenCreate, db: Session = Depends(get_db)):
     try:
@@ -73,7 +73,7 @@ def add_token(token_data: WhatsAppTokenCreate, db: Session = Depends(get_db)):
 async def send_whatsapp_message(
     peer: str = Form(...),
     wa_id: str = Form(...),
-    type: Literal["text", "image", "document", "video", "interactive", "location", "template", "flow"] = Form(...),
+    type: Literal["text", "image", "document", "video", "audio", "interactive", "location", "template", "flow"] = Form(...),
     body: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
     latitude: Optional[str] = Form(None),
@@ -168,6 +168,13 @@ async def send_whatsapp_message(
             payload["video"] = {"id": media_id}
             if body:
                 payload["video"]["caption"] = body
+
+        # ---------------- Audio Message ----------------
+        elif type == "audio":
+            if not media_id:
+                raise HTTPException(status_code=400, detail="Audio upload failed")
+            payload["audio"] = {"id": media_id}
+            effective_media_id = media_id
 
         # ---------------- Interactive Message ----------------
         elif type == "interactive":

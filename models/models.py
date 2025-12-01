@@ -174,6 +174,20 @@ class Message(Base):
     customer = relationship("Customer", backref="messages")
 
 
+class QuickReply(Base):
+    __tablename__ = "quick_replies"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    title = Column(String(255), nullable=False)
+    content = Column(Text, nullable=False)
+    category = Column(String(120), nullable=True)
+    created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    creator = relationship("User")
+
+
 class ReferrerTracking(Base):
     __tablename__ = "referrer_tracking"
     

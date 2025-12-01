@@ -1380,6 +1380,42 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             })
 
             return {"status": "success", "message_id": message_id}
+        elif message_type == "audio":
+            audio = message["audio"]
+
+            media_id = audio.get("id")
+            mime_type = audio.get("mime_type", "audio/mpeg")
+            filename = audio.get("filename", "")
+
+            # Save message in DB
+            message_data = MessageCreate(
+                message_id=message_id,
+                from_wa_id=from_wa_id,
+                to_wa_id=to_wa_id,
+                type="audio",
+                body="[Audio]",
+                timestamp=timestamp,
+                customer_id=customer.id,
+                media_id=media_id,
+                filename=filename,
+                mime_type=mime_type,
+            )
+            new_msg = message_service.create_message(db, message_data)
+            db.commit()  # Explicitly commit the transaction
+
+            # Broadcast to WebSocket clients
+            await manager.broadcast({
+                "from": from_wa_id,
+                "to": to_wa_id,
+                "type": "audio",
+                "message_id": message_id,
+                "media_id": media_id,
+                "filename": filename,
+                "mime_type": mime_type,
+                "timestamp": timestamp.isoformat(),
+            })
+
+            return {"status": "success", "message_id": message_id}
         elif message_type == "button":
             # Template button reply (WhatsApp sets type = "button" for template quick replies)
             btn = message.get("button", {})
