@@ -1380,12 +1380,13 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             })
 
             return {"status": "success", "message_id": message_id}
-        elif message_type == "audio":
-            audio = message["audio"]
+        elif message_type == "audio" or (message.get("audio") and message_type in {"voice", None}):
+            audio_payload = message.get("audio", {})
 
-            media_id = audio.get("id")
-            mime_type = audio.get("mime_type", "audio/mpeg")
-            filename = audio.get("filename", "")
+            media_id = audio_payload.get("id")
+            mime_type = audio_payload.get("mime_type") or "audio/mpeg"
+            filename = audio_payload.get("filename") or f"{media_id}.ogg" if media_id else None
+            voice_flag = audio_payload.get("voice")
 
             # Save message in DB
             message_data = MessageCreate(
@@ -1393,7 +1394,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 from_wa_id=from_wa_id,
                 to_wa_id=to_wa_id,
                 type="audio",
-                body="[Audio]",
+                body="[Audio]" if not voice_flag else "[Voice Note]",
                 timestamp=timestamp,
                 customer_id=customer.id,
                 media_id=media_id,
@@ -1413,6 +1414,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 "filename": filename,
                 "mime_type": mime_type,
                 "timestamp": timestamp.isoformat(),
+                "voice": bool(voice_flag),
             })
 
             return {"status": "success", "message_id": message_id}
