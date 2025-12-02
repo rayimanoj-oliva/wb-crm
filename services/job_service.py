@@ -47,19 +47,21 @@ def get_job(db: Session, job_id: UUID) -> Job:
 
 def get_jobs_by_campaign_id(db: Session, campaign_id: UUID) -> List[Dict[str, Any]]:
     """
-    Get jobs for a campaign, including statuses from both JobStatus (customers)
-    and CampaignRecipient (personalized recipients).
-
-    FIXED: Now correctly associates recipients with specific jobs using CampaignLog
-    instead of showing all recipients for every job.
+    Get jobs for a campaign with pre-calculated stats.
+    OPTIMIZED: Uses aggregation queries instead of loading all statuses.
+    Statuses are only loaded when needed (for expansion in UI).
     """
     from models.models import CampaignLog
+    from sqlalchemy import func, case
 
     jobs = db.query(Job).filter(Job.campaign_id == campaign_id).order_by(Job.created_at.desc()).all()
 
+    if not jobs:
+        return []
+
     # Check if campaign uses recipients
-    recipients = db.query(CampaignRecipient).filter_by(campaign_id=campaign_id).all()
-    uses_recipients = len(recipients) > 0
+    recipient_count = db.query(func.count(CampaignRecipient.id)).filter_by(campaign_id=campaign_id).scalar() or 0
+    uses_recipients = recipient_count > 0
 
     result = []
     for job in jobs:
@@ -70,67 +72,85 @@ def get_jobs_by_campaign_id(db: Session, campaign_id: UUID) -> List[Dict[str, An
             "last_attempted_by": job.last_attempted_by,
             "last_triggered_time": job.last_triggered_time,
             "statuses": [],
-            "stats": {
-                "total": 0,
-                "success": 0,
-                "failure": 0,
-                "pending": 0
-            }
+            "stats": {"total": 0, "success": 0, "failure": 0, "pending": 0}
         }
 
         if uses_recipients:
-            # FIXED: Get statuses from CampaignLog for this specific job
-            logs = db.query(CampaignLog).filter_by(
-                campaign_id=campaign_id,
-                job_id=job.id
-            ).all()
+            # Get stats from CampaignLog using aggregation (fast)
+            log_stats = db.query(
+                func.count(CampaignLog.id).label("total"),
+                func.sum(case((CampaignLog.status == "success", 1), else_=0)).label("success"),
+                func.sum(case((CampaignLog.status == "failure", 1), else_=0)).label("failure"),
+                func.sum(case((CampaignLog.status.in_(["pending", "queued"]), 1), else_=0)).label("pending")
+            ).filter(CampaignLog.campaign_id == campaign_id, CampaignLog.job_id == job.id).first()
 
-            if logs:
-                # Use logs to get accurate per-job status
+            if log_stats and log_stats.total > 0:
+                job_dict["stats"] = {
+                    "total": log_stats.total or 0,
+                    "success": log_stats.success or 0,
+                    "failure": log_stats.failure or 0,
+                    "pending": log_stats.pending or 0
+                }
+                # Load only first 100 statuses for display
+                logs = db.query(CampaignLog).filter_by(
+                    campaign_id=campaign_id, job_id=job.id
+                ).limit(100).all()
                 for log in logs:
-                    status_mapping = {
-                        "success": "success",
-                        "failure": "failure",
-                        "queued": "pending",
-                        "pending": "pending"
-                    }
-                    mapped_status = status_mapping.get(log.status, "pending")
+                    status_mapping = {"success": "success", "failure": "failure", "queued": "pending", "pending": "pending"}
                     job_dict["statuses"].append({
                         "target_id": log.target_id,
                         "phone_number": log.phone_number,
-                        "status": mapped_status,
+                        "status": status_mapping.get(log.status, "pending"),
                         "error_message": log.error_message
                     })
-                    job_dict["stats"]["total"] += 1
-                    job_dict["stats"][mapped_status] += 1
             else:
-                # Fallback: If no logs yet, show recipients with their current status
-                # This handles the case where campaign just started
-                for recipient in recipients:
-                    status_mapping = {
-                        "SENT": "success",
-                        "FAILED": "failure",
-                        "QUEUED": "pending",
-                        "PENDING": "pending"
+                # Fallback: Get stats from CampaignRecipient
+                rec_stats = db.query(
+                    func.count(CampaignRecipient.id).label("total"),
+                    func.sum(case((CampaignRecipient.status == "SENT", 1), else_=0)).label("success"),
+                    func.sum(case((CampaignRecipient.status == "FAILED", 1), else_=0)).label("failure"),
+                    func.sum(case((CampaignRecipient.status.in_(["PENDING", "QUEUED"]), 1), else_=0)).label("pending")
+                ).filter(CampaignRecipient.campaign_id == campaign_id).first()
+
+                if rec_stats:
+                    job_dict["stats"] = {
+                        "total": rec_stats.total or 0,
+                        "success": rec_stats.success or 0,
+                        "failure": rec_stats.failure or 0,
+                        "pending": rec_stats.pending or 0
                     }
-                    job_status = status_mapping.get(recipient.status, "pending")
+                # Load first 100 recipients for display
+                recipients = db.query(CampaignRecipient).filter_by(campaign_id=campaign_id).limit(100).all()
+                for r in recipients:
+                    status_mapping = {"SENT": "success", "FAILED": "failure", "QUEUED": "pending", "PENDING": "pending"}
                     job_dict["statuses"].append({
-                        "target_id": recipient.id,
-                        "phone_number": recipient.phone_number,
-                        "status": job_status
+                        "target_id": r.id,
+                        "phone_number": r.phone_number,
+                        "status": status_mapping.get(r.status, "pending")
                     })
-                    job_dict["stats"]["total"] += 1
-                    job_dict["stats"][job_status] += 1
         else:
-            # For normal campaigns, include JobStatus entries
-            for status in job.statuses:
+            # For normal campaigns using JobStatus
+            status_stats = db.query(
+                func.count(JobStatus.job_id).label("total"),
+                func.sum(case((JobStatus.status == "success", 1), else_=0)).label("success"),
+                func.sum(case((JobStatus.status == "failure", 1), else_=0)).label("failure"),
+                func.sum(case((JobStatus.status == "pending", 1), else_=0)).label("pending")
+            ).filter(JobStatus.job_id == job.id).first()
+
+            if status_stats:
+                job_dict["stats"] = {
+                    "total": status_stats.total or 0,
+                    "success": status_stats.success or 0,
+                    "failure": status_stats.failure or 0,
+                    "pending": status_stats.pending or 0
+                }
+            # Load first 100 statuses for display
+            for status in job.statuses[:100]:
                 status_str = status.status if isinstance(status.status, str) else status.status.value
                 job_dict["statuses"].append({
                     "customer_id": status.customer_id,
                     "status": status_str
                 })
-                job_dict["stats"]["total"] += 1
-                job_dict["stats"][status_str] += 1
 
         result.append(job_dict)
 
