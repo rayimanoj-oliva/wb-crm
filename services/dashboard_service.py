@@ -283,6 +283,57 @@ def get_campaign_performance_summary(db: Session):
     }
 
 
+def get_dashboard_summary(db: Session, campaign_limit: int = 10):
+    """
+    Unified dashboard API that returns all dashboard data in a single call.
+    This eliminates 7 separate API calls from the frontend.
+    """
+    # Get today metrics
+    today = date.today()
+    new_conversations = db.query(Message).filter(
+        Message.timestamp >= datetime.combine(today, datetime.min.time()),
+        Message.timestamp <= datetime.combine(today, datetime.max.time())
+    ).count()
+    new_customers = db.query(Customer).filter(
+        Customer.created_at >= datetime.combine(today, datetime.min.time()),
+        Customer.created_at <= datetime.combine(today, datetime.max.time())
+    ).count()
+
+    # Get total customers
+    total_customers = db.query(Customer).count()
+
+    # Get appointments booked today (reuse existing function)
+    appointments_today = get_appointments_booked_today(db=db)
+
+    # Get template status
+    template_status = get_template_status(db)
+
+    # Get recent failed messages
+    failed_messages = get_recent_failed_messages(db)
+
+    # Get campaign performance summary
+    campaign_summary = get_campaign_performance_summary(db)
+
+    # Get campaign list
+    campaign_list = get_campaign_performance_list(db, limit=campaign_limit)
+
+    return {
+        "today_metrics": {
+            "new_conversations": new_conversations,
+            "new_customers": new_customers
+        },
+        "total_customers": total_customers,
+        "appointments_today": {
+            "count": appointments_today,
+            "percentage": 0
+        },
+        "template_status": template_status,
+        "failed_messages": failed_messages,
+        "campaign_summary": campaign_summary,
+        "campaign_list": campaign_list
+    }
+
+
 def get_campaign_performance_list(db: Session, limit: int = 10):
     """
     Returns list of campaigns with their performance metrics.

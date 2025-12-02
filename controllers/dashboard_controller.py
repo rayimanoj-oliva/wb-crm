@@ -12,9 +12,27 @@ from services.dashboard_service import (
     get_template_status,
     get_recent_failed_messages,
     get_campaign_performance_summary,
-    get_campaign_performance_list
+    get_campaign_performance_list,
+    get_dashboard_summary
 )
 router = APIRouter(tags=["Dashboard"])
+
+
+@router.get("/summary")
+def dashboard_summary(campaign_limit: Optional[int] = 10, db: Session = Depends(get_db)):
+    """
+    Unified dashboard API that returns all dashboard data in a single call.
+    Replaces 7 separate API calls:
+    - /dashboard/today
+    - /dashboard/total-customers
+    - /dashboard/appointments-today
+    - /dashboard/template-status
+    - /dashboard/recent-failed-messages
+    - /dashboard/campaign-performance/summary
+    - /dashboard/campaign-performance/list
+    """
+    return get_dashboard_summary(db, campaign_limit=campaign_limit)
+
 
 @router.get("/today")
 def get_dashboard_today(db: Session = Depends(get_db)):
