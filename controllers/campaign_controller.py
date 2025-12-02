@@ -64,20 +64,44 @@ def list_campaigns(
     skip: int = Query(0, ge=0, description="Number of records to skip"),
     limit: int = Query(50, ge=1, le=200, description="Max records to return"),
     search: Optional[str] = Query(None, description="Search by campaign name or description"),
-    include_jobs: bool = Query(True, description="Include job details with statuses and stats"),
+    include_jobs: bool = Query(False, description="Include job details (deprecated, use /list for optimized response)"),
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
     """
     List campaigns with pagination and optional search.
 
-    Set include_jobs=true (default) to get full job details:
-    - jobs[].statuses: list of {target_id, phone_number, status, error_message}
-    - jobs[].stats: {total, success, failure, pending}
-
-    Set include_jobs=false for basic campaign list only.
+    NOTE: For better performance, use GET /campaign/list which returns optimized payload.
     """
     return campaign_service.get_all_campaigns(db, skip=skip, limit=limit, search=search, include_jobs=include_jobs)
+
+
+@router.get("/list")
+def list_campaigns_optimized(
+    skip: int = Query(0, ge=0, description="Number of records to skip"),
+    limit: int = Query(50, ge=1, le=200, description="Max records to return"),
+    search: Optional[str] = Query(None, description="Search by campaign name or description"),
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Optimized campaign list API - returns minimal payload with aggregated stats.
+
+    Returns for each campaign:
+    - Basic info: id, name, description, type, created_at, created_by
+    - Template name (extracted from content)
+    - Cost info: campaign_cost_type, unit_cost, total_cost
+    - Recipient counts: customers_count, recipients_count, total_recipients
+    - Stats: success_count, failure_count, pending_count, success_pct, failure_pct, pending_pct
+    - Last job info: last_triggered_time, last_attempted_by
+    - User names: created_by_name, updated_by_name, last_attempted_by_name
+
+    Does NOT return:
+    - Full content/components (heavy)
+    - Individual job statuses (use /campaign/{id}/logs for that)
+    - Customer/recipient lists (use /campaign/{id}/recipients)
+    """
+    return campaign_service.get_campaigns_list_optimized(db, skip=skip, limit=limit, search=search)
 
 @router.get("/{campaign_id}", response_model=CampaignOut)
 def get_campaign(campaign_id: UUID, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):

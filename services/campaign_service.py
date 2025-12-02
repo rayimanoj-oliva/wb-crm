@@ -122,8 +122,12 @@ rabbitmq_manager = RabbitMQConnectionManager()
 
 
 
-def get_all_campaigns(db: Session, skip: int = 0, limit: int = 50, search: str = None, include_jobs: bool = True):
-    """Get all campaigns with pagination, optional search, and job details."""
+def get_all_campaigns(db: Session, skip: int = 0, limit: int = 50, search: str = None, include_jobs: bool = False):
+    """Get all campaigns with pagination, optional search, and job details.
+
+    NOTE: include_jobs=True is deprecated for performance reasons.
+    Use get_campaigns_list_optimized() instead for the campaigns list page.
+    """
     query = db.query(Campaign)
 
     # Apply search filter if provided
@@ -141,9 +145,23 @@ def get_all_campaigns(db: Session, skip: int = 0, limit: int = 50, search: str =
     campaigns = query.order_by(Campaign.created_at.desc()).offset(skip).limit(limit).all()
 
     if not include_jobs:
-        return {"items": campaigns, "total": total, "skip": skip, "limit": limit}
+        # Return minimal campaign data without jobs
+        items = []
+        for c in campaigns:
+            items.append({
+                "id": str(c.id),
+                "name": c.name,
+                "description": c.description,
+                "type": c.type,
+                "campaign_cost_type": c.campaign_cost_type,
+                "created_at": c.created_at.isoformat() if c.created_at else None,
+                "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+                "created_by": str(c.created_by) if c.created_by else None,
+                "updated_by": str(c.updated_by) if c.updated_by else None,
+            })
+        return {"items": items, "total": total, "skip": skip, "limit": limit}
 
-    # Build detailed campaign data with jobs
+    # Build detailed campaign data with jobs (deprecated - heavy query)
     campaign_items = []
     campaign_ids = [c.id for c in campaigns]
 
@@ -219,6 +237,206 @@ def get_all_campaigns(db: Session, skip: int = 0, limit: int = 50, search: str =
         campaign_items.append(campaign_data)
 
     return {"items": campaign_items, "total": total, "skip": skip, "limit": limit}
+
+
+def get_campaigns_list_optimized(db: Session, skip: int = 0, limit: int = 50, search: str = None):
+    """
+    Optimized campaign list - single query with all needed data.
+
+    Returns lightweight payload with:
+    - Basic campaign info
+    - Aggregated stats (success/failure/pending counts)
+    - User names (no extra API calls needed)
+    - Cost info (no extra API calls needed)
+    - Last job info
+
+    This replaces multiple API calls from frontend:
+    - /campaign/
+    - /user/ (for usernames)
+    - /cost/ (for cost types)
+    - /job/campaign/{id}/job-stats (for stats)
+    """
+    from sqlalchemy.orm import aliased
+
+    # Base query
+    query = db.query(Campaign)
+
+    if search:
+        search_term = f"%{search}%"
+        query = query.filter(
+            (Campaign.name.ilike(search_term)) |
+            (Campaign.description.ilike(search_term))
+        )
+
+    total = query.count()
+    campaigns = query.order_by(Campaign.created_at.desc()).offset(skip).limit(limit).all()
+
+    if not campaigns:
+        return {"items": [], "total": 0, "skip": skip, "limit": limit}
+
+    campaign_ids = [c.id for c in campaigns]
+
+    # Get all user IDs we need
+    user_ids = set()
+    for c in campaigns:
+        if c.created_by:
+            user_ids.add(c.created_by)
+        if c.updated_by:
+            user_ids.add(c.updated_by)
+
+    # Fetch users in one query
+    users_map = {}
+    if user_ids:
+        users = db.query(User).filter(User.id.in_(user_ids)).all()
+        for u in users:
+            name = " ".join([p for p in [u.first_name, u.last_name] if p]).strip()
+            users_map[u.id] = name if name else u.username
+
+    # Get all cost types in one query
+    cost_types = set(c.campaign_cost_type for c in campaigns if c.campaign_cost_type)
+    costs_map = {}
+    if cost_types:
+        costs = db.query(Cost).filter(Cost.type.in_(cost_types)).all()
+        for ct in costs:
+            costs_map[ct.type] = ct.price
+
+    # Get customer counts per campaign (M2M relationship)
+    customers_count_sq = (
+        db.query(
+            campaign_customers.c.campaign_id,
+            func.count(campaign_customers.c.customer_id).label("count")
+        )
+        .filter(campaign_customers.c.campaign_id.in_(campaign_ids))
+        .group_by(campaign_customers.c.campaign_id)
+        .all()
+    )
+    customers_count_map = {row[0]: row[1] for row in customers_count_sq}
+
+    # Get recipients counts per campaign
+    recipients_count_sq = (
+        db.query(
+            CampaignRecipient.campaign_id,
+            func.count(CampaignRecipient.id).label("count")
+        )
+        .filter(CampaignRecipient.campaign_id.in_(campaign_ids))
+        .group_by(CampaignRecipient.campaign_id)
+        .all()
+    )
+    recipients_count_map = {row[0]: row[1] for row in recipients_count_sq}
+
+    # Get aggregated stats from CampaignLog per campaign
+    stats_sq = (
+        db.query(
+            CampaignLog.campaign_id,
+            func.sum(case((CampaignLog.status == "success", 1), else_=0)).label("success"),
+            func.sum(case((CampaignLog.status == "failure", 1), else_=0)).label("failure"),
+            func.sum(case(
+                (CampaignLog.status == "pending", 1),
+                (CampaignLog.status == "queued", 1),
+                else_=0
+            )).label("pending"),
+            func.count(CampaignLog.id).label("total")
+        )
+        .filter(CampaignLog.campaign_id.in_(campaign_ids))
+        .group_by(CampaignLog.campaign_id)
+        .all()
+    )
+    stats_map = {}
+    for row in stats_sq:
+        stats_map[row[0]] = {
+            "success": int(row[1] or 0),
+            "failure": int(row[2] or 0),
+            "pending": int(row[3] or 0),
+            "total": int(row[4] or 0)
+        }
+
+    # Get last job info per campaign
+    last_job_sq = (
+        db.query(
+            Job.campaign_id,
+            func.max(func.coalesce(Job.last_triggered_time, Job.created_at)).label("last_triggered"),
+        )
+        .filter(Job.campaign_id.in_(campaign_ids))
+        .group_by(Job.campaign_id)
+        .subquery()
+    )
+
+    # Get last job with user info
+    last_jobs = (
+        db.query(Job, User)
+        .outerjoin(User, User.id == Job.last_attempted_by)
+        .join(last_job_sq, and_(
+            Job.campaign_id == last_job_sq.c.campaign_id,
+            func.coalesce(Job.last_triggered_time, Job.created_at) == last_job_sq.c.last_triggered
+        ))
+        .all()
+    )
+    last_job_map = {}
+    for job, user in last_jobs:
+        user_name = None
+        if user:
+            name = " ".join([p for p in [user.first_name, user.last_name] if p]).strip()
+            user_name = name if name else user.username
+        last_job_map[job.campaign_id] = {
+            "last_triggered_time": job.last_triggered_time or job.created_at,
+            "last_attempted_by": str(job.last_attempted_by) if job.last_attempted_by else None,
+            "last_attempted_by_name": user_name
+        }
+
+    # Build response
+    items = []
+    for c in campaigns:
+        # Extract template name from content
+        template_name = None
+        if c.type == "template" and isinstance(c.content, dict):
+            template_name = c.content.get("name") or c.content.get("template_name")
+
+        # Get counts
+        customers_count = customers_count_map.get(c.id, 0)
+        recipients_count = recipients_count_map.get(c.id, 0)
+        total_recipients = customers_count + recipients_count
+
+        # Get cost
+        unit_cost = costs_map.get(c.campaign_cost_type, 0) if c.campaign_cost_type else 0
+        total_cost = float(unit_cost or 0) * total_recipients
+
+        # Get stats
+        stats = stats_map.get(c.id, {"success": 0, "failure": 0, "pending": 0, "total": 0})
+        denom = stats["total"] if stats["total"] > 0 else 1
+
+        # Get last job info
+        last_job = last_job_map.get(c.id, {})
+
+        items.append({
+            "id": str(c.id),
+            "name": c.name,
+            "description": c.description,
+            "type": c.type,
+            "template_name": template_name,
+            "campaign_cost_type": c.campaign_cost_type,
+            "unit_cost": float(unit_cost) if unit_cost else 0,
+            "total_cost": round(total_cost, 2),
+            "customers_count": customers_count,
+            "recipients_count": recipients_count,
+            "total_recipients": total_recipients,
+            "success_count": stats["success"],
+            "failure_count": stats["failure"],
+            "pending_count": stats["pending"],
+            "success_pct": round((stats["success"] / denom) * 100, 1) if denom > 0 else 0,
+            "failure_pct": round((stats["failure"] / denom) * 100, 1) if denom > 0 else 0,
+            "pending_pct": round((stats["pending"] / denom) * 100, 1) if denom > 0 else 0,
+            "created_at": c.created_at.isoformat() if c.created_at else None,
+            "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+            "created_by": str(c.created_by) if c.created_by else None,
+            "created_by_name": users_map.get(c.created_by),
+            "updated_by": str(c.updated_by) if c.updated_by else None,
+            "updated_by_name": users_map.get(c.updated_by),
+            "last_triggered_time": last_job.get("last_triggered_time").isoformat() if last_job.get("last_triggered_time") else None,
+            "last_attempted_by": last_job.get("last_attempted_by"),
+            "last_attempted_by_name": last_job.get("last_attempted_by_name"),
+        })
+
+    return {"items": items, "total": total, "skip": skip, "limit": limit}
 
 def get_campaign(db: Session, campaign_id: UUID):
     campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
