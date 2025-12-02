@@ -325,12 +325,13 @@ def get_dashboard_summary_optimized(db: Session, campaign_limit: int = 5):
     }
 
     # === BATCH 4: Campaign summary (simplified - just counts) ===
-    total_sent = db.query(func.count(JobStatus.id)).scalar() or 0
+    # JobStatus has composite key (job_id, customer_id), so count rows instead
+    total_sent = db.query(func.count()).select_from(JobStatus).scalar() or 0
     total_sent += db.query(func.count(CampaignRecipient.id)).filter(
         CampaignRecipient.status.in_(["SENT", "FAILED", "QUEUED"])
     ).scalar() or 0
 
-    total_delivered = db.query(func.count(JobStatus.id)).filter(
+    total_delivered = db.query(func.count()).select_from(JobStatus).filter(
         JobStatus.status == "success"
     ).scalar() or 0
     total_delivered += db.query(func.count(CampaignRecipient.id)).filter(
@@ -366,10 +367,10 @@ def get_dashboard_summary_optimized(db: Session, campaign_limit: int = 5):
         sent = 0
         delivered = 0
         if job_ids:
-            sent = db.query(func.count(JobStatus.id)).filter(
+            sent = db.query(func.count()).select_from(JobStatus).filter(
                 JobStatus.job_id.in_(job_ids)
             ).scalar() or 0
-            delivered = db.query(func.count(JobStatus.id)).filter(
+            delivered = db.query(func.count()).select_from(JobStatus).filter(
                 JobStatus.job_id.in_(job_ids),
                 JobStatus.status == "success"
             ).scalar() or 0
