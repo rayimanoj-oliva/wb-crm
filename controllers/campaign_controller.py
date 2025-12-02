@@ -32,9 +32,11 @@ from services.campaign_service import (
     get_campaigns_running_in_date_range,
     export_single_campaign_report_excel,
     normalize_phone_number,
+    export_campaign_delivery_logs_excel,
 )
 import services.campaign_service as campaign_service
 from uuid import UUID
+from datetime import datetime, date
 from services.template_excel_service import (
     build_excel_response,
     get_template_metadata,
@@ -45,6 +47,77 @@ router = APIRouter(tags=["Campaign"])
 # ------------------------------
 # Campaign Reports Endpoints (placed before dynamic /{campaign_id})
 # ------------------------------
+
+
+def _parse_report_date(value: Optional[str]) -> Optional[date]:
+    if not value:
+        return None
+    for fmt in ("%Y-%m-%d", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(value, fmt).date()
+        except ValueError:
+            continue
+    raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
+
+
+@router.get("/reports")
+def campaign_reports(
+    from_date: Optional[str] = Query(None, description="Filter campaigns created on/after this date (YYYY-MM-DD)"),
+    to_date: Optional[str] = Query(None, description="Filter campaigns created on/before this date (YYYY-MM-DD)"),
+    type_filter: Optional[str] = Query(None, alias="type", description="Filter by campaign type"),
+    campaign_id: Optional[str] = Query(None, description="Filter by specific campaign ID"),
+    search: Optional[str] = Query(None, description="Search by campaign name/description"),
+    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+    limit: int = Query(25, ge=1, le=1000, description="Page size"),
+    sort_by: Optional[str] = Query(None, description="Field to sort by"),
+    sort_dir: Optional[str] = Query(None, description="Sort direction (asc/desc)"),
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    fd = _parse_report_date(from_date)
+    td = _parse_report_date(to_date)
+    rows = get_campaign_reports(
+        db,
+        from_date=fd,
+        to_date=td,
+        type_filter=type_filter,
+        campaign_id=campaign_id,
+        search=search,
+        page=page,
+        limit=limit,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+    )
+    return rows
+
+
+@router.get("/reports/export")
+def campaign_reports_export(
+    from_date: Optional[str] = Query(None, description="Filter campaigns created on/after this date (YYYY-MM-DD)"),
+    to_date: Optional[str] = Query(None, description="Filter campaigns created on/before this date (YYYY-MM-DD)"),
+    type_filter: Optional[str] = Query(None, alias="type", description="Filter by campaign type"),
+    campaign_id: Optional[str] = Query(None, description="Filter by specific campaign ID"),
+    search: Optional[str] = Query(None, description="Search by campaign name/description"),
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    fd = _parse_report_date(from_date)
+    td = _parse_report_date(to_date)
+    content = export_campaign_reports_excel(
+        db,
+        from_date=fd,
+        to_date=td,
+        type_filter=type_filter,
+        campaign_id=campaign_id,
+        search=search,
+    )
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    filename = f"campaign_reports_{today}.xlsx"
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    }
+    return Response(content=content, media_type=headers["Content-Type"], headers=headers)
 
 
 
@@ -839,6 +912,32 @@ def get_campaign_logs(
     ]
 
     return {"items": items, "total": total, "skip": skip, "limit": limit}
+
+
+@router.get("/{campaign_id}/logs/export")
+def export_campaign_logs(
+    campaign_id: UUID,
+    status: Optional[str] = Query(None, description="Filter export by status"),
+    from_date: Optional[str] = Query(None, description="Include logs created on/after this date (YYYY-MM-DD)"),
+    to_date: Optional[str] = Query(None, description="Include logs created on/before this date (YYYY-MM-DD)"),
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    fd = _parse_report_date(from_date)
+    td = _parse_report_date(to_date)
+    content = export_campaign_delivery_logs_excel(
+        db,
+        str(campaign_id),
+        status=status,
+        from_date=fd,
+        to_date=td,
+    )
+    filename = f"campaign_{campaign_id}_delivery_logs.xlsx"
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    }
+    return Response(content=content, media_type=headers["Content-Type"], headers=headers)
 
 
 @router.get("/{campaign_id}/stats")

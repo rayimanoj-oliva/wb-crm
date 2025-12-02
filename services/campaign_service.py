@@ -5,7 +5,7 @@ from contextlib import contextmanager
 import pika
 import requests
 from fastapi import HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 from models.models import (
     Campaign,
     Customer,
@@ -1392,5 +1392,95 @@ def export_single_campaign_report_excel(db: Session, campaign_id: str) -> bytes:
     with pd.ExcelWriter(bio, engine="openpyxl") as writer:
         pd.DataFrame([summary]).to_excel(writer, index=False, sheet_name="Summary")
         pd.DataFrame(jobs).to_excel(writer, index=False, sheet_name="Jobs")
+    bio.seek(0)
+    return bio.read()
+
+
+def export_campaign_delivery_logs_excel(
+    db: Session,
+    campaign_id: str,
+    status: Optional[str] = None,
+    from_date: Optional[date] = None,
+    to_date: Optional[date] = None,
+) -> bytes:
+    recipient_alias = aliased(CampaignRecipient)
+    customer_alias = aliased(Customer)
+
+    query = (
+        db.query(
+            CampaignLog.id,
+            CampaignLog.target_type,
+            CampaignLog.target_id,
+            CampaignLog.phone_number,
+            CampaignLog.status,
+            CampaignLog.error_code,
+            CampaignLog.error_message,
+            CampaignLog.http_status_code,
+            CampaignLog.whatsapp_message_id,
+            CampaignLog.processing_time_ms,
+            CampaignLog.retry_count,
+            CampaignLog.created_at,
+            CampaignLog.processed_at,
+            CampaignLog.last_retry_at,
+            recipient_alias.name.label("recipient_name"),
+            customer_alias.name.label("customer_name"),
+        )
+        .outerjoin(
+            recipient_alias,
+            and_(
+                CampaignLog.target_type == "recipient",
+                CampaignLog.target_id == recipient_alias.id,
+            ),
+        )
+        .outerjoin(
+            customer_alias,
+            and_(
+                CampaignLog.target_type == "customer",
+                CampaignLog.target_id == customer_alias.id,
+            ),
+        )
+        .filter(CampaignLog.campaign_id == campaign_id)
+        .order_by(CampaignLog.created_at.asc())
+    )
+
+    if status:
+        query = query.filter(CampaignLog.status == status.lower())
+
+    if from_date:
+        start_dt = datetime.combine(from_date, datetime.min.time())
+        query = query.filter(CampaignLog.created_at >= start_dt)
+    if to_date:
+        end_dt = datetime.combine(to_date, datetime.max.time())
+        query = query.filter(CampaignLog.created_at <= end_dt)
+
+    logs = query.all()
+    if not logs:
+        raise HTTPException(status_code=404, detail="No campaign logs found for export")
+
+    records: List[Dict[str, Any]] = []
+    for row in logs:
+        name = row.recipient_name or row.customer_name
+        records.append({
+            "Campaign ID": str(campaign_id),
+            "Recipient Type": row.target_type,
+            "Recipient ID": str(row.target_id) if row.target_id else None,
+            "Recipient Name": name,
+            "Phone Number": row.phone_number,
+            "Status": row.status.upper(),
+            "Failure Reason": row.error_message if row.status == "failure" else None,
+            "Error Code": row.error_code,
+            "HTTP Status": row.http_status_code,
+            "WhatsApp Message ID": row.whatsapp_message_id,
+            "Processing Time (ms)": row.processing_time_ms,
+            "Retry Count": row.retry_count,
+            "Last Retry At": row.last_retry_at.isoformat() if row.last_retry_at else None,
+            "Logged At": row.created_at.isoformat() if row.created_at else None,
+            "Processed At": row.processed_at.isoformat() if row.processed_at else None,
+        })
+
+    df = pd.DataFrame(records)
+    bio = BytesIO()
+    with pd.ExcelWriter(bio, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Delivery Logs")
     bio.seek(0)
     return bio.read()
