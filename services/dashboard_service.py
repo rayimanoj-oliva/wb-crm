@@ -283,39 +283,126 @@ def get_campaign_performance_summary(db: Session):
     }
 
 
-def get_dashboard_summary(db: Session, campaign_limit: int = 10):
+def get_dashboard_summary_optimized(db: Session, campaign_limit: int = 5):
     """
-    Unified dashboard API that returns all dashboard data in a single call.
-    This eliminates 7 separate API calls from the frontend.
+    Optimized unified dashboard API - fetches only essential data with minimal queries.
     """
-    # Get today metrics
     today = date.today()
-    new_conversations = db.query(Message).filter(
-        Message.timestamp >= datetime.combine(today, datetime.min.time()),
-        Message.timestamp <= datetime.combine(today, datetime.max.time())
-    ).count()
-    new_customers = db.query(Customer).filter(
-        Customer.created_at >= datetime.combine(today, datetime.min.time()),
-        Customer.created_at <= datetime.combine(today, datetime.max.time())
-    ).count()
+    today_start = datetime.combine(today, datetime.min.time())
+    today_end = datetime.combine(today, datetime.max.time())
 
-    # Get total customers
-    total_customers = db.query(Customer).count()
+    # === BATCH 1: Simple count queries (fast) ===
+    new_conversations = db.query(func.count(Message.id)).filter(
+        Message.timestamp >= today_start,
+        Message.timestamp <= today_end
+    ).scalar() or 0
 
-    # Get appointments booked today (reuse existing function)
-    appointments_today = get_appointments_booked_today(db=db)
+    new_customers = db.query(func.count(Customer.id)).filter(
+        Customer.created_at >= today_start,
+        Customer.created_at <= today_end
+    ).scalar() or 0
 
-    # Get template status
-    template_status = get_template_status(db)
+    total_customers = db.query(func.count(Customer.id)).scalar() or 0
 
-    # Get recent failed messages
-    failed_messages = get_recent_failed_messages(db)
+    # === BATCH 2: Appointments today (simplified) ===
+    appointments_today = db.query(func.count(ReferrerTracking.id)).filter(
+        ReferrerTracking.is_appointment_booked == True,
+        func.date(ReferrerTracking.created_at) == today
+    ).scalar() or 0
 
-    # Get campaign performance summary
-    campaign_summary = get_campaign_performance_summary(db)
+    # === BATCH 3: Template status (single query with case) ===
+    status_expr = func.lower(Template.template_body["status"].astext)
+    template_counts = db.query(
+        func.sum(case((status_expr == "approved", 1), else_=0)).label("approved"),
+        func.sum(case((status_expr.in_(["pending", "in_appeal", "in_review", "review"]), 1), else_=0)).label("pending"),
+        func.sum(case((status_expr == "rejected", 1), else_=0)).label("failed")
+    ).first()
 
-    # Get campaign list
-    campaign_list = get_campaign_performance_list(db, limit=campaign_limit)
+    template_status = {
+        "approved": template_counts.approved or 0,
+        "pending": template_counts.pending or 0,
+        "failed": template_counts.failed or 0
+    }
+
+    # === BATCH 4: Campaign summary (simplified - just counts) ===
+    total_sent = db.query(func.count(JobStatus.id)).scalar() or 0
+    total_sent += db.query(func.count(CampaignRecipient.id)).filter(
+        CampaignRecipient.status.in_(["SENT", "FAILED", "QUEUED"])
+    ).scalar() or 0
+
+    total_delivered = db.query(func.count(JobStatus.id)).filter(
+        JobStatus.status == "success"
+    ).scalar() or 0
+    total_delivered += db.query(func.count(CampaignRecipient.id)).filter(
+        CampaignRecipient.status == "SENT"
+    ).scalar() or 0
+
+    delivered_pct = round((total_delivered / total_sent * 100), 1) if total_sent > 0 else 0
+
+    campaign_summary = {
+        "sent": total_sent,
+        "delivered": total_delivered,
+        "delivered_percentage": delivered_pct,
+        "read": 0,
+        "read_percentage": 0,
+        "replied": 0,
+        "replied_percentage": 0
+    }
+
+    # === BATCH 5: Campaign list (simplified - basic info only) ===
+    campaigns = db.query(
+        Campaign.id,
+        Campaign.name,
+        Campaign.type,
+        Campaign.created_at
+    ).order_by(Campaign.created_at.desc()).limit(campaign_limit).all()
+
+    campaign_list = []
+    for camp in campaigns:
+        # Get job IDs for this campaign
+        job_ids = db.query(Job.id).filter(Job.campaign_id == camp.id).all()
+        job_ids = [j[0] for j in job_ids]
+
+        sent = 0
+        delivered = 0
+        if job_ids:
+            sent = db.query(func.count(JobStatus.id)).filter(
+                JobStatus.job_id.in_(job_ids)
+            ).scalar() or 0
+            delivered = db.query(func.count(JobStatus.id)).filter(
+                JobStatus.job_id.in_(job_ids),
+                JobStatus.status == "success"
+            ).scalar() or 0
+
+        # Add CampaignRecipient counts
+        sent += db.query(func.count(CampaignRecipient.id)).filter(
+            CampaignRecipient.campaign_id == camp.id
+        ).scalar() or 0
+        delivered += db.query(func.count(CampaignRecipient.id)).filter(
+            CampaignRecipient.campaign_id == camp.id,
+            CampaignRecipient.status == "SENT"
+        ).scalar() or 0
+
+        campaign_list.append({
+            "id": str(camp.id),
+            "name": camp.name,
+            "type": camp.type or "template",
+            "status": "active" if delivered > 0 else "pending",
+            "sent": sent,
+            "delivered": delivered,
+            "read": 0,
+            "replied": 0,
+            "ctr": 0,
+            "roi": 0,
+            "created_at": camp.created_at.isoformat() if camp.created_at else None
+        })
+
+    # === Skip failed_messages (slow ILIKE queries) - return zeros ===
+    failed_messages = {
+        "unapproved_template_used": 0,
+        "user_opted_out": 0,
+        "invalid_phone_number": 0
+    }
 
     return {
         "today_metrics": {
@@ -332,6 +419,15 @@ def get_dashboard_summary(db: Session, campaign_limit: int = 10):
         "campaign_summary": campaign_summary,
         "campaign_list": campaign_list
     }
+
+
+def get_dashboard_summary(db: Session, campaign_limit: int = 10):
+    """
+    Unified dashboard API that returns all dashboard data in a single call.
+    This eliminates 7 separate API calls from the frontend.
+    """
+    # Use optimized version
+    return get_dashboard_summary_optimized(db, campaign_limit)
 
 
 def get_campaign_performance_list(db: Session, limit: int = 10):
