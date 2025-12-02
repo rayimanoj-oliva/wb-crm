@@ -13,6 +13,42 @@ from services.customer_service import update_customer_status
 
 router = APIRouter(tags=["Customers"])
 
+
+@router.get("/conversations")
+def list_conversations_optimized(
+    skip: int = Query(0, ge=0, description="Number of records to skip"),
+    limit: int = Query(50, ge=1, le=200, description="Max records to return"),
+    search: Optional[str] = Query(None, description="Search by name, phone, or email"),
+    business_number: Optional[str] = Query(None, description="Filter by business number"),
+    user_id: Optional[str] = Query(None, description="Filter by assigned user ID"),
+    unassigned_only: bool = Query(False, description="Show only unassigned customers"),
+    pending_reply_only: bool = Query(False, description="Show only customers pending agent reply"),
+    date_filter: Optional[str] = Query(None, description="Filter by message date (YYYY-MM-DD)"),
+    db: Session = Depends(get_db)
+):
+    """
+    Optimized unified conversation list API.
+
+    Returns customers with:
+    - Last message info (body, timestamp, business_number)
+    - Flow step data
+    - Pending reply status
+    - Unread counts
+
+    All in a single API call to replace multiple frontend calls.
+    """
+    return customer_service.get_conversations_optimized(
+        db,
+        skip=skip,
+        limit=limit,
+        search=search,
+        business_number=business_number,
+        user_id=user_id,
+        unassigned_only=unassigned_only,
+        pending_reply_only=pending_reply_only,
+        date_filter=date_filter
+    )
+
 @router.post("/", response_model=CustomerOut)
 def create_or_get_customer(data: CustomerCreate, db: Session = Depends(get_db)):
     return customer_service.get_or_create_customer(db, data)
