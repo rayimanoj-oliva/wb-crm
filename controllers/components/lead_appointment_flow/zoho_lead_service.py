@@ -768,6 +768,18 @@ async def create_lead_for_appointment(
             except Exception as e:
                 print(f"[LEAD APPOINTMENT FLOW] Could not check appointment_state: {e}")
 
+        # If lead-appointment flows are not live, avoid creating non-treatment leads in Zoho
+        if flow_type != "treatment_flow":
+            print(
+                "[LEAD APPOINTMENT FLOW] Skipping Zoho lead creation for non-treatment flow "
+                f"(flow_type={flow_type!r}) to prevent unnecessary 'WhatsApp Lead-to-Appointment Flow' leads."
+            )
+            return {
+                "success": True,
+                "skipped": True,
+                "reason": "lead_appointment_disabled",
+            }
+
         # -------- Final Lead Source / Sub Source / Language for Zoho --------
         try:
             _session_lead_source = session_data.get("lead_source")
@@ -776,16 +788,10 @@ async def create_lead_for_appointment(
             _session_lead_source = None
             _session_language = None
 
-        if flow_type == "treatment_flow":
-            # Marketing treatment flow → always Business Listing / WhatsApp
-            lead_source_val = "Business Listing"
-            sub_source_val = "WhatsApp"
-            language_val = None  # not used for treatment flow
-        else:
-            # Lead appointment / other flows
-            lead_source_val = _session_lead_source or "Facebook"
-            language_val = _session_language or "English"
-            sub_source_val = "WhatsApp"
+        # Marketing treatment flow → always Business Listing / WhatsApp
+        lead_source_val = "Business Listing"
+        sub_source_val = "WhatsApp"
+        language_val = None  # not used for treatment flow
 
         # -------- Same‑day de‑duplication using final lead_source_val --------
         try:
