@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional
 import os
+import re
 import asyncio
 
 import requests
@@ -12,6 +13,7 @@ from services import whatsapp_service, customer_service, message_service
 from schemas.customer_schema import CustomerCreate
 from schemas.message_schema import MessageCreate
 from config.constants import get_messages_url
+from marketing.whatsapp_numbers import get_number_config
 
 
 # Follow-Up 1 content and timing
@@ -30,23 +32,67 @@ async def send_follow_up1(
     phone_id_hint: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Send Follow-Up 1 as an interactive message with a single ✅ Yes button."""
-    token_obj = whatsapp_service.get_latest_token(db)
-    if not token_obj:
-        raise HTTPException(status_code=400, detail="Token not available")
+    access_token = None
+    phone_id = None
+    display_number = from_wa_id
 
-    access_token = token_obj.token
-    phone_id = phone_id_hint or os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+    # If phone_id_hint provided, use it
     if phone_id_hint:
-        try:
-            from marketing.whatsapp_numbers import WHATSAPP_NUMBERS  # type: ignore
-
-            cfg = (WHATSAPP_NUMBERS or {}).get(str(phone_id_hint)) or {}
-            token_override = cfg.get("token")
-            if token_override:
-                access_token = token_override
-                phone_id = str(phone_id_hint)
-        except Exception:
+        cfg = get_number_config(str(phone_id_hint))
+        if cfg and cfg.get("token"):
+            access_token = cfg.get("token")
             phone_id = str(phone_id_hint)
+            display_number = re.sub(r"\D", "", cfg.get("name", "")) or display_number
+            print(f"[follow_up1] RESOLVED via phone_id_hint: {phone_id} for wa_id={wa_id}")
+
+    # Try to get from state if no phone_id yet
+    if not phone_id:
+        # Try appointment_state first
+        try:
+            from controllers.web_socket import appointment_state
+            st = appointment_state.get(wa_id) or {}
+            lead_phone_id = st.get("lead_phone_id")
+            if lead_phone_id:
+                cfg = get_number_config(str(lead_phone_id))
+                if cfg and cfg.get("token"):
+                    access_token = cfg.get("token")
+                    phone_id = str(lead_phone_id)
+                    display_number = re.sub(r"\D", "", cfg.get("name", "")) or display_number
+                    print(f"[follow_up1] RESOLVED via lead_phone_id (appointment_state): {phone_id} for wa_id={wa_id}")
+        except Exception:
+            pass
+
+    # Try lead_appointment_state
+    if not phone_id:
+        try:
+            from controllers.web_socket import lead_appointment_state
+            lst = lead_appointment_state.get(wa_id) or {}
+            lead_phone_id = lst.get("lead_phone_id") or lst.get("phone_id")
+            if lead_phone_id:
+                cfg = get_number_config(str(lead_phone_id))
+                if cfg and cfg.get("token"):
+                    access_token = cfg.get("token")
+                    phone_id = str(lead_phone_id)
+                    display_number = re.sub(r"\D", "", cfg.get("name", "")) or display_number
+                    print(f"[follow_up1] RESOLVED via lead_phone_id (lead_appointment_state): {phone_id} for wa_id={wa_id}")
+        except Exception:
+            pass
+
+    # Fallback to environment
+    if not phone_id:
+        phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+        cfg = get_number_config(str(phone_id))
+        if cfg and cfg.get("token"):
+            access_token = cfg.get("token")
+        display_number = os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376")
+        print(f"[follow_up1] WARNING - FALLBACK to env phone_id: {phone_id} for wa_id={wa_id}")
+
+    # Fallback to DB token if still no token
+    if not access_token:
+        token_obj = whatsapp_service.get_latest_token(db)
+        if not token_obj:
+            raise HTTPException(status_code=400, detail="Token not available")
+        access_token = token_obj.token
 
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -78,7 +124,7 @@ async def send_follow_up1(
 
     message_data = MessageCreate(
         message_id=message_id or f"outbound_{datetime.utcnow().timestamp()}",
-        from_wa_id=from_wa_id,
+        from_wa_id=display_number,
         to_wa_id=wa_id,
         type="interactive",
         body="Follow-Up 1 (Yes)",
@@ -86,6 +132,7 @@ async def send_follow_up1(
         customer_id=customer.id,
     )
     message_service.create_message(db, message_data)
+    print(f"[follow_up1] DEBUG - Follow-Up 1 sent from={display_number}, phone_id={phone_id} for wa_id={wa_id}")
 
     return {"success": True, "message_id": message_id}
 

@@ -692,24 +692,71 @@ async def send_callback_confirmation_interactive(
     customer: Any
 ) -> Dict[str, Any]:
     """Send interactive message asking if user wants a callback.
-    
+
     Returns a status dict.
     """
-    
+
     try:
         from services.whatsapp_service import get_latest_token
         from config.constants import get_messages_url
+        from marketing.whatsapp_numbers import get_number_config
         import os
         import requests
-        
-        token_entry = get_latest_token(db)
-        if not token_entry or not token_entry.token:
-            await send_message_to_waid(wa_id, "❌ Unable to send message right now.", db)
-            return {"success": False, "error": "no_token"}
 
-        access_token = token_entry.token
+        # Resolve phone_id from state
+        phone_id = None
+        display_number = None
+        access_token = None
+
+        # Try appointment_state first
+        try:
+            from controllers.web_socket import appointment_state
+            st = appointment_state.get(wa_id) or {}
+            lead_phone_id = st.get("lead_phone_id")
+            if lead_phone_id:
+                cfg = get_number_config(str(lead_phone_id))
+                if cfg and cfg.get("token"):
+                    access_token = cfg.get("token")
+                    phone_id = str(lead_phone_id)
+                    display_number = re.sub(r"\D", "", cfg.get("name", "")) or "917729992376"
+                    print(f"[lead_flow_controller] RESOLVED via lead_phone_id (appointment_state): {phone_id} for wa_id={wa_id}")
+        except Exception:
+            pass
+
+        # Try lead_appointment_state
+        if not phone_id:
+            try:
+                from controllers.web_socket import lead_appointment_state
+                lst = lead_appointment_state.get(wa_id) or {}
+                lead_phone_id = lst.get("lead_phone_id") or lst.get("phone_id")
+                if lead_phone_id:
+                    cfg = get_number_config(str(lead_phone_id))
+                    if cfg and cfg.get("token"):
+                        access_token = cfg.get("token")
+                        phone_id = str(lead_phone_id)
+                        display_number = re.sub(r"\D", "", cfg.get("name", "")) or "917729992376"
+                        print(f"[lead_flow_controller] RESOLVED via lead_phone_id (lead_appointment_state): {phone_id} for wa_id={wa_id}")
+            except Exception:
+                pass
+
+        # Fallback to environment
+        if not phone_id:
+            phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+            display_number = os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376")
+            cfg = get_number_config(str(phone_id))
+            if cfg and cfg.get("token"):
+                access_token = cfg.get("token")
+            print(f"[lead_flow_controller] WARNING - FALLBACK to env phone_id: {phone_id} for wa_id={wa_id}")
+
+        # Fallback to DB token if no token found
+        if not access_token:
+            token_entry = get_latest_token(db)
+            if not token_entry or not token_entry.token:
+                await send_message_to_waid(wa_id, "❌ Unable to send message right now.", db)
+                return {"success": False, "error": "no_token"}
+            access_token = token_entry.token
+
         headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-        phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
 
         # Send interactive message with buttons
         payload = {
@@ -746,7 +793,7 @@ async def send_callback_confirmation_interactive(
                 
                 outbound_message = MessageCreate(
                     message_id=message_id,
-                    from_wa_id=os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                    from_wa_id=display_number,
                     to_wa_id=wa_id,
                     type="interactive",
                     body="Thank you for sharing your preferred location & time. *Your appointment is not yet confirmed*\nWould you like our agent to call you to confirm your appointment?",
@@ -754,11 +801,11 @@ async def send_callback_confirmation_interactive(
                     customer_id=customer.id,
                 )
                 create_message(db, outbound_message)
-                print(f"[lead_appointment_flow] DEBUG - Callback confirmation message saved to database: {message_id}")
-                
+                print(f"[lead_appointment_flow] DEBUG - Callback confirmation message saved to database: {message_id}, from={display_number}")
+
                 # Broadcast to WebSocket
                 await manager.broadcast({
-                    "from": os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                    "from": display_number,
                     "to": wa_id,
                     "type": "interactive",
                     "message": "Thank you for sharing your preferred location & time. *Your appointment is not yet confirmed*\nWould you like our agent to call you to confirm your appointment?",
@@ -861,30 +908,54 @@ async def handle_no_callback_not_now(
     customer: Any
 ) -> Dict[str, Any]:
     """Handle no callback not now - send text message and create lead.
-    
+
     Returns a status dict.
     """
-    
+
     try:
         import os
-        
-        # Get appointment details from session state
+        from marketing.whatsapp_numbers import get_number_config
+
+        # Get appointment details and resolve phone_id from session state
         appointment_details = {}
+        display_number = os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376")
+        phone_id_hint = None
+
         try:
             from controllers.web_socket import lead_appointment_state
             appointment_details = lead_appointment_state.get(wa_id, {})
+            lead_phone_id = appointment_details.get("lead_phone_id") or appointment_details.get("phone_id")
+            if lead_phone_id:
+                cfg = get_number_config(str(lead_phone_id))
+                if cfg:
+                    display_number = re.sub(r"\D", "", cfg.get("name", "")) or display_number
+                    phone_id_hint = str(lead_phone_id)
             print(f"[lead_appointment_flow] DEBUG - Appointment details: {appointment_details}")
         except Exception as e:
             print(f"[lead_appointment_flow] WARNING - Could not get appointment details: {e}")
-        
+
+        # Also try appointment_state
+        if not phone_id_hint:
+            try:
+                from controllers.web_socket import appointment_state
+                st = appointment_state.get(wa_id) or {}
+                lead_phone_id = st.get("lead_phone_id")
+                if lead_phone_id:
+                    cfg = get_number_config(str(lead_phone_id))
+                    if cfg:
+                        display_number = re.sub(r"\D", "", cfg.get("name", "")) or display_number
+                        phone_id_hint = str(lead_phone_id)
+            except Exception:
+                pass
+
         # Send plain text message
         message = "No problem! You can reach out anytime to schedule your appointment.\n\n✅ 8 lakh+ clients have trusted Oliva & experienced visible transformation\n\nWe'll be right here whenever you're ready to start your journey. 🌿"
-        await send_message_to_waid(wa_id, message, db)
-        
+        await send_message_to_waid(wa_id, message, db, phone_id_hint=phone_id_hint)
+
         # Broadcast to WebSocket
         try:
             await manager.broadcast({
-                "from": os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                "from": display_number,
                 "to": wa_id,
                 "type": "text",
                 "message": message,

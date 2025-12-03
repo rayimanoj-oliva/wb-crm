@@ -6,6 +6,7 @@ Handles callback confirmation with Zoho Auto-Dial and Lead creation triggers
 from datetime import datetime
 from typing import Dict, Any
 import os
+import re
 import requests
 
 from sqlalchemy.orm import Session
@@ -13,23 +14,70 @@ from services.whatsapp_service import get_latest_token
 from config.constants import get_messages_url
 from utils.whatsapp import send_message_to_waid
 from utils.ws_manager import manager
+from marketing.whatsapp_numbers import get_number_config
 
 
 async def send_callback_confirmation(db: Session, *, wa_id: str) -> Dict[str, Any]:
     """Send callback confirmation with Yes/No buttons.
-    
+
     Returns a status dict.
     """
-    
-    try:
-        token_entry = get_latest_token(db)
-        if not token_entry or not token_entry.token:
-            await send_message_to_waid(wa_id, "❌ Unable to send callback options right now.", db)
-            return {"success": False, "error": "no_token"}
 
-        access_token = token_entry.token
+    try:
+        # Resolve phone_id from state
+        phone_id = None
+        display_number = None
+        access_token = None
+
+        # Try appointment_state first
+        try:
+            from controllers.web_socket import appointment_state
+            st = appointment_state.get(wa_id) or {}
+            lead_phone_id = st.get("lead_phone_id")
+            if lead_phone_id:
+                cfg = get_number_config(str(lead_phone_id))
+                if cfg and cfg.get("token"):
+                    access_token = cfg.get("token")
+                    phone_id = str(lead_phone_id)
+                    display_number = re.sub(r"\D", "", cfg.get("name", "")) or "917729992376"
+                    print(f"[callback_confirmation] RESOLVED via lead_phone_id (appointment_state): {phone_id} for wa_id={wa_id}")
+        except Exception:
+            pass
+
+        # Try lead_appointment_state
+        if not phone_id:
+            try:
+                from controllers.web_socket import lead_appointment_state
+                lst = lead_appointment_state.get(wa_id) or {}
+                lead_phone_id = lst.get("lead_phone_id") or lst.get("phone_id")
+                if lead_phone_id:
+                    cfg = get_number_config(str(lead_phone_id))
+                    if cfg and cfg.get("token"):
+                        access_token = cfg.get("token")
+                        phone_id = str(lead_phone_id)
+                        display_number = re.sub(r"\D", "", cfg.get("name", "")) or "917729992376"
+                        print(f"[callback_confirmation] RESOLVED via lead_phone_id (lead_appointment_state): {phone_id} for wa_id={wa_id}")
+            except Exception:
+                pass
+
+        # Fallback to environment
+        if not phone_id:
+            phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+            display_number = os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376")
+            cfg = get_number_config(str(phone_id))
+            if cfg and cfg.get("token"):
+                access_token = cfg.get("token")
+            print(f"[callback_confirmation] WARNING - FALLBACK to env phone_id: {phone_id} for wa_id={wa_id}")
+
+        # Fallback to DB token if no token found
+        if not access_token:
+            token_entry = get_latest_token(db)
+            if not token_entry or not token_entry.token:
+                await send_message_to_waid(wa_id, "❌ Unable to send callback options right now.", db)
+                return {"success": False, "error": "no_token"}
+            access_token = token_entry.token
+
         headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-        phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
 
         payload = {
             "messaging_product": "whatsapp",
@@ -68,7 +116,7 @@ async def send_callback_confirmation(db: Session, *, wa_id: str) -> Dict[str, An
                 
                 outbound_message = MessageCreate(
                     message_id=message_id,
-                    from_wa_id=os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                    from_wa_id=display_number,
                     to_wa_id=wa_id,
                     type="interactive",
                     body="Would you like one of our agents to call you back to confirm your appointment?",
@@ -76,11 +124,11 @@ async def send_callback_confirmation(db: Session, *, wa_id: str) -> Dict[str, An
                     customer_id=customer.id,
                 )
                 create_message(db, outbound_message)
-                print(f"[lead_appointment_flow] DEBUG - Callback confirmation message saved to database: {message_id}")
-                
+                print(f"[lead_appointment_flow] DEBUG - Callback confirmation message saved to database: {message_id}, from={display_number}")
+
                 # Broadcast to WebSocket
                 await manager.broadcast({
-                    "from": os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                    "from": display_number,
                     "to": wa_id,
                     "type": "interactive",
                     "message": "Would you like one of our agents to call you back to confirm your appointment?",

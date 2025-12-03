@@ -4,8 +4,9 @@ Sends the initial welcome template message (oliva_meta_ad)
 """
 
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import os
+import re
 import requests
 
 from sqlalchemy.orm import Session
@@ -13,9 +14,60 @@ from services.whatsapp_service import get_latest_token
 from config.constants import get_messages_url
 from utils.whatsapp import send_message_to_waid
 from utils.ws_manager import manager
+from marketing.whatsapp_numbers import WHATSAPP_NUMBERS, get_number_config
 
 
-async def send_auto_welcome_message(db: Session, *, wa_id: str) -> Dict[str, Any]:
+def _resolve_lead_phone_id(wa_id: str) -> tuple[Optional[str], Optional[str], str]:
+    """Resolve phone_id and token for lead appointment flow.
+
+    Returns (token, phone_id, display_number).
+    Priority:
+    1) Stored lead_phone_id in appointment_state
+    2) Stored lead_phone_id in lead_appointment_state
+    3) Environment variable fallback
+    """
+    # Try to get lead_phone_id from appointment_state first
+    try:
+        from controllers.web_socket import appointment_state
+        st = appointment_state.get(wa_id) or {}
+        lead_phone_id = st.get("lead_phone_id")
+        if lead_phone_id:
+            cfg = get_number_config(str(lead_phone_id))
+            if cfg and cfg.get("token"):
+                display_num = re.sub(r"\D", "", cfg.get("name", "")) or "917729992376"
+                print(f"[lead_auto_welcome] RESOLVED via lead_phone_id (appointment_state): {lead_phone_id} for wa_id={wa_id}")
+                return cfg.get("token"), str(lead_phone_id), display_num
+    except Exception:
+        pass
+
+    # Try to get from lead_appointment_state
+    try:
+        from controllers.web_socket import lead_appointment_state
+        lst = lead_appointment_state.get(wa_id) or {}
+        lead_phone_id = lst.get("lead_phone_id") or lst.get("phone_id")
+        if lead_phone_id:
+            cfg = get_number_config(str(lead_phone_id))
+            if cfg and cfg.get("token"):
+                display_num = re.sub(r"\D", "", cfg.get("name", "")) or "917729992376"
+                print(f"[lead_auto_welcome] RESOLVED via lead_phone_id (lead_appointment_state): {lead_phone_id} for wa_id={wa_id}")
+                return cfg.get("token"), str(lead_phone_id), display_num
+    except Exception:
+        pass
+
+    # Fallback to environment variable
+    env_pid = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
+    cfg = get_number_config(str(env_pid))
+    if cfg and cfg.get("token"):
+        display_num = re.sub(r"\D", "", cfg.get("name", "")) or os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376")
+        print(f"[lead_auto_welcome] WARNING - FALLBACK to env phone_id: {env_pid} for wa_id={wa_id}")
+        return cfg.get("token"), str(env_pid), display_num
+
+    # Final fallback
+    print(f"[lead_auto_welcome] WARNING - No valid phone_id found, using defaults for wa_id={wa_id}")
+    return None, os.getenv("WHATSAPP_PHONE_ID", "367633743092037"), os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376")
+
+
+async def send_auto_welcome_message(db: Session, *, wa_id: str, phone_id_hint: Optional[str] = None) -> Dict[str, Any]:
     """Send the auto-welcome template message for appointment booking.
     
     Returns a status dict.
@@ -32,14 +84,28 @@ async def send_auto_welcome_message(db: Session, *, wa_id: str) -> Dict[str, Any
         except Exception:
             pass
 
-        token_entry = get_latest_token(db)
-        if not token_entry or not token_entry.token:
-            await send_message_to_waid(wa_id, "❌ Unable to send welcome message right now.", db)
-            return {"success": False, "error": "no_token"}
+        # Resolve phone_id - use hint if provided, otherwise check state
+        if phone_id_hint:
+            cfg = get_number_config(str(phone_id_hint))
+            if cfg and cfg.get("token"):
+                access_token = cfg.get("token")
+                phone_id = str(phone_id_hint)
+                display_number = re.sub(r"\D", "", cfg.get("name", "")) or "917729992376"
+                print(f"[lead_auto_welcome] RESOLVED via phone_id_hint: {phone_id} for wa_id={wa_id}")
+            else:
+                access_token, phone_id, display_number = _resolve_lead_phone_id(wa_id)
+        else:
+            access_token, phone_id, display_number = _resolve_lead_phone_id(wa_id)
 
-        access_token = token_entry.token
+        # Fallback to DB token if resolution failed
+        if not access_token:
+            token_entry = get_latest_token(db)
+            if not token_entry or not token_entry.token:
+                await send_message_to_waid(wa_id, "❌ Unable to send welcome message right now.", db)
+                return {"success": False, "error": "no_token"}
+            access_token = token_entry.token
+
         headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-        phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
 
         # Send template message instead of interactive
         payload = {
@@ -71,7 +137,7 @@ async def send_auto_welcome_message(db: Session, *, wa_id: str) -> Dict[str, Any
                 
                 outbound_message = MessageCreate(
                     message_id=message_id,
-                    from_wa_id=os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                    from_wa_id=display_number,
                     to_wa_id=wa_id,
                     type="template",
                     body="Template: oliva_meta_ad",
@@ -79,25 +145,28 @@ async def send_auto_welcome_message(db: Session, *, wa_id: str) -> Dict[str, Any
                     customer_id=customer.id,
                 )
                 create_message(db, outbound_message)
-                print(f"[lead_appointment_flow] DEBUG - Auto welcome template message saved to database: {message_id}")
-                
+                print(f"[lead_appointment_flow] DEBUG - Auto welcome template message saved to database: {message_id}, from={display_number}")
+
                 # Ensure flow state is set when template is sent (in case it wasn't set earlier)
                 try:
                     from controllers.web_socket import lead_appointment_state
                     if wa_id not in lead_appointment_state:
                         lead_appointment_state[wa_id] = {}
                     lead_appointment_state[wa_id]["flow_context"] = "lead_appointment"
+                    # Store the phone_id we used so subsequent messages use the same number
+                    lead_appointment_state[wa_id]["lead_phone_id"] = phone_id
+                    lead_appointment_state[wa_id]["lead_display_number"] = display_number
                     if "lead_source" not in lead_appointment_state[wa_id]:
                         lead_appointment_state[wa_id]["lead_source"] = "Facebook"
                     if "language" not in lead_appointment_state[wa_id]:
                         lead_appointment_state[wa_id]["language"] = "English"
-                    print(f"[lead_appointment_flow] ⚠️⚠️⚠️ DEBUG - Ensured flow state is set for {wa_id} after sending template")
+                    print(f"[lead_appointment_flow] DEBUG - Ensured flow state is set for {wa_id} with lead_phone_id={phone_id}")
                 except Exception as e:
                     print(f"[lead_appointment_flow] WARNING - Could not set flow state: {e}")
-                
+
                 # Broadcast to WebSocket
                 await manager.broadcast({
-                    "from": os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                    "from": display_number,
                     "to": wa_id,
                     "type": "template",
                     "message": "Template: oliva_meta_ad",
@@ -199,19 +268,23 @@ async def handle_welcome_response(
 
 async def send_not_now_followup(db: Session, *, wa_id: str, customer: Any) -> Dict[str, Any]:
     """Send follow-up message with button when user clicks 'Not Now'.
-    
+
     Returns a status dict.
     """
-    
-    try:
-        token_entry = get_latest_token(db)
-        if not token_entry or not token_entry.token:
-            await send_message_to_waid(wa_id, "❌ Unable to send message right now.", db)
-            return {"success": False, "error": "no_token"}
 
-        access_token = token_entry.token
+    try:
+        # Resolve phone_id from state
+        access_token, phone_id, display_number = _resolve_lead_phone_id(wa_id)
+
+        # Fallback to DB token if resolution failed
+        if not access_token:
+            token_entry = get_latest_token(db)
+            if not token_entry or not token_entry.token:
+                await send_message_to_waid(wa_id, "❌ Unable to send message right now.", db)
+                return {"success": False, "error": "no_token"}
+            access_token = token_entry.token
+
         headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-        phone_id = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
 
         # Send interactive message with button
         payload = {
@@ -245,7 +318,7 @@ async def send_not_now_followup(db: Session, *, wa_id: str, customer: Any) -> Di
                 
                 outbound_message = MessageCreate(
                     message_id=message_id,
-                    from_wa_id=os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                    from_wa_id=display_number,
                     to_wa_id=wa_id,
                     type="interactive",
                     body="No problem! You can reach out anytime to schedule your appointment.\n\n✅ 8 lakh+ clients have trusted Oliva & experienced visible transformation\n\nWe'll be right here whenever you're ready to start your journey. 🌿",
@@ -253,11 +326,11 @@ async def send_not_now_followup(db: Session, *, wa_id: str, customer: Any) -> Di
                     customer_id=customer.id,
                 )
                 create_message(db, outbound_message)
-                print(f"[lead_appointment_flow] DEBUG - Not Now followup message saved to database: {message_id}")
-                
+                print(f"[lead_appointment_flow] DEBUG - Not Now followup message saved to database: {message_id}, from={display_number}")
+
                 # Broadcast to WebSocket
                 await manager.broadcast({
-                    "from": os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376"),
+                    "from": display_number,
                     "to": wa_id,
                     "type": "interactive",
                     "message": "No problem! You can reach out anytime to schedule your appointment.\n\n✅ 8 lakh+ clients have trusted Oliva & experienced visible transformation\n\nWe'll be right here whenever you're ready to start your journey. 🌿",
