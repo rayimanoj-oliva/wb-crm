@@ -34,11 +34,22 @@ def _resolve_credentials(db, *, hint_phone_id: str | None = None, hint_display_n
             print(f"[_resolve_credentials] RESOLVED via hint_phone_id: {hint_phone_id} for wa_id={wa_id}")
             return tok, hint_phone_id
 
-    # 2) Check stored treatment_flow_phone_id OR lead_phone_id from appointment_state
+    # 2) Check stored incoming_phone_id FIRST (the number customer messaged to)
+    # This is the MOST important - ensures replies go from the same number customer contacted
     if wa_id:
         try:
             from controllers.web_socket import appointment_state  # type: ignore
             st = appointment_state.get(wa_id) or {}
+
+            # FIRST: Check incoming_phone_id - this is the number customer messaged to
+            incoming_phone_id = st.get("incoming_phone_id")
+            if incoming_phone_id and isinstance(WHATSAPP_NUMBERS, dict) and incoming_phone_id in WHATSAPP_NUMBERS:
+                cfg = WHATSAPP_NUMBERS.get(incoming_phone_id) or {}
+                tok = cfg.get("token")
+                if tok:
+                    print(f"[_resolve_credentials] RESOLVED via incoming_phone_id: {incoming_phone_id} for wa_id={wa_id}")
+                    return tok, incoming_phone_id
+
             # Check for treatment flow phone_id
             stored_phone_id = st.get("treatment_flow_phone_id")
             if stored_phone_id and isinstance(WHATSAPP_NUMBERS, dict) and stored_phone_id in WHATSAPP_NUMBERS:

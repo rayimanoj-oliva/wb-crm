@@ -36,10 +36,19 @@ def _resolve_credentials(
             print(f"[interactive._resolve_credentials] RESOLVED via phone_id_hint: {phone_id_hint} for wa_id={wa_id}")
             return cfg.get("token"), str(phone_id_hint)
 
-    # 2) Stored state from treatment flow OR lead flow in appointment_state
+    # 2) Stored state - check incoming_phone_id FIRST (the number customer messaged to)
     try:
         from controllers.web_socket import appointment_state  # type: ignore
         st = appointment_state.get(wa_id) or {}
+
+        # FIRST: Check incoming_phone_id - this is the number customer messaged to
+        incoming_phone_id = st.get("incoming_phone_id")
+        if incoming_phone_id:
+            cfg = get_number_config(str(incoming_phone_id))
+            if cfg and cfg.get("token"):
+                print(f"[interactive._resolve_credentials] RESOLVED via incoming_phone_id: {incoming_phone_id} for wa_id={wa_id}")
+                return cfg.get("token"), str(incoming_phone_id)
+
         # Check treatment flow phone_id
         stored_phone_id = st.get("treatment_flow_phone_id")
         if stored_phone_id:

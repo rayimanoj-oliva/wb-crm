@@ -237,8 +237,16 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         print(f"[ws_webhook] DEBUG - Flow routing: is_treatment={is_treatment_flow_number}, is_lead_appointment={is_lead_appointment_number}")
         
         # Store flow context in state for downstream handlers
+        # CRITICAL: Always store the incoming phone_id so ALL replies go from the same number
         try:
             st_route = appointment_state.get(wa_id) or {}
+
+            # ALWAYS store the incoming phone_id - this ensures replies go from the same number
+            # the customer messaged to, regardless of flow type
+            if phone_number_id_str:
+                st_route["incoming_phone_id"] = phone_number_id_str
+                print(f"[ws_webhook] DEBUG - Stored incoming_phone_id={phone_number_id_str} for wa_id={wa_id}")
+
             if is_treatment_flow_number:
                 st_route["flow_context"] = "treatment"
                 st_route["from_treatment_flow"] = True

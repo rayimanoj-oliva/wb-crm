@@ -22,14 +22,26 @@ def _resolve_lead_phone_id(wa_id: str) -> tuple[Optional[str], Optional[str], st
 
     Returns (token, phone_id, display_number).
     Priority:
-    1) Stored lead_phone_id in appointment_state
-    2) Stored lead_phone_id in lead_appointment_state
-    3) Environment variable fallback
+    1) Stored incoming_phone_id (the number customer messaged to - HIGHEST PRIORITY)
+    2) Stored lead_phone_id in appointment_state
+    3) Stored lead_phone_id in lead_appointment_state
+    4) Environment variable fallback
     """
-    # Try to get lead_phone_id from appointment_state first
+    # Try to get from appointment_state - check incoming_phone_id FIRST
     try:
         from controllers.web_socket import appointment_state
         st = appointment_state.get(wa_id) or {}
+
+        # FIRST: Check incoming_phone_id - this is the number customer messaged to
+        incoming_phone_id = st.get("incoming_phone_id")
+        if incoming_phone_id:
+            cfg = get_number_config(str(incoming_phone_id))
+            if cfg and cfg.get("token"):
+                display_num = re.sub(r"\D", "", cfg.get("name", "")) or "917729992376"
+                print(f"[lead_auto_welcome] RESOLVED via incoming_phone_id: {incoming_phone_id} for wa_id={wa_id}")
+                return cfg.get("token"), str(incoming_phone_id), display_num
+
+        # Check lead_phone_id
         lead_phone_id = st.get("lead_phone_id")
         if lead_phone_id:
             cfg = get_number_config(str(lead_phone_id))

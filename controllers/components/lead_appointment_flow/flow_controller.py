@@ -708,18 +708,30 @@ async def send_callback_confirmation_interactive(
         display_number = None
         access_token = None
 
-        # Try appointment_state first
+        # Try appointment_state first - check incoming_phone_id FIRST
         try:
             from controllers.web_socket import appointment_state
             st = appointment_state.get(wa_id) or {}
-            lead_phone_id = st.get("lead_phone_id")
-            if lead_phone_id:
-                cfg = get_number_config(str(lead_phone_id))
+
+            # FIRST: Check incoming_phone_id - this is the number customer messaged to
+            incoming_phone_id = st.get("incoming_phone_id")
+            if incoming_phone_id:
+                cfg = get_number_config(str(incoming_phone_id))
                 if cfg and cfg.get("token"):
                     access_token = cfg.get("token")
-                    phone_id = str(lead_phone_id)
+                    phone_id = str(incoming_phone_id)
                     display_number = re.sub(r"\D", "", cfg.get("name", "")) or "917729992376"
-                    print(f"[lead_flow_controller] RESOLVED via lead_phone_id (appointment_state): {phone_id} for wa_id={wa_id}")
+                    print(f"[lead_flow_controller] RESOLVED via incoming_phone_id: {phone_id} for wa_id={wa_id}")
+
+            if not phone_id:
+                lead_phone_id = st.get("lead_phone_id")
+                if lead_phone_id:
+                    cfg = get_number_config(str(lead_phone_id))
+                    if cfg and cfg.get("token"):
+                        access_token = cfg.get("token")
+                        phone_id = str(lead_phone_id)
+                        display_number = re.sub(r"\D", "", cfg.get("name", "")) or "917729992376"
+                        print(f"[lead_flow_controller] RESOLVED via lead_phone_id (appointment_state): {phone_id} for wa_id={wa_id}")
         except Exception:
             pass
 
