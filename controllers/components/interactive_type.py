@@ -619,23 +619,27 @@ async def run_interactive_type(
             title = interactive.get("button_reply", {}).get("title") if i_type == "button_reply" else interactive.get("list_reply", {}).get("title")
             reply_id = interactive.get("button_reply", {}).get("id") if i_type == "button_reply" else interactive.get("list_reply", {}).get("id")
             reply_text_any = (title or reply_id or "[Interactive Reply]")
-            msg_interactive_any = MessageCreate(
-                message_id=message_id,
-                from_wa_id=from_wa_id,
-                to_wa_id=to_wa_id,
-                type="interactive",
-                body=reply_text_any,
-                timestamp=timestamp,
-                customer_id=customer.id,
-            )
-            message_service.create_message(db, msg_interactive_any)
-            await manager.broadcast({
-                "from": from_wa_id,
-                "to": to_wa_id,
-                "type": "interactive",
-                "message": reply_text_any,
-                "timestamp": timestamp.isoformat(),
-            })
+
+            # Check if message already exists to prevent duplicates
+            existing_msg = db.query(Message).filter(Message.message_id == message_id).first()
+            if not existing_msg:
+                msg_interactive_any = MessageCreate(
+                    message_id=message_id,
+                    from_wa_id=from_wa_id,
+                    to_wa_id=to_wa_id,
+                    type="interactive",
+                    body=reply_text_any,
+                    timestamp=timestamp,
+                    customer_id=customer.id,
+                )
+                message_service.create_message(db, msg_interactive_any)
+                await manager.broadcast({
+                    "from": from_wa_id,
+                    "to": to_wa_id,
+                    "type": "interactive",
+                    "message": reply_text_any,
+                    "timestamp": timestamp.isoformat(),
+                })
 
             # 3a) Appointment week/day flow
             try:
