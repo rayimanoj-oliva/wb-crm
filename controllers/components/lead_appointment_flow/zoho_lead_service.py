@@ -601,12 +601,12 @@ async def create_lead_for_appointment(
         except Exception as _e:
             print(f"⚠️ [LEAD APPOINTMENT FLOW] De-dup check failed: {_e}")
 
-        # Zoho-side duplicate guard by phone
-        # We disable the 24h window here and let Zoho act as the source of truth:
-        # if ANY lead already exists for this phone, we won't create another one.
+        # Zoho-side duplicate guard by phone (24-hour window)
+        # Check if a lead exists for this phone in the last 24 hours.
+        # If no lead exists in the last 24 hours, we can create a new one.
         try:
             existing_zoho = zoho_lead_service.find_existing_lead_by_phone(
-                phone_number, within_last_24h=False
+                phone_number, within_last_24h=True
             )
             if existing_zoho and isinstance(existing_zoho, dict):
                 lead_id_existing = str(
@@ -614,7 +614,7 @@ async def create_lead_for_appointment(
                 )
                 if lead_id_existing:
                     print(
-                        f"✅ [LEAD APPOINTMENT FLOW] Duplicate prevented via Zoho search by phone. "
+                        f"✅ [LEAD APPOINTMENT FLOW] Duplicate prevented via Zoho search by phone (last 24h). "
                         f"Existing lead_id={lead_id_existing}"
                     )
                     try:

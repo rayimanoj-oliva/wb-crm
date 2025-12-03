@@ -570,10 +570,10 @@ async def send_followup2(db: Session, *, wa_id: str, from_wa_id: str = None):
         )
 
         if not existing:
-            # Double-check in Zoho by phone to avoid duplicates even if local DB missed a record
+            # Double-check in Zoho by phone (24-hour window) to avoid duplicates even if local DB missed a record
             try:
                 from controllers.components.lead_appointment_flow.zoho_lead_service import zoho_lead_service  # type: ignore
-                zoho_hit = zoho_lead_service.find_existing_lead_by_phone(phone_digits or wa_id)
+                zoho_hit = zoho_lead_service.find_existing_lead_by_phone(phone_digits or wa_id, within_last_24h=True)
             except Exception as e:
                 logger.warning(f"[followup_service] Zoho duplicate check failed for {wa_id}: {e}")
                 zoho_hit = None
