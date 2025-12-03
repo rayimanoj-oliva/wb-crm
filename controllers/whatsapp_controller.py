@@ -356,13 +356,29 @@ async def send_whatsapp_message(
             # ---------------- Image Header ----------------
             effective_media_id = template_media_id or media_id
             if effective_media_id:
-                # Correct structure: image inside parameters, no "format"
+                # Determine if it's a URL or a media ID
+                # URLs start with http/https, resumable handles start with "4:" and are very long
+                # WhatsApp media IDs are typically numeric strings
+                is_url = effective_media_id.startswith("http://") or effective_media_id.startswith("https://")
+                is_resumable_handle = effective_media_id.startswith("4:") and len(effective_media_id) > 50
+
+                if is_url:
+                    # Use link for URLs
+                    image_param = {"link": effective_media_id}
+                elif is_resumable_handle:
+                    # Resumable upload handles can't be used for sending - need URL or media ID
+                    # Try to use it anyway, but this will likely fail
+                    image_param = {"id": effective_media_id}
+                else:
+                    # Regular WhatsApp media ID
+                    image_param = {"id": effective_media_id}
+
                 components.insert(0, {
                     "type": "header",
                     "parameters": [
                         {
                             "type": "image",
-                            "image": {"id": effective_media_id}
+                            "image": image_param
                         }
                     ]
                 })
