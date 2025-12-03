@@ -473,13 +473,32 @@ async def create_lead_for_appointment(
         try:
             from controllers.web_socket import lead_appointment_state
             session_data = lead_appointment_state.get(wa_id, {})
-            user_name = session_data.get("user_name", getattr(customer, 'name', 'Customer') or 'Customer')
+            user_name = session_data.get("user_name", getattr(customer, "name", "Customer") or "Customer")
             user_phone = session_data.get("user_phone", "")
             print(f"👤 [LEAD APPOINTMENT FLOW] User details from session: {user_name}, {user_phone}")
         except Exception as e:
             print(f"⚠️ [LEAD APPOINTMENT FLOW] Could not get user details from session: {e}")
-            user_name = getattr(customer, 'name', 'Customer') or 'Customer'
+            user_name = getattr(customer, "name", "Customer") or "Customer"
             user_phone = ""
+
+        # Derive first_name / last_name for Zoho from user_name
+        user_name_clean = (user_name or "").strip()
+        if not user_name_clean:
+            first_name = ""
+            last_name = "Customer"
+        else:
+            name_parts = user_name_clean.split(" ", 1)
+            if len(name_parts) == 1:
+                # Only one word → treat as last name
+                first_name = ""
+                last_name = name_parts[0]
+            else:
+                first_name = name_parts[0]
+                last_name = name_parts[1]
+        print(
+            f"👤 [LEAD APPOINTMENT FLOW] Name mapping - Original: '{user_name}', "
+            f"First: '{first_name}', Last: '{last_name}'"
+        )
         
         # Prepare phone number for legacy fields (Phone/Mobile) while we also send Phone_1/Phone_2
         if user_phone and len(user_phone) == 10:
@@ -727,131 +746,92 @@ async def create_lead_for_appointment(
         
         # Stop persisting description/lead_status to DB; retain for external Zoho payload only
         final_description = None
-        
-        # Create lead using the service
-        print(f"🚀 [LEAD APPOINTMENT FLOW] Calling Zoho lead service...")
-        
-        # Split user name into first and last name
-        # Logic: If customer has only first name (no space) → treat it as last name, leave first name empty
-        #        If customer has both first and last name (has space) → use both
-        #        If no name provided → default to "Customer" as last name
-        user_name_clean = (user_name or "").strip()
-        if not user_name_clean:
-            first_name = ""
-            last_name = "Customer"
-        else:
-            name_parts = user_name_clean.split(' ', 1)
-            
-            if len(name_parts) == 1:
-                # Only first name provided - treat it as last name, leave first name empty
-                first_name = ""
-                last_name = name_parts[0] if name_parts else "Customer"
-            else:
-                # Both first and last name provided - use both
-                first_name = name_parts[0] if name_parts else ""
-                last_name = name_parts[1] if len(name_parts) > 1 else ""
-        
-print(f"👤 [LEAD APPOINTMENT FLOW] Name mapping - Original: '{user_name}', First: '{first_name}', Last: '{last_name}'")
 
-# -------- Determine flow type (treatment vs others) --------
-try:
-    flow_type = (appointment_details or {}).get("flow_type")
-except Exception:
-    flow_type = None
+        # -------- Determine flow type (treatment vs others) --------
+        try:
+            flow_type = (appointment_details or {}).get("flow_type")
+        except Exception:
+            flow_type = None
 
-if not flow_type:
-    # Fallback: infer from appointment_state flags
-    try:
-        from controllers.web_socket import appointment_state
-        appt_state = appointment_state.get(wa_id, {})
-        if (
-            bool(appt_state.get("from_treatment_flow"))
-            or appt_state.get("flow_context") == "treatment"
-            or bool(appt_state.get("treatment_flow_phone_id"))
-        ):
-            flow_type = "treatment_flow"
-            print("[LEAD APPOINTMENT FLOW] Detected treatment flow from appointment_state")
-    except Exception as e:
-        print(f"[LEAD APPOINTMENT FLOW] Could not check appointment_state: {e}")
+        if not flow_type:
+            # Fallback: infer from appointment_state flags
+            try:
+                from controllers.web_socket import appointment_state
+                appt_state = appointment_state.get(wa_id, {})
+                if (
+                    bool(appt_state.get("from_treatment_flow"))
+                    or appt_state.get("flow_context") == "treatment"
+                    or bool(appt_state.get("treatment_flow_phone_id"))
+                ):
+                    flow_type = "treatment_flow"
+                    print("[LEAD APPOINTMENT FLOW] Detected treatment flow from appointment_state")
+            except Exception as e:
+                print(f"[LEAD APPOINTMENT FLOW] Could not check appointment_state: {e}")
 
-# -------- Final Lead Source / Sub Source / Language for Zoho --------
-try:
-    _session_lead_source = session_data.get("lead_source")
-    _session_language = session_data.get("language")
-except Exception:
-    _session_lead_source = None
-    _session_language = None
-
-if flow_type == "treatment_flow":
-    # Marketing treatment flow → always Business Listing / WhatsApp
-    lead_source_val = "Business Listing"
-    sub_source_val = "WhatsApp"
-    language_val = None  # not used for treatment flow
-else:
-    # Lead appointment / other flows
-    lead_source_val = _session_lead_source or "Facebook"
-    language_val = _session_language or "English"
-    sub_source_val = "WhatsApp"
-
-# -------- Same‑day de‑duplication using final lead_source_val --------
-try:
-    from models.models import Lead  # local DB model
-
-    today = datetime.utcnow().date()
-
-    filters = [
-        Lead.phone == phone_number,
-        func.date(Lead.created_at) == today,
-        Lead.lead_source == lead_source_val,
-    ]
-
-    # For non‑treatment flows also match on normalized full name
-    if flow_type != "treatment_flow":
-        input_full_name = f"{(first_name or '').strip()} {(last_name or '').strip()}".strip().lower()
-        db_full_name = func.lower(
-            func.trim(
-                func.concat(
-                    func.coalesce(Lead.first_name, ""),
-                    func.concat(" ", func.coalesce(Lead.last_name, "")),
-                )
-            )
-        )
-        filters.append(db_full_name == input_full_name)
-
-    existing_today = db.query(Lead).filter(*filters).first()
-    if existing_today:
-        print(
-            "🛑 [LEAD APPOINTMENT FLOW] Duplicate detected for today. "
-            f"Phone: {phone_number}, Name: {first_name} {last_name}, "
-            f"Lead Source: {lead_source_val}. "
-            f"Skipping Zoho push. Existing Zoho Lead ID: {existing_today.zoho_lead_id}"
-        )
-        return {
-            "success": True,
-            "skipped": True,
-            "reason": "duplicate_same_day",
-            "lead_id": existing_today.zoho_lead_id,
-        }
-except Exception as dup_e:
-    print(f"⚠️ [LEAD APPOINTMENT FLOW] Duplicate-check failed, proceeding with push: {dup_e}")
-# ---------------------------------------------------------------------
-        # =============================================================================
+        # -------- Final Lead Source / Sub Source / Language for Zoho --------
+        try:
+            _session_lead_source = session_data.get("lead_source")
+            _session_language = session_data.get("language")
+        except Exception:
+            _session_lead_source = None
+            _session_language = None
 
         if flow_type == "treatment_flow":
-            # Treatment flow
+            # Marketing treatment flow → always Business Listing / WhatsApp
             lead_source_val = "Business Listing"
             sub_source_val = "WhatsApp"
-            language_val = None  # Not specified for treatment flow
+            language_val = None  # not used for treatment flow
         else:
-            # Lead appointment flow (default)
-            try:
-                lead_source_val = session_data.get("lead_source") or "Facebook"
-                language_val = session_data.get("language") or "English"
-            except Exception:
-                lead_source_val = "Facebook"
-                language_val = "English"
+            # Lead appointment / other flows
+            lead_source_val = _session_lead_source or "Facebook"
+            language_val = _session_language or "English"
             sub_source_val = "WhatsApp"
 
+        # -------- Same‑day de‑duplication using final lead_source_val --------
+        try:
+            from models.models import Lead  # local DB model
+
+            today = datetime.utcnow().date()
+
+            filters = [
+                Lead.phone == phone_number,
+                func.date(Lead.created_at) == today,
+                Lead.lead_source == lead_source_val,
+            ]
+
+            # For non‑treatment flows also match on normalized full name
+            if flow_type != "treatment_flow":
+                input_full_name = (
+                    f"{(first_name or '').strip()} {(last_name or '').strip()}".strip().lower()
+                )
+                db_full_name = func.lower(
+                    func.trim(
+                        func.concat(
+                            func.coalesce(Lead.first_name, ""),
+                            func.concat(" ", func.coalesce(Lead.last_name, "")),
+                        )
+                    )
+                )
+                filters.append(db_full_name == input_full_name)
+
+            existing_today = db.query(Lead).filter(*filters).first()
+            if existing_today:
+                print(
+                    "🛑 [LEAD APPOINTMENT FLOW] Duplicate detected for today. "
+                    f"Phone: {phone_number}, Name: {first_name} {last_name}, "
+                    f"Lead Source: {lead_source_val}. "
+                    f"Skipping Zoho push. Existing Zoho Lead ID: {existing_today.zoho_lead_id}"
+                )
+                return {
+                    "success": True,
+                    "skipped": True,
+                    "reason": "duplicate_same_day",
+                    "lead_id": existing_today.zoho_lead_id,
+                }
+        except Exception as dup_e:
+            print(f"⚠️ [LEAD APPOINTMENT FLOW] Duplicate-check failed, proceeding with push: {dup_e}")
+
+        # -------- Call Zoho lead service --------
         result = zoho_lead_service.create_lead(
             first_name=first_name,
             last_name=last_name,
@@ -861,7 +841,9 @@ except Exception as dup_e:
             city=city,
             lead_source=lead_source_val,
             company="Oliva Skin & Hair Clinic",
-            description=(f"Lead from WhatsApp | Language: {language_val}" if language_val else "Lead from WhatsApp"),
+            description=(
+                f"Lead from WhatsApp | Language: {language_val}" if language_val else "Lead from WhatsApp"
+            ),
             appointment_details={
                 "flow_type": (flow_type or "lead_appointment_flow"),
                 "selected_city": city,
@@ -875,13 +857,20 @@ except Exception as dup_e:
                 "lead_source": lead_source_val,
                 **({"language": language_val} if language_val else {}),
                 # Preserve phone numbers from customer table
-                **({"wa_phone": appointment_details.get("wa_phone")} if appointment_details.get("wa_phone") else {}),
-                **({"corrected_phone": appointment_details.get("corrected_phone")} if appointment_details.get("corrected_phone") else {}),
+                **(
+                    {"wa_phone": appointment_details.get("wa_phone")}
+                    if appointment_details.get("wa_phone")
+                    else {}
+                ),
+                **(
+                    {"corrected_phone": appointment_details.get("corrected_phone")}
+                    if appointment_details.get("corrected_phone")
+                    else {}
+                ),
             },
             sub_source=sub_source_val,
-            
         )
-        
+
         if result["success"]:
             print(f"🎉 [LEAD APPOINTMENT FLOW] SUCCESS! Lead created successfully!")
             print(f"🆔 [LEAD APPOINTMENT FLOW] Lead ID: {result.get('lead_id')}")
