@@ -52,8 +52,8 @@ def clear_flow_state_for_restart(wa_id: str) -> None:
             state.pop("corrected_name", None)
             state.pop("corrected_phone", None)
             # If state is empty or only has non-critical fields, clear it entirely
-            # Keep essential fields like treatment_flow_phone_id and lead_phone_id to prevent wrong number sends
-            critical_fields = {"treatment_flow_phone_id", "lead_phone_id"}
+            # Keep essential fields like phone_ids to prevent wrong number sends
+            critical_fields = {"treatment_flow_phone_id", "lead_phone_id", "incoming_phone_id"}
             if not any(k in critical_fields for k in state.keys()):
                 appointment_state.pop(wa_id, None)
             else:

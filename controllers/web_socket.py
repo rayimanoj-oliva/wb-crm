@@ -2340,11 +2340,18 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                 # Resolve phone_id from stored state or webhook metadata
                                 phone_id_confirm = None
                                 try:
-                                    # First priority: stored treatment_flow_phone_id
-                                    phone_id_confirm = st.get("treatment_flow_phone_id")
+                                    # First priority: incoming_phone_id (the number customer messaged to)
+                                    phone_id_confirm = st.get("incoming_phone_id")
                                     if phone_id_confirm:
                                         phone_id_confirm = str(phone_id_confirm)
-                                    # Second priority: webhook metadata phone_number_id
+                                        print(f"[ws_webhook] confirm_yes - RESOLVED via incoming_phone_id: {phone_id_confirm} for wa_id={wa_id}")
+                                    # Second priority: stored treatment_flow_phone_id
+                                    if not phone_id_confirm:
+                                        phone_id_confirm = st.get("treatment_flow_phone_id")
+                                        if phone_id_confirm:
+                                            phone_id_confirm = str(phone_id_confirm)
+                                            print(f"[ws_webhook] confirm_yes - RESOLVED via treatment_flow_phone_id: {phone_id_confirm} for wa_id={wa_id}")
+                                    # Third priority: webhook metadata phone_number_id
                                     if not phone_id_confirm:
                                         try:
                                             from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
@@ -2353,10 +2360,11 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                                 phone_id_confirm = str(phone_id_meta)
                                         except Exception:
                                             pass
-                                    # Third priority: first allowed treatment flow number
+                                    # Fourth priority: first allowed treatment flow number
                                     if not phone_id_confirm:
                                         from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
                                         phone_id_confirm = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
+                                        print(f"[ws_webhook] confirm_yes - WARNING FALLBACK to first treatment number: {phone_id_confirm} for wa_id={wa_id}")
                                 except Exception:
                                     from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
                                     phone_id_confirm = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
