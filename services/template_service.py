@@ -95,11 +95,35 @@ def upsert_template_record(db: Session, *, template_name: str, template_body: Di
     return rec
 
 def _strip_preview_fields(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Clean and normalize payload for Facebook API.
+
+    - Removes preview_media_url fields
+    - Normalizes header_handle to be a list of strings (Facebook requires strings, not objects)
+    """
     cleaned = copy.deepcopy(payload)
     for component in cleaned.get("components", []):
         example = component.get("example")
-        if isinstance(example, dict) and "preview_media_url" in example:
-            example.pop("preview_media_url", None)
+        if isinstance(example, dict):
+            # Remove preview_media_url
+            if "preview_media_url" in example:
+                example.pop("preview_media_url", None)
+
+            # Normalize header_handle: Facebook requires List[str], not List[{id: str}]
+            if "header_handle" in example:
+                header_handle = example["header_handle"]
+                if isinstance(header_handle, list):
+                    normalized = []
+                    for item in header_handle:
+                        if isinstance(item, str):
+                            normalized.append(item)
+                        elif isinstance(item, dict) and "id" in item:
+                            # Extract string ID from object format {id: "..."}
+                            normalized.append(str(item["id"]))
+                        elif item is not None:
+                            normalized.append(str(item))
+                    example["header_handle"] = normalized
+
+            # Remove empty example objects
             if not example:
                 component.pop("example", None)
     return cleaned
