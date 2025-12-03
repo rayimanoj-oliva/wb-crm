@@ -14,6 +14,7 @@ class TemplateComponent(BaseModel):
 # ----------- Single Meta Template -----------
 
 class TemplateMetaItem(BaseModel):
+    id: Optional[str] = None  # Facebook template ID
     name: str
     language: str
     status: str

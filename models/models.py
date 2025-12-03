@@ -614,9 +614,12 @@ class Template(Base):
     template_name = Column(String, primary_key=True)
     template_body = Column(JSONB, nullable=False)
     template_vars = Column(JSONB, nullable=False)
+    facebook_template_id = Column(String, nullable=True, index=True)  # Facebook's template ID
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     def __repr__(self):
-        return f"<Template(template_name='{self.template_name}')>"
+        return f"<Template(template_name='{self.template_name}', fb_id='{self.facebook_template_id}')>"
 
 
 class File(Base):

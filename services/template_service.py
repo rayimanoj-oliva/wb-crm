@@ -21,7 +21,8 @@ def get_all_templates_from_meta(db: Session = Depends(get_db)) -> TemplatesRespo
         raise HTTPException(status_code=404, detail="WhatsApp token not found")
 
     page_id = "286831244524604"
-    url = f"https://graph.facebook.com/v22.0/{page_id}/message_templates"
+    # Include 'id' field to get Facebook template ID
+    url = f"https://graph.facebook.com/v22.0/{page_id}/message_templates?fields=id,name,status,category,language,components"
     headers = {
         "Authorization": f"Bearer {token_entry.token}"
     }
@@ -41,7 +42,13 @@ def get_all_templates_from_meta(db: Session = Depends(get_db)) -> TemplatesRespo
                 "category": item.category,
                 "components": [c.model_dump() for c in (item.components or [])],
             }
-            upsert_template_record(db, template_name=item.name, template_body=body, template_vars={})
+            upsert_template_record(
+                db,
+                template_name=item.name,
+                template_body=body,
+                template_vars={},
+                facebook_template_id=item.id  # Save Facebook template ID
+            )
     except Exception:
         # Non-fatal: do not block response to client
         pass
@@ -80,15 +87,22 @@ from typing import Dict, Any
 TEMPLATE_API_URL = "https://graph.facebook.com/v22.0/286831244524604/message_templates"
 
 
-def upsert_template_record(db: Session, *, template_name: str, template_body: Dict, template_vars: Dict) -> Template:
+def upsert_template_record(db: Session, *, template_name: str, template_body: Dict, template_vars: Dict, facebook_template_id: str = None) -> Template:
     existing = db.query(Template).filter(Template.template_name == template_name).first()
     if existing:
         existing.template_body = template_body
         existing.template_vars = template_vars or existing.template_vars or {}
+        if facebook_template_id:
+            existing.facebook_template_id = facebook_template_id
         db.commit()
         db.refresh(existing)
         return existing
-    rec = Template(template_name=template_name, template_body=template_body, template_vars=template_vars or {})
+    rec = Template(
+        template_name=template_name,
+        template_body=template_body,
+        template_vars=template_vars or {},
+        facebook_template_id=facebook_template_id
+    )
     db.add(rec)
     db.commit()
     db.refresh(rec)
@@ -153,10 +167,17 @@ def send_template_to_facebook(payload: Dict[str, Any], db: Session) -> Dict[str,
     
     result = response.json()
 
-    # Persist to DB as well
+    # Persist to DB as well, including the Facebook template ID
     try:
         template_name = payload.get("name") or result.get("name")
-        upsert_template_record(db, template_name=template_name, template_body=payload, template_vars={})
+        facebook_template_id = result.get("id")  # Facebook returns the template ID in the response
+        upsert_template_record(
+            db,
+            template_name=template_name,
+            template_body=payload,
+            template_vars={},
+            facebook_template_id=facebook_template_id
+        )
     except Exception:
         # Don't break API if persistence fails; log in real env
         pass
@@ -206,7 +227,13 @@ def sync_templates_from_meta_to_db(db: Session) -> Dict[str, Any]:
             "components": [c.model_dump() for c in (item.components or [])],
         }
         existed = db.query(Template).filter(Template.template_name == template_name).first() is not None
-        upsert_template_record(db, template_name=template_name, template_body=body, template_vars={})
+        upsert_template_record(
+            db,
+            template_name=template_name,
+            template_body=body,
+            template_vars={},
+            facebook_template_id=item.id  # Save Facebook template ID
+        )
         if existed:
             updated += 1
         else:
