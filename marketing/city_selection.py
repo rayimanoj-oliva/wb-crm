@@ -51,18 +51,31 @@ async def send_city_selection(db: Session, *, wa_id: str, phone_id_hint: str | N
                 access_token = cfg.get("token")
             else:
                 phone_id = None
-        # Second priority: Check stored phone_id from treatment flow state OR lead flow state
+        # Second priority: Check stored phone_id from state - incoming_phone_id FIRST
         if not phone_id:
             try:
                 from controllers.web_socket import appointment_state  # type: ignore
                 st = appointment_state.get(wa_id) or {}
-                # Check treatment_flow_phone_id first
-                stored_phone_id = st.get("treatment_flow_phone_id")
-                if stored_phone_id:
-                    cfg = get_number_config(str(stored_phone_id))
+
+                # FIRST: Check incoming_phone_id - this is the number customer messaged to
+                incoming_phone_id = st.get("incoming_phone_id")
+                if incoming_phone_id:
+                    cfg = get_number_config(str(incoming_phone_id))
                     if cfg and cfg.get("token"):
                         access_token = cfg.get("token")
-                        phone_id = str(stored_phone_id)
+                        phone_id = str(incoming_phone_id)
+                        print(f"[city_selection] RESOLVED via incoming_phone_id: {phone_id} for wa_id={wa_id}")
+
+                # Check treatment_flow_phone_id
+                if not phone_id:
+                    stored_phone_id = st.get("treatment_flow_phone_id")
+                    if stored_phone_id:
+                        cfg = get_number_config(str(stored_phone_id))
+                        if cfg and cfg.get("token"):
+                            access_token = cfg.get("token")
+                            phone_id = str(stored_phone_id)
+                            print(f"[city_selection] RESOLVED via treatment_flow_phone_id: {phone_id} for wa_id={wa_id}")
+
                 # If not found, check lead_phone_id
                 if not phone_id:
                     lead_phone_id = st.get("lead_phone_id")
@@ -71,6 +84,7 @@ async def send_city_selection(db: Session, *, wa_id: str, phone_id_hint: str | N
                         if cfg and cfg.get("token"):
                             access_token = cfg.get("token")
                             phone_id = str(lead_phone_id)
+                            print(f"[city_selection] RESOLVED via lead_phone_id: {phone_id} for wa_id={wa_id}")
             except Exception:
                 pass
         # Also check lead_appointment_state
@@ -238,19 +252,39 @@ async def send_city_selection_page2(db: Session, *, wa_id: str) -> Dict[str, Any
         access_token = token_entry.token
         headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
         
-        # Use stored phone_id from treatment flow state OR lead flow state
+        # Use stored phone_id from treatment flow state OR lead flow state - check incoming_phone_id FIRST
         phone_id = None
+        access_token = None
         try:
             from controllers.web_socket import appointment_state  # type: ignore
             st = appointment_state.get(wa_id) or {}
-            stored_phone_id = st.get("treatment_flow_phone_id")
-            if stored_phone_id:
-                phone_id = stored_phone_id
+
+            # FIRST: Check incoming_phone_id - this is the number customer messaged to
+            incoming_phone_id = st.get("incoming_phone_id")
+            if incoming_phone_id:
+                cfg = get_number_config(str(incoming_phone_id))
+                if cfg and cfg.get("token"):
+                    access_token = cfg.get("token")
+                    phone_id = str(incoming_phone_id)
+                    print(f"[city_selection_page2] RESOLVED via incoming_phone_id: {phone_id} for wa_id={wa_id}")
+
+            if not phone_id:
+                stored_phone_id = st.get("treatment_flow_phone_id")
+                if stored_phone_id:
+                    cfg = get_number_config(str(stored_phone_id))
+                    if cfg and cfg.get("token"):
+                        access_token = cfg.get("token")
+                        phone_id = str(stored_phone_id)
+                        print(f"[city_selection_page2] RESOLVED via treatment_flow_phone_id: {phone_id} for wa_id={wa_id}")
             # If not found, check lead_phone_id
             if not phone_id:
                 lead_phone_id = st.get("lead_phone_id")
                 if lead_phone_id:
-                    phone_id = lead_phone_id
+                    cfg = get_number_config(str(lead_phone_id))
+                    if cfg and cfg.get("token"):
+                        access_token = cfg.get("token")
+                        phone_id = str(lead_phone_id)
+                        print(f"[city_selection_page2] RESOLVED via lead_phone_id: {phone_id} for wa_id={wa_id}")
         except Exception:
             pass
         # Also check lead_appointment_state
@@ -260,13 +294,18 @@ async def send_city_selection_page2(db: Session, *, wa_id: str) -> Dict[str, Any
                 lst = lead_appointment_state.get(wa_id) or {}
                 lead_phone_id = lst.get("lead_phone_id") or lst.get("phone_id")
                 if lead_phone_id:
-                    phone_id = lead_phone_id
+                    cfg = get_number_config(str(lead_phone_id))
+                    if cfg and cfg.get("token"):
+                        access_token = cfg.get("token")
+                        phone_id = str(lead_phone_id)
+                        print(f"[city_selection_page2] RESOLVED via lead_phone_id (lead_state): {phone_id} for wa_id={wa_id}")
             except Exception:
                 pass
 
         if not phone_id:
             from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
             phone_id = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
+            print(f"[city_selection_page2] WARNING - FALLBACK to first allowed: {phone_id} for wa_id={wa_id}")
 
         rows_page2 = [
             {"id": "city_vizag", "title": "Vizag"},
@@ -363,14 +402,22 @@ async def handle_city_selection(
     selected_city = city_mapping.get(normalized_reply)
     
     if not selected_city:
-        # Use stored phone_id from treatment flow state OR lead flow state
+        # Use stored phone_id from treatment flow state OR lead flow state - check incoming_phone_id FIRST
         phone_id_hint = None
         try:
             from controllers.web_socket import appointment_state  # type: ignore
             st = appointment_state.get(wa_id) or {}
-            stored_phone_id = st.get("treatment_flow_phone_id")
-            if stored_phone_id:
-                phone_id_hint = stored_phone_id
+
+            # FIRST: Check incoming_phone_id - this is the number customer messaged to
+            incoming_phone_id = st.get("incoming_phone_id")
+            if incoming_phone_id:
+                phone_id_hint = str(incoming_phone_id)
+                print(f"[city_selection] RESOLVED via incoming_phone_id for invalid: {phone_id_hint} for wa_id={wa_id}")
+
+            if not phone_id_hint:
+                stored_phone_id = st.get("treatment_flow_phone_id")
+                if stored_phone_id:
+                    phone_id_hint = stored_phone_id
             # If not found, check lead_phone_id
             if not phone_id_hint:
                 lead_phone_id = st.get("lead_phone_id")
@@ -468,15 +515,23 @@ async def handle_city_selection(
         except Exception:
             pass
 
-        # Use stored phone_id from treatment flow state OR lead flow state
+        # Use stored phone_id from treatment flow state OR lead flow state - check incoming_phone_id FIRST
         phone_id_hint = None
         try:
             from controllers.web_socket import appointment_state  # type: ignore
             st = appointment_state.get(wa_id) or {}
-            # Check treatment_flow_phone_id first
-            stored_phone_id = st.get("treatment_flow_phone_id")
-            if stored_phone_id:
-                phone_id_hint = stored_phone_id
+
+            # FIRST: Check incoming_phone_id - this is the number customer messaged to
+            incoming_phone_id = st.get("incoming_phone_id")
+            if incoming_phone_id:
+                phone_id_hint = str(incoming_phone_id)
+                print(f"[city_selection] RESOLVED via incoming_phone_id for treatment: {phone_id_hint} for wa_id={wa_id}")
+
+            # Check treatment_flow_phone_id
+            if not phone_id_hint:
+                stored_phone_id = st.get("treatment_flow_phone_id")
+                if stored_phone_id:
+                    phone_id_hint = stored_phone_id
             # If not found, check lead_phone_id (for lead appointment flow triggering treatment)
             if not phone_id_hint:
                 lead_phone_id = st.get("lead_phone_id")
