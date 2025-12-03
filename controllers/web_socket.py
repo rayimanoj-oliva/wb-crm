@@ -246,6 +246,8 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             if phone_number_id_str:
                 st_route["incoming_phone_id"] = phone_number_id_str
                 print(f"[ws_webhook] DEBUG - Stored incoming_phone_id={phone_number_id_str} for wa_id={wa_id}")
+            else:
+                print(f"[ws_webhook] WARNING - phone_number_id_str is empty/None for wa_id={wa_id}")
 
             if is_treatment_flow_number:
                 st_route["flow_context"] = "treatment"
@@ -258,8 +260,9 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 st_route["lead_phone_id"] = phone_number_id_str
                 print(f"[ws_webhook] DEBUG - Stored lead_phone_id={phone_number_id_str} for wa_id={wa_id}")
             appointment_state[wa_id] = st_route
-        except Exception:
-            pass
+            print(f"[ws_webhook] DEBUG - State saved for wa_id={wa_id}: {st_route}")
+        except Exception as e:
+            print(f"[ws_webhook] ERROR - Failed to store flow state for wa_id={wa_id}: {e}")
         timestamp = datetime.fromtimestamp(int(message["timestamp"]))
         message_type = message["type"]
         message_id = message["id"]
