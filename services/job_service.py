@@ -91,10 +91,10 @@ def get_jobs_by_campaign_id(db: Session, campaign_id: UUID) -> List[Dict[str, An
                     "failure": log_stats.failure or 0,
                     "pending": log_stats.pending or 0
                 }
-                # Load only first 100 statuses for display
+                # Load all statuses for display (pagination handled on frontend)
                 logs = db.query(CampaignLog).filter_by(
                     campaign_id=campaign_id, job_id=job.id
-                ).limit(100).all()
+                ).all()
                 for log in logs:
                     status_mapping = {"success": "success", "failure": "failure", "queued": "pending", "pending": "pending"}
                     job_dict["statuses"].append({
@@ -119,8 +119,8 @@ def get_jobs_by_campaign_id(db: Session, campaign_id: UUID) -> List[Dict[str, An
                         "failure": rec_stats.failure or 0,
                         "pending": rec_stats.pending or 0
                     }
-                # Load first 100 recipients for display
-                recipients = db.query(CampaignRecipient).filter_by(campaign_id=campaign_id).limit(100).all()
+                # Load all recipients for display (pagination handled on frontend)
+                recipients = db.query(CampaignRecipient).filter_by(campaign_id=campaign_id).all()
                 for r in recipients:
                     status_mapping = {"SENT": "success", "FAILED": "failure", "QUEUED": "pending", "PENDING": "pending"}
                     job_dict["statuses"].append({
@@ -144,8 +144,8 @@ def get_jobs_by_campaign_id(db: Session, campaign_id: UUID) -> List[Dict[str, An
                     "failure": status_stats.failure or 0,
                     "pending": status_stats.pending or 0
                 }
-            # Load first 100 statuses for display
-            for status in job.statuses[:100]:
+            # Load all statuses for display (pagination handled on frontend)
+            for status in job.statuses:
                 status_str = status.status if isinstance(status.status, str) else status.status.value
                 job_dict["statuses"].append({
                     "customer_id": status.customer_id,
