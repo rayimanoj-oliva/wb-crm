@@ -602,22 +602,34 @@ async def create_lead_for_appointment(
             print(f"⚠️ [LEAD APPOINTMENT FLOW] De-dup check failed: {_e}")
 
         # Zoho-side duplicate guard by phone
+        # We disable the 24h window here and let Zoho act as the source of truth:
+        # if ANY lead already exists for this phone, we won't create another one.
         try:
-            existing_zoho = zoho_lead_service.find_existing_lead_by_phone(phone_number)
+            existing_zoho = zoho_lead_service.find_existing_lead_by_phone(
+                phone_number, within_last_24h=False
+            )
             if existing_zoho and isinstance(existing_zoho, dict):
-                lead_id_existing = str(existing_zoho.get("id") or existing_zoho.get("Id") or "")
+                lead_id_existing = str(
+                    existing_zoho.get("id") or existing_zoho.get("Id") or ""
+                )
                 if lead_id_existing:
-                    print(f"✅ [LEAD APPOINTMENT FLOW] Duplicate prevented via Zoho search by phone. lead_id={lead_id_existing}")
+                    print(
+                        f"✅ [LEAD APPOINTMENT FLOW] Duplicate prevented via Zoho search by phone. "
+                        f"Existing lead_id={lead_id_existing}"
+                    )
                     try:
                         from utils.flow_log import log_flow_event  # type: ignore
+
                         log_flow_event(
                             db,
                             flow_type="lead_appointment",
                             step="result",
                             status_code=200,
                             wa_id=wa_id,
-                            name=getattr(customer, 'name', None) or '',
-                            description=f"Duplicate avoided (Zoho search): existing lead {lead_id_existing}",
+                            name=getattr(customer, "name", None) or "",
+                            description=(
+                                f"Duplicate avoided (Zoho search): existing lead {lead_id_existing}"
+                            ),
                         )
                     except Exception:
                         pass
@@ -907,10 +919,10 @@ async def create_lead_for_appointment(
                     
         # Create new lead record
                     new_lead = Lead(
-                        zoho_lead_id=result.get('lead_id'),
+                        zoho_lead_id=result.get("lead_id"),
                         first_name=first_name,
                         last_name=last_name,
-                        email=getattr(customer, 'email', '') or '',
+                        email=getattr(customer, "email", "") or "",
                         phone=phone_number,
                         mobile=phone_number,
                         city=city,
@@ -918,20 +930,18 @@ async def create_lead_for_appointment(
                         lead_source=lead_source_val,
                         company="Oliva Skin & Hair Clinic",
                         wa_id=wa_id,
-                        customer_id=getattr(customer, 'id', None),
+                        customer_id=getattr(customer, "id", None),
                         appointment_details={
                             "selected_city": city,
                             "selected_clinic": clinic,
                             **({"selected_location": location} if location else {}),
                             "selected_concern": final_selected_concern,
-                            "zoho_mapped_concern": final_mapped_concern
+                            "zoho_mapped_concern": final_mapped_concern,
                         },
-                        # FIX: Store Zoho API response for debugging/tracking
-                        zoho_response=result.get('response'),
                         treatment_name=final_selected_concern,
                         zoho_mapped_concern=final_mapped_concern,
                         primary_concern=final_mapped_concern or final_selected_concern,
-                        sub_source=sub_source_val
+                        sub_source=sub_source_val,
                     )
                     db.add(new_lead)
                     db.commit()

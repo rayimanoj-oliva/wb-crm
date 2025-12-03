@@ -90,16 +90,29 @@ async def trigger_zoho_lead_creation(
     appointment_details: Optional[Dict[str, Any]] = None,
     appointment_preference: Optional[str] = None
 ) -> Dict[str, Any]:
-    """Create a lead in Zoho CRM.
-    
-    Args:
-        lead_status: "PENDING", "CALL_INITIATED", or "NO_CALLBACK"
-        appointment_details: Dictionary with appointment information
-        appointment_preference: Additional preference text
-        
-    Returns a status dict.
     """
-    
+    Legacy lead-appointment Zoho lead creation.
+
+    NOTE: This path is now DISABLED in favour of the unified zoho_lead_service
+    (used from treatment flow and Follow-Up 2 drop-off logic).
+
+    We intentionally skip creating leads here to avoid duplicate / incorrect
+    Lead Source values such as "WhatsApp Lead-to-Appointment Flow" or "Facebook"
+    when the marketing treatment flow is in use.
+    """
+
+    # Hard disable: do not create any leads from this legacy integration.
+    print(
+        "[lead_appointment_flow] INFO - trigger_zoho_lead_creation is disabled; "
+        "no Zoho lead will be created from this path."
+    )
+    return {
+        "success": True,
+        "skipped": True,
+        "reason": "legacy_zoho_lead_creation_disabled",
+    }
+
+    # The original implementation is left below for reference, but is no longer used.
     try:
         print(f"[lead_appointment_flow] DEBUG - Starting lead creation for {wa_id}")
         print(f"[lead_appointment_flow] DEBUG - Lead status: {lead_status}")
