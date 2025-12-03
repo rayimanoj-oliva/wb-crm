@@ -751,73 +751,90 @@ async def create_lead_for_appointment(
                 first_name = name_parts[0] if name_parts else ""
                 last_name = name_parts[1] if len(name_parts) > 1 else ""
         
-        print(f"👤 [LEAD APPOINTMENT FLOW] Name mapping - Original: '{user_name}', First: '{first_name}', Last: '{last_name}'")
+print(f"👤 [LEAD APPOINTMENT FLOW] Name mapping - Original: '{user_name}', First: '{first_name}', Last: '{last_name}'")
 
-        # Determine flow type and set Lead Source / Sub Source / Language per flow
-        try:
-            flow_type = (appointment_details or {}).get("flow_type")
-        except Exception:
-            flow_type = None
-        
-        # If flow_type is not set in appointment_details, check appointment_state
-        if not flow_type:
-            try:
-                from controllers.web_socket import appointment_state
-                appt_state = appointment_state.get(wa_id, {})
-                if (
-                    bool(appt_state.get("from_treatment_flow")) or 
-                    appt_state.get("flow_context") == "treatment" or
-                    bool(appt_state.get("treatment_flow_phone_id"))
-                ):
-                    flow_type = "treatment_flow"
-                    print(f"[LEAD APPOINTMENT FLOW] Detected treatment flow from appointment_state")
-            except Exception as e:
-                print(f"[LEAD APPOINTMENT FLOW] Could not check appointment_state: {e}")
+# -------- Determine flow type (treatment vs others) --------
+try:
+    flow_type = (appointment_details or {}).get("flow_type")
+except Exception:
+    flow_type = None
 
-        # ===== Same-day duplicate check before pushing to Zoho (per lead source) =====
-        try:
-            from models.models import Lead  # local DB model
+if not flow_type:
+    # Fallback: infer from appointment_state flags
+    try:
+        from controllers.web_socket import appointment_state
+        appt_state = appointment_state.get(wa_id, {})
+        if (
+            bool(appt_state.get("from_treatment_flow"))
+            or appt_state.get("flow_context") == "treatment"
+            or bool(appt_state.get("treatment_flow_phone_id"))
+        ):
+            flow_type = "treatment_flow"
+            print("[LEAD APPOINTMENT FLOW] Detected treatment flow from appointment_state")
+    except Exception as e:
+        print(f"[LEAD APPOINTMENT FLOW] Could not check appointment_state: {e}")
 
-            # Determine intended lead source for this flow for dedup boundaries
-            try:
-                _session_lead_source = session_data.get("lead_source")
-            except Exception:
-                _session_lead_source = None
-            if flow_type == "treatment_flow":
-                lead_source_for_check = "Business Listing"
-            else:
-                lead_source_for_check = _session_lead_source or "Facebook"
+# -------- Final Lead Source / Sub Source / Language for Zoho --------
+try:
+    _session_lead_source = session_data.get("lead_source")
+    _session_language = session_data.get("language")
+except Exception:
+    _session_lead_source = None
+    _session_language = None
 
-            today = datetime.utcnow().date()
-            # Build input full name normalized
-            input_full_name = f"{(first_name or '').strip()} {(last_name or '').strip()}".strip().lower()
+if flow_type == "treatment_flow":
+    # Marketing treatment flow → always Business Listing / WhatsApp
+    lead_source_val = "Business Listing"
+    sub_source_val = "WhatsApp"
+    language_val = None  # not used for treatment flow
+else:
+    # Lead appointment / other flows
+    lead_source_val = _session_lead_source or "Facebook"
+    language_val = _session_language or "English"
+    sub_source_val = "WhatsApp"
 
-            # Build normalized full name in DB: lower(trim(first_name || ' ' || last_name))
-            db_full_name = func.lower(func.trim(func.concat(func.coalesce(Lead.first_name, ''), func.concat(' ', func.coalesce(Lead.last_name, '')))))
+# -------- Same‑day de‑duplication using final lead_source_val --------
+try:
+    from models.models import Lead  # local DB model
 
-            query = db.query(Lead).filter(
-                Lead.phone == phone_number,
-                func.date(Lead.created_at) == today,
-                db_full_name == input_full_name,
-                Lead.lead_source == lead_source_for_check,
-            )
+    today = datetime.utcnow().date()
 
-            existing_today = query.first()
-            if existing_today:
-                print(
-                    f"🛑 [LEAD APPOINTMENT FLOW] Duplicate detected for today. "
-                    f"Phone: {phone_number}, Name: {first_name} {last_name}, "
-                    f"Lead Source: {lead_source_for_check}. "
-                    f"Skipping Zoho push. Existing Zoho Lead ID: {existing_today.zoho_lead_id}"
+    filters = [
+        Lead.phone == phone_number,
+        func.date(Lead.created_at) == today,
+        Lead.lead_source == lead_source_val,
+    ]
+
+    # For non‑treatment flows also match on normalized full name
+    if flow_type != "treatment_flow":
+        input_full_name = f"{(first_name or '').strip()} {(last_name or '').strip()}".strip().lower()
+        db_full_name = func.lower(
+            func.trim(
+                func.concat(
+                    func.coalesce(Lead.first_name, ""),
+                    func.concat(" ", func.coalesce(Lead.last_name, "")),
                 )
-                return {
-                    "success": True,
-                    "skipped": True,
-                    "reason": "duplicate_same_day",
-                    "lead_id": existing_today.zoho_lead_id
-                }
-        except Exception as dup_e:
-            print(f"⚠️ [LEAD APPOINTMENT FLOW] Duplicate-check failed, proceeding with push: {dup_e}")
+            )
+        )
+        filters.append(db_full_name == input_full_name)
+
+    existing_today = db.query(Lead).filter(*filters).first()
+    if existing_today:
+        print(
+            "🛑 [LEAD APPOINTMENT FLOW] Duplicate detected for today. "
+            f"Phone: {phone_number}, Name: {first_name} {last_name}, "
+            f"Lead Source: {lead_source_val}. "
+            f"Skipping Zoho push. Existing Zoho Lead ID: {existing_today.zoho_lead_id}"
+        )
+        return {
+            "success": True,
+            "skipped": True,
+            "reason": "duplicate_same_day",
+            "lead_id": existing_today.zoho_lead_id,
+        }
+except Exception as dup_e:
+    print(f"⚠️ [LEAD APPOINTMENT FLOW] Duplicate-check failed, proceeding with push: {dup_e}")
+# ---------------------------------------------------------------------
         # =============================================================================
 
         if flow_type == "treatment_flow":
