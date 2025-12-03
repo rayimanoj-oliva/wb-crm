@@ -4,12 +4,17 @@ from __future__ import annotations
 # Replace the token values with your actual long-lived tokens
 
 WHATSAPP_NUMBERS = {
-    # Number 1
+    # Lead Appointment Number (primary)
+    "367633743092037": {
+        "token": "EAAcbHJk0x70BOyGSMrMulAHKz9ZCtr0i8iOKbOgjp24Kvg4ZCZAzSeogfhH5iUhloDNpAjydOo7Ca4yOQzL23igIM3y898jOO9fN6L0iuCacW2tL53zSocr6KvTxfscej6ZABzBtRExE6PnNvCisIS8ZAiRveZAXhivoJ4hRKegHNMSBQZBjBVf70WqJ8etDZC2bOAZDZD",
+        "name": "+91 77299 92376",
+    },
+    # Treatment Number 1
     "848542381673826": {
         "token": "EAAcbHJk0x70BOyGSMrMulAHKz9ZCtr0i8iOKbOgjp24Kvg4ZCZAzSeogfhH5iUhloDNpAjydOo7Ca4yOQzL23igIM3y898jOO9fN6L0iuCacW2tL53zSocr6KvTxfscej6ZABzBtRExE6PnNvCisIS8ZAiRveZAXhivoJ4hRKegHNMSBQZBjBVf70WqJ8etDZC2bOAZDZD",
         "name": "+91 82978 82978",
     },
-    # Number 2
+    # Treatment Number 2
     "859830643878412": {
         "token": "EAAcbHJk0x70BOyGSMrMulAHKz9ZCtr0i8iOKbOgjp24Kvg4ZCZAzSeogfhH5iUhloDNpAjydOo7Ca4yOQzL23igIM3y898jOO9fN6L0iuCacW2tL53zSocr6KvTxfscej6ZABzBtRExE6PnNvCisIS8ZAiRveZAXhivoJ4hRKegHNMSBQZBjBVf70WqJ8etDZC2bOAZDZD",
         "name": "+91 76176 13030",
