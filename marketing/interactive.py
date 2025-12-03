@@ -25,39 +25,65 @@ def _resolve_credentials(
     Priority:
     1) Explicit phone_id_hint
     2) Stored `treatment_flow_phone_id` in appointment_state
-    3) Env var TREATMENT_FLOW_PHONE_ID/WELCOME_PHONE_ID
-    4) First configured number in WHATSAPP_NUMBERS
+    3) Stored phone_id from lead_appointment_state
+    4) Env var TREATMENT_FLOW_PHONE_ID/WELCOME_PHONE_ID
+    5) First configured number in WHATSAPP_NUMBERS
     """
     # 1) Hint
     if phone_id_hint:
         cfg = get_number_config(str(phone_id_hint))
         if cfg and cfg.get("token"):
+            print(f"[interactive._resolve_credentials] RESOLVED via phone_id_hint: {phone_id_hint} for wa_id={wa_id}")
             return cfg.get("token"), str(phone_id_hint)
 
-    # 2) Stored state
+    # 2) Stored state from treatment flow OR lead flow in appointment_state
     try:
         from controllers.web_socket import appointment_state  # type: ignore
         st = appointment_state.get(wa_id) or {}
+        # Check treatment flow phone_id
         stored_phone_id = st.get("treatment_flow_phone_id")
         if stored_phone_id:
             cfg = get_number_config(str(stored_phone_id))
             if cfg and cfg.get("token"):
+                print(f"[interactive._resolve_credentials] RESOLVED via treatment_flow_phone_id: {stored_phone_id} for wa_id={wa_id}")
                 return cfg.get("token"), str(stored_phone_id)
+        # Check lead phone_id in appointment_state
+        lead_phone_id_appt = st.get("lead_phone_id")
+        if lead_phone_id_appt:
+            cfg = get_number_config(str(lead_phone_id_appt))
+            if cfg and cfg.get("token"):
+                print(f"[interactive._resolve_credentials] RESOLVED via lead_phone_id (appointment_state): {lead_phone_id_appt} for wa_id={wa_id}")
+                return cfg.get("token"), str(lead_phone_id_appt)
     except Exception:
         pass
 
-    # 3) Env configured
+    # 3) Stored phone_id from lead appointment state (legacy)
+    try:
+        from controllers.web_socket import lead_appointment_state  # type: ignore
+        lst = lead_appointment_state.get(wa_id) or {}
+        lead_phone_id = lst.get("phone_id") or lst.get("lead_phone_id")
+        if lead_phone_id:
+            cfg = get_number_config(str(lead_phone_id))
+            if cfg and cfg.get("token"):
+                print(f"[interactive._resolve_credentials] RESOLVED via lead_phone_id (lead_appointment_state): {lead_phone_id} for wa_id={wa_id}")
+                return cfg.get("token"), str(lead_phone_id)
+    except Exception:
+        pass
+
+    # 4) Env configured
     env_pid = os.getenv("TREATMENT_FLOW_PHONE_ID") or os.getenv("WELCOME_PHONE_ID")
     if env_pid:
         cfg_env = get_number_config(str(env_pid))
         if cfg_env and cfg_env.get("token"):
+            print(f"[interactive._resolve_credentials] WARNING - FALLBACK to env pid: {env_pid} for wa_id={wa_id}")
             return cfg_env.get("token"), str(env_pid)
 
-    # 4) First configured number (from mapping tokens)
+    # 5) First configured number (from mapping tokens)
     try:
         first_pid = next(iter(WHATSAPP_NUMBERS.keys()))
         cfg_first = get_number_config(str(first_pid))
         if cfg_first and cfg_first.get("token"):
+            print(f"[interactive._resolve_credentials] WARNING - FALLBACK to first WHATSAPP_NUMBERS: {first_pid} for wa_id={wa_id}")
             return cfg_first.get("token"), str(first_pid)
     except Exception:
         pass

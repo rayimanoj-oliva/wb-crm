@@ -21,52 +21,82 @@ def _resolve_credentials(db, *, hint_phone_id: str | None = None, hint_display_n
     Preference order:
     1) Explicit hint_phone_id mapping
     2) Stored treatment_flow_phone_id from state (if in treatment flow)
-    3) Env WHATSAPP_PHONE_ID mapping
-    4) Single entry in WHATSAPP_NUMBERS
-    5) Fallback to DB token + env WHATSAPP_PHONE_ID
+    3) Stored lead_appointment_phone_id from lead state
+    4) Env WHATSAPP_PHONE_ID mapping
+    5) Single entry in WHATSAPP_NUMBERS
+    6) Fallback to DB token + env WHATSAPP_PHONE_ID
     """
     # 1) Explicit phone_id hint
     if hint_phone_id and isinstance(WHATSAPP_NUMBERS, dict) and hint_phone_id in WHATSAPP_NUMBERS:
         cfg = WHATSAPP_NUMBERS.get(hint_phone_id) or {}
         tok = cfg.get("token")
         if tok:
+            print(f"[_resolve_credentials] RESOLVED via hint_phone_id: {hint_phone_id} for wa_id={wa_id}")
             return tok, hint_phone_id
 
-    # 2) Check stored treatment_flow_phone_id from state (for treatment flow independence)
+    # 2) Check stored treatment_flow_phone_id OR lead_phone_id from appointment_state
     if wa_id:
         try:
             from controllers.web_socket import appointment_state  # type: ignore
             st = appointment_state.get(wa_id) or {}
+            # Check for treatment flow phone_id
             stored_phone_id = st.get("treatment_flow_phone_id")
             if stored_phone_id and isinstance(WHATSAPP_NUMBERS, dict) and stored_phone_id in WHATSAPP_NUMBERS:
                 cfg = WHATSAPP_NUMBERS.get(stored_phone_id) or {}
                 tok = cfg.get("token")
                 if tok:
+                    print(f"[_resolve_credentials] RESOLVED via stored treatment_flow_phone_id: {stored_phone_id} for wa_id={wa_id}")
                     return tok, stored_phone_id
+            # Check for lead phone_id in appointment_state
+            lead_phone_id_appt = st.get("lead_phone_id")
+            if lead_phone_id_appt and isinstance(WHATSAPP_NUMBERS, dict) and lead_phone_id_appt in WHATSAPP_NUMBERS:
+                cfg = WHATSAPP_NUMBERS.get(lead_phone_id_appt) or {}
+                tok = cfg.get("token")
+                if tok:
+                    print(f"[_resolve_credentials] RESOLVED via stored lead_phone_id (appointment_state): {lead_phone_id_appt} for wa_id={wa_id}")
+                    return tok, lead_phone_id_appt
         except Exception:
             pass
 
-    # 3) Env-configured phone id
+    # 3) Check stored phone_id from lead appointment state (legacy)
+    if wa_id:
+        try:
+            from controllers.web_socket import lead_appointment_state  # type: ignore
+            lst = lead_appointment_state.get(wa_id) or {}
+            lead_phone_id = lst.get("phone_id") or lst.get("lead_phone_id")
+            if lead_phone_id and isinstance(WHATSAPP_NUMBERS, dict) and lead_phone_id in WHATSAPP_NUMBERS:
+                cfg = WHATSAPP_NUMBERS.get(lead_phone_id) or {}
+                tok = cfg.get("token")
+                if tok:
+                    print(f"[_resolve_credentials] RESOLVED via stored lead_phone_id (lead_appointment_state): {lead_phone_id} for wa_id={wa_id}")
+                    return tok, lead_phone_id
+        except Exception:
+            pass
+
+    # 4) Env-configured phone id
     env_pid = os.getenv("WHATSAPP_PHONE_ID")
     if env_pid and isinstance(WHATSAPP_NUMBERS, dict) and env_pid in WHATSAPP_NUMBERS:
         cfg = WHATSAPP_NUMBERS.get(env_pid) or {}
         tok = cfg.get("token")
         if tok:
+            print(f"[_resolve_credentials] WARNING - FALLBACK to env WHATSAPP_PHONE_ID: {env_pid} for wa_id={wa_id} (no stored state found)")
             return tok, env_pid
 
-    # 4) Single mapping entry
+    # 5) Single mapping entry
     try:
         entries = [(pid, cfg) for pid, cfg in (WHATSAPP_NUMBERS or {}).items() if (cfg or {}).get("token")]
         if len(entries) == 1:
             pid, cfg = entries[0]
+            print(f"[_resolve_credentials] WARNING - FALLBACK to single WHATSAPP_NUMBERS entry: {pid} for wa_id={wa_id}")
             return cfg.get("token"), pid
     except Exception:
         pass
 
-    # 5) Fallback to DB token + env phone id
+    # 6) Fallback to DB token + env phone id
     token_obj = whatsapp_service.get_latest_token(db)
     if token_obj and getattr(token_obj, "token", None):
         pid_final = (env_pid or os.getenv("WHATSAPP_PHONE_ID", "367633743092037"))
+        print(f"[_resolve_credentials] WARNING - FALLBACK to DB token + default phone_id: {pid_final} for wa_id={wa_id}")
         return token_obj.token, pid_final
     raise HTTPException(status_code=400, detail="Token not available")
 

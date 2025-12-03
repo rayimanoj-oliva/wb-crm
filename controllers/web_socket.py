@@ -243,8 +243,12 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 st_route["flow_context"] = "treatment"
                 st_route["from_treatment_flow"] = True
                 st_route["treatment_flow_phone_id"] = phone_number_id_str
+                print(f"[ws_webhook] DEBUG - Stored treatment_flow_phone_id={phone_number_id_str} for wa_id={wa_id}")
             elif is_lead_appointment_number:
                 st_route["flow_context"] = "lead_appointment"
+                # Also store the lead_phone_id in appointment_state for credential resolution
+                st_route["lead_phone_id"] = phone_number_id_str
+                print(f"[ws_webhook] DEBUG - Stored lead_phone_id={phone_number_id_str} for wa_id={wa_id}")
             appointment_state[wa_id] = st_route
         except Exception:
             pass

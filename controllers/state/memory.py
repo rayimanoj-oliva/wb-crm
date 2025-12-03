@@ -27,10 +27,13 @@ def generate_flow_token(wa_id: str) -> str:
 def clear_flow_state_for_restart(wa_id: str) -> None:
     """
     Clear stale flow state to allow a customer to start a new flow.
-    
+
     This function should be called when detecting a starting point message
     to ensure old state doesn't prevent a new flow from starting.
-    
+
+    IMPORTANT: We preserve phone_id fields to ensure messages continue
+    to be sent from the correct number even after flow restarts.
+
     Args:
         wa_id: The WhatsApp ID of the customer
     """
@@ -49,26 +52,41 @@ def clear_flow_state_for_restart(wa_id: str) -> None:
             state.pop("corrected_name", None)
             state.pop("corrected_phone", None)
             # If state is empty or only has non-critical fields, clear it entirely
-            # Keep only essential fields like treatment_flow_phone_id if needed
-            critical_fields = {"treatment_flow_phone_id"}
+            # Keep essential fields like treatment_flow_phone_id and lead_phone_id to prevent wrong number sends
+            critical_fields = {"treatment_flow_phone_id", "lead_phone_id"}
             if not any(k in critical_fields for k in state.keys()):
                 appointment_state.pop(wa_id, None)
             else:
-                # Keep only critical fields
-                appointment_state[wa_id] = {k: v for k, v in state.items() if k in critical_fields}
-        
+                # Keep only critical fields (phone_ids)
+                preserved_state = {k: v for k, v in state.items() if k in critical_fields}
+                appointment_state[wa_id] = preserved_state
+                print(f"[state/memory] DEBUG - Preserved phone_ids for wa_id={wa_id}: {preserved_state}")
+
         # Clear lead appointment state to allow fresh start
         # BUT: Don't clear if customer is actively in lead appointment flow (has flow_context set)
         # This prevents treatment flow from clearing lead appointment flow state
+        # ALSO: Preserve lead_phone_id and lead_display_number even when clearing
         if wa_id in lead_appointment_state:
             state = lead_appointment_state[wa_id]
             # Only clear if flow_context is NOT "lead_appointment" (customer is not actively in flow)
             if state.get("flow_context") != "lead_appointment":
+                # Preserve phone_id fields before clearing
+                lead_phone_id = state.get("lead_phone_id")
+                lead_display_number = state.get("lead_display_number")
                 lead_appointment_state.pop(wa_id, None)
-                print(f"[state/memory] DEBUG - Cleared lead appointment state for restart: wa_id={wa_id}")
+                # Restore phone_id fields if they existed
+                if lead_phone_id or lead_display_number:
+                    lead_appointment_state[wa_id] = {}
+                    if lead_phone_id:
+                        lead_appointment_state[wa_id]["lead_phone_id"] = lead_phone_id
+                    if lead_display_number:
+                        lead_appointment_state[wa_id]["lead_display_number"] = lead_display_number
+                    print(f"[state/memory] DEBUG - Cleared lead appointment state but preserved phone_id: wa_id={wa_id}, lead_phone_id={lead_phone_id}")
+                else:
+                    print(f"[state/memory] DEBUG - Cleared lead appointment state for restart: wa_id={wa_id}")
             else:
                 print(f"[state/memory] DEBUG - Preserved lead appointment state (customer is in active flow): wa_id={wa_id}")
-        
+
         print(f"[state/memory] DEBUG - Cleared flow state for restart: wa_id={wa_id}")
     except Exception as e:
         print(f"[state/memory] WARNING - Error clearing flow state: {e}")
