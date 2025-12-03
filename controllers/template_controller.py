@@ -53,11 +53,9 @@ def list_local_templates(db: Session = Depends(get_db)):
 @router.post("/upload-header-image")
 async def upload_header_image(file: UploadFile = File(...), db: Session = Depends(get_db)):
     """
-    Upload an image for use in template headers.
+    Upload an image for use in template headers using Facebook's Resumable Upload API.
 
-    Facebook requires images to be uploaded first using the Resumable Upload API
-    to get a valid media handle that can be used in template creation.
-
+    This returns a valid media handle that can be used in template creation.
     The media handle expires quickly, so create the template immediately after uploading.
     """
     token_entry = get_latest_token(db)
@@ -71,9 +69,35 @@ async def upload_header_image(file: UploadFile = File(...), db: Session = Depend
     content_type = file.content_type or "image/jpeg"
     filename = file.filename or "header_image.jpg"
 
-    # WhatsApp Business Account ID and App ID for Resumable Upload
-    waba_id = "286831244524604"  # Your WABA ID
-    app_id = "497390346615498"  # Your App ID
+    # Validate file type
+    allowed_types = ["image/jpeg", "image/jpg", "image/png"]
+    if content_type not in allowed_types:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file type. Allowed types: {', '.join(allowed_types)}"
+        )
+
+    # Validate file size (max 5MB for WhatsApp)
+    max_size = 5 * 1024 * 1024  # 5MB
+    if len(content) > max_size:
+        raise HTTPException(
+            status_code=400,
+            detail="File too large. Maximum size is 5MB."
+        )
+
+    # Get App ID from token debug endpoint
+    debug_url = "https://graph.facebook.com/v22.0/debug_token"
+    debug_params = {"input_token": token, "access_token": token}
+    debug_response = requests.get(debug_url, params=debug_params)
+
+    if debug_response.status_code != 200:
+        raise HTTPException(status_code=500, detail="Failed to validate token")
+
+    debug_data = debug_response.json()
+    app_id = debug_data.get("data", {}).get("app_id")
+
+    if not app_id:
+        raise HTTPException(status_code=500, detail="Could not determine App ID from token")
 
     # Step 1: Create upload session using Resumable Upload API
     session_url = f"https://graph.facebook.com/v22.0/{app_id}/uploads"
@@ -87,44 +111,18 @@ async def upload_header_image(file: UploadFile = File(...), db: Session = Depend
     session_response = requests.post(session_url, params=session_params)
 
     if session_response.status_code != 200:
-        # Fallback to regular media upload if resumable fails
-        media_url = f"https://graph.facebook.com/v22.0/{waba_id}/media"
-        files = {
-            "file": (filename, content, content_type),
-            "messaging_product": (None, "whatsapp")
-        }
-        headers = {"Authorization": f"Bearer {token}"}
+        raise HTTPException(
+            status_code=session_response.status_code,
+            detail=f"Failed to create upload session: {session_response.text}"
+        )
 
-        media_response = requests.post(media_url, headers=headers, files=files)
-
-        if media_response.status_code != 200:
-            raise HTTPException(
-                status_code=media_response.status_code,
-                detail=f"Failed to upload media: {media_response.text}"
-            )
-
-        media_id = media_response.json().get("id")
-        return {
-            "status": "success",
-            "media_id": media_id,
-            "message": "Image uploaded successfully. Use this media_id in header_handle array immediately.",
-            "usage": {
-                "component_type": "HEADER",
-                "format": "IMAGE",
-                "example": {
-                    "header_handle": [media_id]
-                }
-            }
-        }
-
-    # Step 2: Upload the actual file data
     session_data = session_response.json()
     upload_session_id = session_data.get("id")
 
     if not upload_session_id:
         raise HTTPException(status_code=500, detail="Failed to get upload session ID")
 
-    # Upload the file using the session
+    # Step 2: Upload the actual file data
     upload_url = f"https://graph.facebook.com/v22.0/{upload_session_id}"
     headers = {
         "Authorization": f"OAuth {token}",
@@ -148,7 +146,7 @@ async def upload_header_image(file: UploadFile = File(...), db: Session = Depend
     return {
         "status": "success",
         "media_id": media_handle,
-        "message": "Image uploaded successfully using Resumable Upload API. Use this media_id in header_handle array immediately.",
+        "message": "Image uploaded successfully. Use this media_id in header_handle array immediately - it expires quickly!",
         "usage": {
             "component_type": "HEADER",
             "format": "IMAGE",
