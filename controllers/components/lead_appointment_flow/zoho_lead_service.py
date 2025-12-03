@@ -10,7 +10,7 @@ import json
 import os
 
 from sqlalchemy.orm import Session
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, and_
 from utils.zoho_auth import get_valid_access_token
 
 
@@ -540,102 +540,153 @@ async def create_lead_for_appointment(
             f"user_confirmed => corrected_phone: {appointment_details.get('corrected_phone')}"
         )
         
-        # De-duplication: avoid creating another lead for same wa_id/phone/customer within last 24 hours
+        # Determine flow_type early to know what Lead Source we'll use
         try:
-            from models.models import Lead as _Lead
-            from datetime import datetime as _dt, timedelta as _td
+            flow_type = (appointment_details or {}).get("flow_type")
+        except Exception:
+            flow_type = None
 
-            def _digits_only(val: str | None) -> str:
-                try:
-                    import re as _re
-                    return _re.sub(r"\D", "", val or "")
-                except Exception:
-                    return val or ""
+        if not flow_type:
+            # Fallback: infer from appointment_state flags
+            try:
+                from controllers.web_socket import appointment_state
+                appt_state = appointment_state.get(wa_id, {})
+                if (
+                    bool(appt_state.get("from_treatment_flow"))
+                    or appt_state.get("flow_context") == "treatment"
+                    or bool(appt_state.get("treatment_flow_phone_id"))
+                ):
+                    flow_type = "treatment_flow"
+                    print("[LEAD APPOINTMENT FLOW] Detected treatment flow from appointment_state")
+            except Exception as e:
+                print(f"[LEAD APPOINTMENT FLOW] Could not check appointment_state: {e}")
 
-            phone_digits = _digits_only(phone_number)
-            last10 = phone_digits[-10:] if len(phone_digits) >= 10 else phone_digits
+        # For treatment flow, we only check for "Business Listing" leads
+        # For other flows, skip this early check (they're disabled anyway)
+        if flow_type == "treatment_flow":
+            # De-duplication: check for "Business Listing" leads in last 24 hours
+            try:
+                from models.models import Lead as _Lead
+                from datetime import datetime as _dt, timedelta as _td
 
-            phone_variants = {
-                phone_digits,
-                last10 if len(last10) == 10 else "",
-                f"+{phone_digits}" if phone_digits else "",
-                f"+91{last10}" if len(last10) == 10 else "",
-                f"91{last10}" if len(last10) == 10 else "",
-            }
-            phone_variants = {p for p in phone_variants if p}
+                def _digits_only(val: str | None) -> str:
+                    try:
+                        import re as _re
+                        return _re.sub(r"\D", "", val or "")
+                    except Exception:
+                        return val or ""
 
-            # Only check for duplicates within last 24 hours
-            window_start = _dt.utcnow() - _td(hours=24)
+                phone_digits = _digits_only(phone_number)
+                last10 = phone_digits[-10:] if len(phone_digits) >= 10 else phone_digits
 
-            criteria = [_Lead.wa_id == wa_id]
-            if phone_variants:
-                criteria.append(_Lead.phone.in_(phone_variants))
-                criteria.append(_Lead.mobile.in_(phone_variants))
-            customer_id_val = getattr(customer, "id", None)
-            if customer_id_val:
-                criteria.append(_Lead.customer_id == customer_id_val)
+                phone_variants = {
+                    phone_digits,
+                    last10 if len(last10) == 10 else "",
+                    f"+{phone_digits}" if phone_digits else "",
+                    f"+91{last10}" if len(last10) == 10 else "",
+                    f"91{last10}" if len(last10) == 10 else "",
+                }
+                phone_variants = {p for p in phone_variants if p}
 
-            existing_any = (
-                db.query(_Lead)
-                .filter(or_(*criteria))
-                .filter(_Lead.created_at >= window_start)
-                .order_by(_Lead.created_at.desc())
-                .first()
-            )
-            if existing_any:
-                print(f"✅ [LEAD APPOINTMENT FLOW] Duplicate prevented: existing lead found for {wa_id} (lead_id={existing_any.zoho_lead_id})")
-                try:
-                    from utils.flow_log import log_flow_event  # type: ignore
-                    log_flow_event(
-                        db,
-                        flow_type="lead_appointment",
-                        step="result",
-                        status_code=200,
-                        wa_id=wa_id,
-                        name=getattr(customer, 'name', None) or '',
-                        description=f"Duplicate avoided: existing lead {existing_any.zoho_lead_id}",
+                # Check for duplicates within last 24 hours with Lead Source = "Business Listing"
+                window_start = _dt.utcnow() - _td(hours=24)
+
+                criteria = [
+                    _Lead.lead_source == "Business Listing",  # Only check Business Listing leads
+                    _Lead.created_at >= window_start,  # Within last 24 hours
+                ]
+                
+                # Match by phone variants
+                if phone_variants:
+                    phone_criteria = or_(
+                        _Lead.phone.in_(phone_variants),
+                        _Lead.mobile.in_(phone_variants),
                     )
-                except Exception:
-                    pass
-                return {"success": True, "duplicate": True, "lead_id": existing_any.zoho_lead_id}
-        except Exception as _e:
-            print(f"⚠️ [LEAD APPOINTMENT FLOW] De-dup check failed: {_e}")
+                    criteria.append(phone_criteria)
+                
+                # Also match by wa_id
+                criteria.append(_Lead.wa_id == wa_id)
 
-        # Zoho-side duplicate guard by phone (24-hour window)
-        # Check if a lead exists for this phone in the last 24 hours.
-        # If no lead exists in the last 24 hours, we can create a new one.
-        try:
-            existing_zoho = zoho_lead_service.find_existing_lead_by_phone(
-                phone_number, within_last_24h=True
-            )
-            if existing_zoho and isinstance(existing_zoho, dict):
-                lead_id_existing = str(
-                    existing_zoho.get("id") or existing_zoho.get("Id") or ""
+                existing_business_listing = (
+                    db.query(_Lead)
+                    .filter(and_(*criteria))
+                    .order_by(_Lead.created_at.desc())
+                    .first()
                 )
-                if lead_id_existing:
+                
+                if existing_business_listing:
                     print(
-                        f"✅ [LEAD APPOINTMENT FLOW] Duplicate prevented via Zoho search by phone (last 24h). "
-                        f"Existing lead_id={lead_id_existing}"
+                        f"✅ [LEAD APPOINTMENT FLOW] Duplicate prevented: existing 'Business Listing' lead found "
+                        f"for {wa_id} (phone={phone_number}) in last 24h (lead_id={existing_business_listing.zoho_lead_id})"
                     )
                     try:
                         from utils.flow_log import log_flow_event  # type: ignore
-
                         log_flow_event(
                             db,
                             flow_type="lead_appointment",
                             step="result",
                             status_code=200,
                             wa_id=wa_id,
-                            name=getattr(customer, "name", None) or "",
-                            description=(
-                                f"Duplicate avoided (Zoho search): existing lead {lead_id_existing}"
-                            ),
+                            name=getattr(customer, 'name', None) or '',
+                            description=f"Duplicate avoided: existing Business Listing lead {existing_business_listing.zoho_lead_id}",
                         )
                     except Exception:
                         pass
-                    return {"success": True, "duplicate": True, "lead_id": lead_id_existing}
-        except Exception as _e:
-            print(f"⚠️ [LEAD APPOINTMENT FLOW] Zoho-side duplicate check failed: {_e}")
+                    return {"success": True, "duplicate": True, "lead_id": existing_business_listing.zoho_lead_id}
+                else:
+                    print(
+                        f"🔍 [LEAD APPOINTMENT FLOW] No 'Business Listing' lead found in DB for {wa_id} "
+                        f"(phone={phone_number}) in last 24h. Checking Zoho..."
+                    )
+            except Exception as _e:
+                print(f"⚠️ [LEAD APPOINTMENT FLOW] DB duplicate check failed: {_e}")
+
+            # Zoho-side duplicate guard: check for "Business Listing" leads by phone (24-hour window)
+            try:
+                existing_zoho = zoho_lead_service.find_existing_lead_by_phone(
+                    phone_number, within_last_24h=True
+                )
+                if existing_zoho and isinstance(existing_zoho, dict):
+                    # Verify the lead has Lead Source = "Business Listing"
+                    lead_source = existing_zoho.get("Lead_Source") or existing_zoho.get("details", {}).get("Lead_Source")
+                    if lead_source == "Business Listing":
+                        lead_id_existing = str(
+                            existing_zoho.get("id") or existing_zoho.get("Id") or ""
+                        )
+                        if lead_id_existing:
+                            print(
+                                f"✅ [LEAD APPOINTMENT FLOW] Duplicate prevented via Zoho: existing 'Business Listing' lead "
+                                f"for {phone_number} in last 24h (lead_id={lead_id_existing})"
+                            )
+                            try:
+                                from utils.flow_log import log_flow_event  # type: ignore
+
+                                log_flow_event(
+                                    db,
+                                    flow_type="lead_appointment",
+                                    step="result",
+                                    status_code=200,
+                                    wa_id=wa_id,
+                                    name=getattr(customer, "name", None) or "",
+                                    description=(
+                                        f"Duplicate avoided (Zoho search): existing Business Listing lead {lead_id_existing}"
+                                    ),
+                                )
+                            except Exception:
+                                pass
+                            return {"success": True, "duplicate": True, "lead_id": lead_id_existing}
+                    else:
+                        print(
+                            f"🔍 [LEAD APPOINTMENT FLOW] Zoho lead found but Lead Source is '{lead_source}', "
+                            f"not 'Business Listing'. Proceeding with creation..."
+                        )
+                else:
+                    print(
+                        f"🔍 [LEAD APPOINTMENT FLOW] No lead found in Zoho for {phone_number} in last 24h. "
+                        f"Proceeding with lead creation..."
+                    )
+            except Exception as _e:
+                print(f"⚠️ [LEAD APPOINTMENT FLOW] Zoho-side duplicate check failed: {_e}")
 
         # Initialize variables for concern tracking
         selected_concern = None
@@ -759,27 +810,7 @@ async def create_lead_for_appointment(
         # Stop persisting description/lead_status to DB; retain for external Zoho payload only
         final_description = None
 
-        # -------- Determine flow type (treatment vs others) --------
-        try:
-            flow_type = (appointment_details or {}).get("flow_type")
-        except Exception:
-            flow_type = None
-
-        if not flow_type:
-            # Fallback: infer from appointment_state flags
-            try:
-                from controllers.web_socket import appointment_state
-                appt_state = appointment_state.get(wa_id, {})
-                if (
-                    bool(appt_state.get("from_treatment_flow"))
-                    or appt_state.get("flow_context") == "treatment"
-                    or bool(appt_state.get("treatment_flow_phone_id"))
-                ):
-                    flow_type = "treatment_flow"
-                    print("[LEAD APPOINTMENT FLOW] Detected treatment flow from appointment_state")
-            except Exception as e:
-                print(f"[LEAD APPOINTMENT FLOW] Could not check appointment_state: {e}")
-
+        # flow_type was already determined earlier for duplicate checking
         # If lead-appointment flows are not live, avoid creating non-treatment leads in Zoho
         if flow_type != "treatment_flow":
             print(
@@ -805,49 +836,8 @@ async def create_lead_for_appointment(
         sub_source_val = "WhatsApp"
         language_val = None  # not used for treatment flow
 
-        # -------- Same‑day de‑duplication using final lead_source_val --------
-        try:
-            from models.models import Lead  # local DB model
-
-            today = datetime.utcnow().date()
-
-            filters = [
-                Lead.phone == phone_number,
-                func.date(Lead.created_at) == today,
-                Lead.lead_source == lead_source_val,
-            ]
-
-            # For non‑treatment flows also match on normalized full name
-            if flow_type != "treatment_flow":
-                input_full_name = (
-                    f"{(first_name or '').strip()} {(last_name or '').strip()}".strip().lower()
-                )
-                db_full_name = func.lower(
-                    func.trim(
-                        func.concat(
-                            func.coalesce(Lead.first_name, ""),
-                            func.concat(" ", func.coalesce(Lead.last_name, "")),
-                        )
-                    )
-                )
-                filters.append(db_full_name == input_full_name)
-
-            existing_today = db.query(Lead).filter(*filters).first()
-            if existing_today:
-                print(
-                    "🛑 [LEAD APPOINTMENT FLOW] Duplicate detected for today. "
-                    f"Phone: {phone_number}, Name: {first_name} {last_name}, "
-                    f"Lead Source: {lead_source_val}. "
-                    f"Skipping Zoho push. Existing Zoho Lead ID: {existing_today.zoho_lead_id}"
-                )
-                return {
-                    "success": True,
-                    "skipped": True,
-                    "reason": "duplicate_same_day",
-                    "lead_id": existing_today.zoho_lead_id,
-                }
-        except Exception as dup_e:
-            print(f"⚠️ [LEAD APPOINTMENT FLOW] Duplicate-check failed, proceeding with push: {dup_e}")
+        # Note: Duplicate checking (24-hour window) was already done earlier in this function
+        # for treatment flow leads with Lead Source = "Business Listing"
 
         # -------- Call Zoho lead service --------
         result = zoho_lead_service.create_lead(
@@ -981,7 +971,7 @@ async def create_lead_for_dropoff(
     """Create a lead for users who drop off before completing the flow.
     
     Args:
-        dropoff_point: Where the user dropped off (e.g., "city_selection", "clinic_selection", etc.)
+        dropoff_point: Where the user dropped off (e.g., "city_selection", "clinic_selection", "no_response_followup2", etc.)
         
     Returns a status dict.
     """
@@ -990,10 +980,27 @@ async def create_lead_for_dropoff(
         # Get any partial appointment details
         appointment_details = {}
         try:
-            from controllers.web_socket import lead_appointment_state
+            from controllers.web_socket import lead_appointment_state, appointment_state
             appointment_details = lead_appointment_state.get(wa_id, {})
-        except Exception:
-            pass
+            
+            # Also check appointment_state for treatment flow context
+            appt_state = appointment_state.get(wa_id, {})
+            if (
+                bool(appt_state.get("from_treatment_flow"))
+                or appt_state.get("flow_context") == "treatment"
+                or bool(appt_state.get("treatment_flow_phone_id"))
+            ):
+                # Ensure flow_type is set to treatment_flow for dropoff leads
+                appointment_details["flow_type"] = "treatment_flow"
+                print(f"[create_lead_for_dropoff] Set flow_type=treatment_flow for dropoff lead (wa_id={wa_id}, dropoff_point={dropoff_point})")
+        except Exception as e:
+            print(f"[create_lead_for_dropoff] Could not get appointment state: {e}")
+        
+        # If flow_type is not set, try to infer from dropoff_point
+        # If it's a follow-up dropoff, it's likely from treatment flow
+        if not appointment_details.get("flow_type") and "followup" in dropoff_point.lower():
+            appointment_details["flow_type"] = "treatment_flow"
+            print(f"[create_lead_for_dropoff] Inferred flow_type=treatment_flow from dropoff_point={dropoff_point}")
         
         # Create lead with NO_CALLBACK status
         result = await create_lead_for_appointment(

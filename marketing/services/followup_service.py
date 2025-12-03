@@ -118,8 +118,8 @@ def _resolve_marketing_credentials(db: Session, *, wa_id: Optional[str] = None) 
     return token, str(phone_id_pref), display_from
 
 # Follow-up timing constants (in minutes)
-FOLLOW_UP_1_DELAY_MINUTES = 5  # Time before sending Follow-Up 1
-FOLLOW_UP_2_DELAY_MINUTES = 30  # Time after Follow-Up 1 before sending Follow-Up 2
+FOLLOW_UP_1_DELAY_MINUTES = 2  # Time before sending Follow-Up 1
+FOLLOW_UP_2_DELAY_MINUTES = 3  # Time after Follow-Up 1 before sending Follow-Up 2
 
 FOLLOW_UP_1_TEXT = (
     "👋 Hi! Just checking in — are we still connected?\n\n"
@@ -549,10 +549,11 @@ async def send_followup2(db: Session, *, wa_id: str, from_wa_id: str = None):
         cust_for_link = db.query(Customer).filter(Customer.id == customer.id).first() if customer else None
         cust_id = getattr(cust_for_link, "id", None)
 
-        # Robust duplicate check (within last 24 hours):
-        # - Same wa_id
-        # - Same phone exact (digits only stored) OR phone ends with last 10
-        # - Same customer_id linkage if present
+        # Robust duplicate check (within last 24 hours) for "Business Listing" leads only:
+        # Treatment flow customers should only create "Business Listing / WhatsApp" leads
+        # - Same wa_id OR phone
+        # - Lead Source = "Business Listing"
+        # - Created within last 24 hours
         window_start = datetime.utcnow() - timedelta(hours=24)
         existing = (
             db.query(_Lead)
@@ -561,16 +562,16 @@ async def send_followup2(db: Session, *, wa_id: str, from_wa_id: str = None):
                     _Lead.wa_id == wa_id,
                     _Lead.phone == phone_digits,
                     func.right(_Lead.phone, 10) == last10,
-                    (_Lead.customer_id == cust_id) if cust_id else False,
                 )
             )
+            .filter(_Lead.lead_source == "Business Listing")  # Only check Business Listing leads
             .filter(_Lead.created_at >= window_start)
             .order_by(_Lead.created_at.desc())
             .first()
         )
 
         if not existing:
-            # Double-check in Zoho by phone (24-hour window) to avoid duplicates even if local DB missed a record
+            # Double-check in Zoho by phone (24-hour window) for "Business Listing" leads
             try:
                 from controllers.components.lead_appointment_flow.zoho_lead_service import zoho_lead_service  # type: ignore
                 zoho_hit = zoho_lead_service.find_existing_lead_by_phone(phone_digits or wa_id, within_last_24h=True)
@@ -579,24 +580,28 @@ async def send_followup2(db: Session, *, wa_id: str, from_wa_id: str = None):
                 zoho_hit = None
 
             if zoho_hit:
-                lead_id_existing = str((zoho_hit or {}).get("id") or (zoho_hit or {}).get("Id") or "")
-                logger.info(f"[followup_service] Zoho lead already exists for {wa_id} (lead_id={lead_id_existing}). Skipping dropoff lead creation.")
-                # Optional: log informational result
-                try:
-                    log_flow_event(
-                        db,
-                        flow_type="lead_appointment",
-                        step="result",
-                        status_code=200,
-                        wa_id=wa_id,
-                        name=getattr(customer, "name", None) or "",
-                        description=f"Duplicate avoided after Follow-Up 2: existing Zoho lead {lead_id_existing}",
-                    )
-                except Exception:
-                    pass
-                return message_id
+                # Verify the lead has Lead Source = "Business Listing"
+                lead_source = zoho_hit.get("Lead_Source") or zoho_hit.get("details", {}).get("Lead_Source")
+                if lead_source == "Business Listing":
+                    lead_id_existing = str((zoho_hit or {}).get("id") or (zoho_hit or {}).get("Id") or "")
+                    logger.info(f"[followup_service] Zoho 'Business Listing' lead already exists for {wa_id} (lead_id={lead_id_existing}) in last 24h. Skipping dropoff lead creation.")
+                    try:
+                        log_flow_event(
+                            db,
+                            flow_type="lead_appointment",
+                            step="result",
+                            status_code=200,
+                            wa_id=wa_id,
+                            name=getattr(customer, "name", None) or "",
+                            description=f"Duplicate avoided after Follow-Up 2: existing Business Listing lead {lead_id_existing}",
+                        )
+                    except Exception:
+                        pass
+                    return message_id
+                else:
+                    logger.info(f"[followup_service] Zoho lead found but Lead Source is '{lead_source}', not 'Business Listing'. Proceeding with lead creation.")
 
-            logger.info(f"[followup_service] No existing lead for {wa_id} (DB+Zoho). Creating dropoff lead after Follow-Up 2.")
+            logger.info(f"[followup_service] No 'Business Listing' lead found for {wa_id} (DB+Zoho) in last 24h. Creating dropoff lead after Follow-Up 2.")
             try:
                 from controllers.components.lead_appointment_flow.zoho_lead_service import create_lead_for_dropoff  # type: ignore
                 res = await create_lead_for_dropoff(db, wa_id=wa_id, customer=customer, dropoff_point="no_response_followup2")
