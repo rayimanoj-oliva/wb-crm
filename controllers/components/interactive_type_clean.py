@@ -13,6 +13,7 @@ from config.constants import get_messages_url
 from services import message_service, order_service
 from services.whatsapp_service import get_latest_token
 from schemas.message_schema import MessageCreate
+from models.models import Message
 from utils.whatsapp import send_message_to_waid
 from utils.ws_manager import manager
 
