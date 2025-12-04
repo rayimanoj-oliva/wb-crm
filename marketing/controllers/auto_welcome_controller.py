@@ -537,26 +537,44 @@ async def whatsapp_auto_welcome_webhook(request: Request, db: Session = Depends(
         )
 
         # -----------------------------
-# After sending mr_welcome template
-# -----------------------------
+        # After sending mr_welcome template
+        # -----------------------------
         if resp.status_code == 200:
+            from models.models import Message  # local import to avoid circulars
+            from sqlalchemy.exc import IntegrityError
+
+            # -----------------------------
+            # Persist mr_welcome template message
+            # -----------------------------
             try:
-                tpl_msg_id = resp.json()["messages"][0]["id"]
+                response_data = resp.json()
+                tpl_msg_id = response_data.get("messages", [{}])[0].get("id") or f"outbound_{datetime.now().timestamp()}"
 
-                # Save mr_welcome template
-                tpl_message = MessageCreate(
-                    message_id=tpl_msg_id,
-                    from_wa_id=to_wa_id,
-                    to_wa_id=wa_id,
-                    type="template",
-                    body="TEMPLATE: mr_welcome",
-                    timestamp=datetime.now(),
-                    customer_id=customer.id,
-                )
-                message_service.create_message(db, tpl_message)
-                db.commit()
+                # Avoid duplicate saves if message_id already exists
+                existing_tpl = db.query(Message).filter(Message.message_id == tpl_msg_id).first()
+                if existing_tpl:
+                    print(f"[auto_webhook] ⚠ mr_welcome already in DB, skipping save (message_id={tpl_msg_id})")
+                else:
+                    tpl_message = MessageCreate(
+                        message_id=tpl_msg_id,
+                        from_wa_id=to_wa_id,
+                        to_wa_id=wa_id,
+                        type="template",
+                        body="TEMPLATE: mr_welcome",
+                        timestamp=datetime.now(),
+                        customer_id=customer.id,
+                    )
+                    try:
+                        message_service.create_message(db, tpl_message)
+                        print(f"[auto_webhook] ✅ Saved mr_welcome template to DB: message_id={tpl_msg_id}")
+                    except IntegrityError:
+                        db.rollback()
+                        print(f"[auto_webhook] ⚠ Duplicate mr_welcome message_id, rolled back (message_id={tpl_msg_id})")
+                    except Exception as template_err:
+                        db.rollback()
+                        print("[auto_webhook] ❌ Error saving mr_welcome:", template_err)
 
-                # Broadcast template event
+                # Broadcast template event (even if already existed)
                 try:
                     await manager.broadcast({
                         "from": to_wa_id,
@@ -566,11 +584,11 @@ async def whatsapp_auto_welcome_webhook(request: Request, db: Session = Depends(
                         "timestamp": datetime.now().isoformat(),
                         "meta": {"template_name": "mr_welcome"},
                     })
-                except:
+                except Exception:
                     pass
 
-            except Exception as template_err:
-                print("[auto_webhook] Error saving mr_welcome:", template_err)
+            except Exception as template_outer_err:
+                print("[auto_webhook] ❌ Unexpected error handling mr_welcome DB save:", template_outer_err)
 
             # ---------------------------------------------------------
             # NOW SEND THE CONFIRMATION BUTTONS (YES / NO)
@@ -607,20 +625,33 @@ async def whatsapp_auto_welcome_webhook(request: Request, db: Session = Depends(
                             or f"outbound_{datetime.now().timestamp()}"
                         )
 
-                        # Save interactive YES/NO message
-                        confirm_interactive = MessageCreate(
-                            message_id=confirm_message_id,
-                            from_wa_id=to_wa_id,
-                            to_wa_id=wa_id,
-                            type="interactive",
-                            body="Are your name and contact number correct? ",
-                            timestamp=datetime.now(),
-                            customer_id=customer.id,
-                        )
-                        message_service.create_message(db, confirm_interactive)
-                        db.commit()
+                        # Save interactive YES/NO message (with duplicate protection)
+                        try:
+                            existing_btn = db.query(Message).filter(Message.message_id == confirm_message_id).first()
+                            if existing_btn:
+                                print(f"[auto_webhook] ⚠ Confirmation buttons already in DB, skipping save (message_id={confirm_message_id})")
+                            else:
+                                confirm_interactive = MessageCreate(
+                                    message_id=confirm_message_id,
+                                    from_wa_id=to_wa_id,
+                                    to_wa_id=wa_id,
+                                    type="interactive",
+                                    body="Are your name and contact number correct? ",
+                                    timestamp=datetime.now(),
+                                    customer_id=customer.id,
+                                )
+                                try:
+                                    message_service.create_message(db, confirm_interactive)
+                                    print(f"[auto_webhook] ✅ Saved confirmation buttons to DB: message_id={confirm_message_id}")
+                                except IntegrityError:
+                                    db.rollback()
+                                    print(f"[auto_webhook] ⚠ Duplicate confirmation message_id, rolled back (message_id={confirm_message_id})")
+                                except Exception as save_btn_err:
+                                    db.rollback()
+                                    print(f"[auto_webhook] ❌ Error saving confirmation buttons to DB: {save_btn_err}")
 
-                        print("[auto_webhook] ✔ Saved confirmation buttons to DB")
+                        except Exception as e_btn_db:
+                            print(f"[auto_webhook] ❌ Unexpected error during confirmation DB save: {e_btn_db}")
 
                 except Exception as e_btn:
                     print("[auto_webhook] ERROR sending confirmation buttons:", e_btn)
@@ -635,7 +666,7 @@ async def whatsapp_auto_welcome_webhook(request: Request, db: Session = Depends(
                         "timestamp": datetime.now().isoformat(),
                         "meta": {"kind": "buttons", "options": ["Yes", "No"]},
                     })
-                except:
+                except Exception:
                     pass
 
             return {"status": "welcome_and_confirm_sent", "message_id": message_id}

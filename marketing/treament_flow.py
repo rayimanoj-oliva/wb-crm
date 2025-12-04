@@ -48,9 +48,6 @@ async def run_treament_flow(
         )
     except Exception:
         pass
-    
-    # Log last step reached: entry (when mr_welcome template is about to be sent)
-    # This will be logged again when template is actually sent, but this ensures we capture flow start
 
     handled_text = False
 
@@ -75,42 +72,7 @@ async def run_treament_flow(
 
         normalized_body = _normalize(body_text)
 
-        # 3) Check if customer is already in the flow
-        is_in_flow = False
-        try:
-            from controllers.web_socket import appointment_state  # type: ignore
-            st_check = appointment_state.get(wa_id) or {}
-            # Check if customer is in treatment flow (has flow context or mr_welcome was sent)
-            is_in_flow = bool(st_check.get("flow_context") == "treatment" or st_check.get("mr_welcome_sent") or st_check.get("from_treatment_flow"))
-        except Exception:
-            pass
-        
-        # 3.5) Check database to see if mr_welcome template was already sent to this customer
-        # This prevents sending welcome template again when user triggers flow in the middle
-        welcome_already_sent = False
-        try:
-            from models.models import Message
-            from services.customer_service import get_customer_record_by_wa_id
-            cust_check = get_customer_record_by_wa_id(db, wa_id)
-            if cust_check:
-                # Check if mr_welcome template was already sent (check various body formats)
-                existing_welcome = db.query(Message).filter(
-                    Message.customer_id == cust_check.id,
-                    Message.type == "template",
-                    Message.to_wa_id == wa_id,
-                    (
-                        Message.body.like("%mr_welcome%") |
-                        Message.body.like("%TEMPLATE: mr_welcome%") |
-                        Message.body.like("%Template: mr_welcome%")
-                    )
-                ).first()
-                if existing_welcome:
-                    welcome_already_sent = True
-                    print(f"[treatment_flow] DEBUG - mr_welcome already sent to {wa_id} (found in database, message_id={existing_welcome.id})")
-        except Exception as e:
-            print(f"[treatment_flow] WARNING - Could not check database for existing welcome: {e}")
-        
-        # 4) Prefill detection for mr_welcome (also trigger on simple greetings like "hi")
+        # 3) Prefill detection for mr_welcome (also trigger on simple greetings like "hi")
         prefill_regexes = [
             r"^hi,?\s*oliva\s+i\s+want\s+to\s+know\s+more\s+about\s+services\s+in\s+[a-z\s]+,\s*[a-z\s]+\s+clinic$",
             r"^hi,?\s*oliva\s+i\s+want\s+to\s+know\s+more\s+about\s+your\s+services$",
@@ -121,25 +83,8 @@ async def run_treament_flow(
         ]
         prefill_detected = any(re.match(rx, normalized_body, flags=re.IGNORECASE) for rx in prefill_regexes)
         
-        # Send template for ANY text message if customer is NOT already in the flow AND welcome not already sent
-        # This ensures template is sent for all messages, not just specific greetings
-        # Only send if customer is NOT in flow AND welcome not already sent (prevents duplicate sends when customer is already in flow or welcome was sent)
-        should_send_template = not is_in_flow and not welcome_already_sent and (prefill_detected or normalized_body.strip())
-        
-        print(f"[treatment_flow] DEBUG - Template send decision: prefill_detected={prefill_detected}, is_in_flow={is_in_flow}, welcome_already_sent={welcome_already_sent}, normalized_body='{normalized_body[:50]}', should_send_template={should_send_template}")
-        
-        if should_send_template:
-            # Clear stale state FIRST to allow flow restart when customer sends ANY message (not just prefill)
-            # This ensures that if a customer completes the flow and triggers it again, the state is cleared
-            try:
-                from controllers.state.memory import clear_flow_state_for_restart
-                clear_flow_state_for_restart(wa_id)
-                print(f"[treatment_flow] DEBUG - Cleared stale state for new flow start (should_send_template=True, prefill={prefill_detected}, is_in_flow={is_in_flow}): wa_id={wa_id}")
-            except Exception as e:
-                print(f"[treatment_flow] WARNING - Could not clear stale state: {e}")
-            
-            # After clearing state, check if mr_welcome was dispatched very recently (within 30 seconds) to avoid duplicates
-            # This prevents race conditions but allows re-triggering after flow completion
+        if prefill_detected:
+            # If mr_welcome was already dispatched very recently by the dedicated number handler, skip to avoid duplicates
             skip_prefill_restart = False
             try:
                 from controllers.web_socket import appointment_state  # type: ignore
@@ -147,16 +92,26 @@ async def run_treament_flow(
                 st_existing = appointment_state.get(wa_id) or {}
                 ts_str_existing = st_existing.get("mr_welcome_sending_ts")
                 ts_obj_existing = _dt.fromisoformat(ts_str_existing) if isinstance(ts_str_existing, str) else None
-                # Only skip if sent very recently (within 30 seconds) - this prevents duplicates but allows re-triggering
                 recently_sent = bool(ts_obj_existing and (_dt.utcnow() - ts_obj_existing) < _td(seconds=30))
-                if recently_sent:
+                if bool(st_existing.get("mr_welcome_sent")) or recently_sent:
                     skip_prefill_restart = True
-                    print(f"[treatment_flow] DEBUG - Prefill skipped: mr_welcome sent very recently (within 30s) to avoid duplicate (wa_id={wa_id})")
             except Exception:
                 skip_prefill_restart = False
 
             if skip_prefill_restart:
-                return {"status": "skipped", "message_id": message_id, "reason": "mr_welcome_sent_recently"}
+                try:
+                    print(f"[treatment_flow] DEBUG - Prefill skipped because mr_welcome already handled (wa_id={wa_id})")
+                except Exception:
+                    pass
+                return {"status": "skipped", "message_id": message_id, "reason": "mr_welcome_already_sent"}
+
+            # Clear stale state to allow flow restart when customer sends a starting point message
+            try:
+                from controllers.state.memory import clear_flow_state_for_restart
+                clear_flow_state_for_restart(wa_id)
+                print(f"[treatment_flow] DEBUG - Cleared stale state for new flow start (prefill detected): wa_id={wa_id}")
+            except Exception as e:
+                print(f"[treatment_flow] WARNING - Could not clear stale state: {e}")
             # Restrict treatment flow to only allowed phone numbers
             from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
             phone_id_meta = ((value or {}).get("metadata", {}) or {}).get("phone_number_id")
@@ -194,17 +149,23 @@ async def run_treament_flow(
                 return {"status": "skipped", "message_id": message_id, "reason": "phone_number_not_allowed"}
             
             # Idempotency lock: avoid double mr_welcome when multiple handlers race
-            # Check if mr_welcome is currently being sent (within 10 seconds) to prevent race conditions
-            # Note: We don't check mr_welcome_sent flag here since state was already cleared above
+            # Check if mr_welcome was already sent by another handler (e.g., run_mr_welcome_number_flow)
             try:
                 from controllers.web_socket import appointment_state  # type: ignore
                 from datetime import datetime, timedelta
                 st_lock = appointment_state.get(wa_id) or {}
+                # First check if mr_welcome was already sent - if so, skip sending again
+                if bool(st_lock.get("mr_welcome_sent")):
+                    # Check timestamp to see if it was sent very recently (within 10 seconds)
+                    ts_str = st_lock.get("mr_welcome_sending_ts")
+                    ts_obj = datetime.fromisoformat(ts_str) if isinstance(ts_str, str) else None
+                    if ts_obj and (datetime.utcnow() - ts_obj) < timedelta(seconds=10):
+                        print(f"[treatment_flow] DEBUG - Skipping duplicate mr_welcome: already sent by another handler (wa_id={wa_id})")
+                        return {"status": "skipped", "message_id": message_id, "reason": "mr_welcome_already_sent"}
                 # Check if mr_welcome is currently being sent (within 10 seconds) to prevent race conditions
                 ts_str = st_lock.get("mr_welcome_sending_ts")
                 ts_obj = datetime.fromisoformat(ts_str) if isinstance(ts_str, str) else None
                 if ts_obj and (datetime.utcnow() - ts_obj) < timedelta(seconds=10):
-                    print(f"[treatment_flow] DEBUG - Skipping duplicate mr_welcome: currently being sent (wa_id={wa_id})")
                     return {"status": "skipped", "message_id": message_id, "reason": "mr_welcome_in_progress"}
                 # Set sending timestamp to prevent concurrent sends
                 st_lock["mr_welcome_sending_ts"] = datetime.utcnow().isoformat()
@@ -359,10 +320,7 @@ async def run_treament_flow(
                         })
                     except Exception:
                         pass
-                    
-                    # Always try to save template to database if response is successful
                     if resp_prefill.status_code == 200:
-                        print(f"[treatment_flow] DEBUG - Template sent successfully, attempting to save to database (wa_id={wa_id})")
                         # Save mr_welcome template to database
                         try:
                             response_data = resp_prefill.json()
@@ -372,40 +330,24 @@ async def run_treament_flow(
                             from schemas.customer_schema import CustomerCreate
                             from services.message_service import create_message
                             from schemas.message_schema import MessageCreate
-                            from models.models import Message
-                            from sqlalchemy.exc import IntegrityError
                             
                             customer = get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
                             
-                            # Check if message with this message_id already exists to avoid duplicates
-                            existing_message = db.query(Message).filter(Message.message_id == template_message_id).first()
-                            if existing_message:
-                                print(f"[treatment_flow] ⚠️ Template message already exists in database: message_id={template_message_id}, skipping save")
-                            else:
-                                template_message = MessageCreate(
-                                    message_id=template_message_id,
-                                    from_wa_id=to_wa_id,
-                                    to_wa_id=wa_id,
-                                    type="template",
-                                    body=f"TEMPLATE: mr_welcome",
-                                    timestamp=datetime.now(),
-                                    customer_id=customer.id,
-                                )
-                                try:
-                                    create_message(db, template_message)
-                                    print(f"[treatment_flow] ✅ Saved mr_welcome template to database: message_id={template_message_id}")
-                                except IntegrityError as ie:
-                                    # Handle duplicate message_id error
-                                    db.rollback()
-                                    print(f"[treatment_flow] ⚠️ Duplicate message_id detected, skipping save: message_id={template_message_id}")
-                                except Exception as save_error:
-                                    db.rollback()
-                                    raise save_error
+                            template_message = MessageCreate(
+                                message_id=template_message_id,
+                                from_wa_id=to_wa_id,
+                                to_wa_id=wa_id,
+                                type="template",
+                                body=f"TEMPLATE: mr_welcome",
+                                timestamp=datetime.now(),
+                                customer_id=customer.id,
+                            )
+                            create_message(db, template_message)
+                            print(f"[treatment_flow] ✅ Saved mr_welcome template to database: message_id={template_message_id}")
                         except Exception as db_error:
                             import traceback
                             print(f"[treatment_flow] ❌ ERROR saving mr_welcome template to database: {str(db_error)}")
                             print(f"[treatment_flow] Traceback: {traceback.format_exc()}")
-                            # Don't fail the flow if database save fails, but log it
                         
                         try:
                             await manager.broadcast({
@@ -446,19 +388,6 @@ async def run_treament_flow(
                             appointment_state[wa_id] = st
                         except Exception:
                             pass
-                        
-                        # Log last step reached: entry (mr_welcome template sent)
-                        try:
-                            from utils.flow_log import log_last_step_reached
-                            log_last_step_reached(
-                                db,
-                                flow_type="treatment",
-                                step="entry",
-                                wa_id=wa_id,
-                            )
-                            print(f"[treatment_flow] ✅ Logged last step: entry")
-                        except Exception as e:
-                            print(f"[treatment_flow] WARNING - Could not log last step: {e}")
 
                         # Build and send name/phone confirmation with Yes/No
                         try:
@@ -993,19 +922,6 @@ async def run_treatment_buttons_flow(
                 lead_appointment_state[wa_id]["selected_concern"] = selected_concern_label
             except Exception:
                 pass
-            
-            # Log last step reached: treatment (concern selected)
-            try:
-                from utils.flow_log import log_last_step_reached
-                log_last_step_reached(
-                    db,
-                    flow_type="treatment",
-                    step="treatment",
-                    wa_id=wa_id,
-                )
-                print(f"[treatment_flow] ✅ Logged last step: treatment")
-            except Exception as e:
-                print(f"[treatment_flow] WARNING - Could not log last step: {e}")
         except Exception:
             pass
         try:
@@ -1200,20 +1116,6 @@ async def run_treatment_buttons_flow(
                     _appt_state[wa_id] = st_expect
                 except Exception:
                     pass
-                
-                # Log last step reached: last_step (next_actions is the final step before follow-ups)
-                try:
-                    from utils.flow_log import log_last_step_reached
-                    log_last_step_reached(
-                        db,
-                        flow_type="treatment",
-                        step="last_step",
-                        wa_id=wa_id,
-                    )
-                    print(f"[treatment_flow] ✅ Logged last step: last_step (next_actions)")
-                except Exception as e:
-                    print(f"[treatment_flow] WARNING - Could not log last step: {e}")
-                
                 return {"status": "next_actions_sent", "message_id": message_id}
         except Exception:
             pass
