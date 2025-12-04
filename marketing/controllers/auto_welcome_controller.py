@@ -539,12 +539,13 @@ async def whatsapp_auto_welcome_webhook(request: Request, db: Session = Depends(
         if resp.status_code == 200:
             try:
                 tpl_msg_id = resp.json()["messages"][0]["id"]
+                # Persist mr_welcome template with a consistent body format
                 tpl_message = MessageCreate(
                     message_id=tpl_msg_id,
                     from_wa_id=to_wa_id,
                     to_wa_id=wa_id,
                     type="template",
-                    body=f"mr_welcome sent to {sender_name or wa_id}",
+                    body="TEMPLATE: mr_welcome",
                     timestamp=datetime.now(),
                     customer_id=customer.id,
                 )
@@ -565,8 +566,9 @@ async def whatsapp_auto_welcome_webhook(request: Request, db: Session = Depends(
                         "from": to_wa_id,
                         "to": wa_id,
                         "type": "template",
-                        "message": f"mr_welcome sent to {sender_name or wa_id}",
-                        "timestamp": datetime.now().isoformat()
+                        "message": "TEMPLATE: mr_welcome",
+                        "timestamp": datetime.now().isoformat(),
+                        "meta": {"template_name": "mr_welcome"},
                     })
                 except Exception:
                     pass
@@ -627,6 +629,43 @@ async def whatsapp_auto_welcome_webhook(request: Request, db: Session = Depends(
                             print(f"[auto_webhook] DEBUG - confirm buttons sent phone_id={phone_id_btn} status={_resp_btn.status_code}")
                         except Exception:
                             pass
+
+                        # Persist confirmation buttons interactive message to database
+                        if _resp_btn.status_code == 200:
+                            try:
+                                response_data = _resp_btn.json()
+                                confirm_message_id = response_data.get("messages", [{}])[0].get(
+                                    "id", f"outbound_{datetime.now().timestamp()}"
+                                )
+
+                                from services.customer_service import get_or_create_customer
+                                from schemas.customer_schema import CustomerCreate
+                                from services.message_service import create_message
+                                from schemas.message_schema import MessageCreate
+
+                                customer_btn = get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
+
+                                confirm_interactive = MessageCreate(
+                                    message_id=confirm_message_id,
+                                    from_wa_id=to_wa_id,
+                                    to_wa_id=wa_id,
+                                    type="interactive",
+                                    body="Are your name and contact number correct? ",
+                                    timestamp=datetime.now(),
+                                    customer_id=customer_btn.id,
+                                )
+                                create_message(db, confirm_interactive)
+                                print(
+                                    f"[auto_webhook] ✅ Saved confirmation buttons to database (auto_welcome): "
+                                    f"message_id={confirm_message_id}"
+                                )
+                            except Exception as db_error:
+                                import traceback
+                                print(
+                                    f"[auto_webhook] ❌ ERROR saving confirmation buttons to database (auto_welcome): "
+                                    f"{str(db_error)}"
+                                )
+                                print(f"[auto_webhook] Traceback: {traceback.format_exc()}")
                     except Exception as _e_btn:
                         print(f"[auto_webhook] ERROR - confirm buttons post failed: {_e_btn}")
                     # Broadcast Yes/No buttons to websocket UI
