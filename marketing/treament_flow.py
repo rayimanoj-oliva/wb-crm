@@ -16,6 +16,25 @@ from utils.ws_manager import manager
 from utils.whatsapp import send_message_to_waid
 
 
+def _safe_debug(prefix: str, **fields: Any) -> None:
+    """Best-effort structured debug printer; never raises."""
+    try:
+        import json as _json  # local import to avoid global cost
+
+        payload = {
+            "ts": datetime.utcnow().isoformat(),
+            "prefix": prefix,
+            **fields,
+        }
+        print(f"[treatment_flow] DEBUG {prefix} { _json.dumps(payload, default=str) }")
+    except Exception:
+        # Last-resort plain print; ignore all errors
+        try:
+            print(f"[treatment_flow] DEBUG {prefix} {fields}")
+        except Exception:
+            pass
+
+
 async def run_treament_flow(
     db: Session,
     *,
@@ -71,6 +90,13 @@ async def run_treament_flow(
                 return txt.lower().strip()
 
         normalized_body = _normalize(body_text)
+        _safe_debug(
+            "incoming_text",
+            wa_id=wa_id,
+            message_id=message_id,
+            raw_body=body_text,
+            normalized_body=normalized_body,
+        )
 
         # 3) Prefill detection for mr_welcome (also trigger on simple greetings like "hi")
         prefill_regexes = [
@@ -81,8 +107,22 @@ async def run_treament_flow(
             r"^hello$",
             r"^hlo$",
         ]
-        prefill_detected = any(re.match(rx, normalized_body, flags=re.IGNORECASE) for rx in prefill_regexes)
-        
+        matched_pattern = None
+        for rx in prefill_regexes:
+            if re.match(rx, normalized_body, flags=re.IGNORECASE):
+                matched_pattern = rx
+                break
+        prefill_detected = matched_pattern is not None
+
+        _safe_debug(
+            "prefill_detection",
+            wa_id=wa_id,
+            message_id=message_id,
+            normalized_body=normalized_body,
+            prefill_detected=prefill_detected,
+            matched_pattern=matched_pattern,
+        )
+
         if prefill_detected:
             # If mr_welcome was already dispatched very recently by the dedicated number handler, skip to avoid duplicates
             skip_prefill_restart = False
@@ -99,10 +139,11 @@ async def run_treament_flow(
                 skip_prefill_restart = False
 
             if skip_prefill_restart:
-                try:
-                    print(f"[treatment_flow] DEBUG - Prefill skipped because mr_welcome already handled (wa_id={wa_id})")
-                except Exception:
-                    pass
+                _safe_debug(
+                    "prefill_skipped_existing_mr_welcome",
+                    wa_id=wa_id,
+                    message_id=message_id,
+                )
                 return {"status": "skipped", "message_id": message_id, "reason": "mr_welcome_already_sent"}
 
             # Clear stale state to allow flow restart when customer sends a starting point message
@@ -145,7 +186,13 @@ async def run_treament_flow(
             # Only proceed if this is an allowed phone number
             if not is_allowed:
                 display_num = ((value or {}).get("metadata", {}) or {}).get("display_phone_number") or to_wa_id or ""
-                print(f"[treatment_flow] DEBUG - Treatment flow blocked for phone_id: {phone_id_meta}, display_number: {display_num} (not in allowed list)")
+                _safe_debug(
+                    "phone_not_allowed_for_treatment",
+                    wa_id=wa_id,
+                    message_id=message_id,
+                    phone_id_meta=phone_id_meta,
+                    display_number=display_num,
+                )
                 return {"status": "skipped", "message_id": message_id, "reason": "phone_number_not_allowed"}
             
             # Idempotency lock: avoid double mr_welcome when multiple handlers race
