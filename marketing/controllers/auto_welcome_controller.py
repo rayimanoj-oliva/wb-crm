@@ -536,10 +536,14 @@ async def whatsapp_auto_welcome_webhook(request: Request, db: Session = Depends(
             lang_code=lang_code
         )
 
+        # -----------------------------
+# After sending mr_welcome template
+# -----------------------------
         if resp.status_code == 200:
             try:
                 tpl_msg_id = resp.json()["messages"][0]["id"]
-                # Persist mr_welcome template with a consistent body format
+
+                # Save mr_welcome template
                 tpl_message = MessageCreate(
                     message_id=tpl_msg_id,
                     from_wa_id=to_wa_id,
@@ -550,18 +554,10 @@ async def whatsapp_auto_welcome_webhook(request: Request, db: Session = Depends(
                     customer_id=customer.id,
                 )
                 message_service.create_message(db, tpl_message)
-                db.commit()  # Explicitly commit the transaction
-                # Schedule follow-up 1 window only for mr_welcome
+                db.commit()
+
+                # Broadcast template event
                 try:
-                    from services.customer_service import get_customer_record_by_wa_id as _get_c
-                    from services.followup_service import FOLLOW_UP_1_DELAY_MINUTES
-                    cust = _get_c(db, wa_id)
-                    if cust:
-                        schedule_next_followup(db, customer_id=cust.id, delay_minutes=FOLLOW_UP_1_DELAY_MINUTES, stage_label="mr_welcome_sent")
-                except Exception:
-                    pass
-                try:
-                    # Broadcast template send event to websocket clients
                     await manager.broadcast({
                         "from": to_wa_id,
                         "to": wa_id,
@@ -570,125 +566,84 @@ async def whatsapp_auto_welcome_webhook(request: Request, db: Session = Depends(
                         "timestamp": datetime.now().isoformat(),
                         "meta": {"template_name": "mr_welcome"},
                     })
-                except Exception:
+                except:
                     pass
-            except Exception:
-                pass
-            # After mr_welcome: ask name/phone confirmation, then proceed to city → treatment
-            try:
-                # Mark treatment flow context for subsequent steps
-                from controllers.web_socket import appointment_state  # type: ignore
-                st = appointment_state.get(wa_id) or {}
-                st["flow_context"] = "treatment"
-                st["from_treatment_flow"] = True
-                st["mr_welcome_sent"] = True
-                appointment_state[wa_id] = st
-            except Exception:
-                pass
 
-            # Send name/phone confirmation
-            try:
-                from services.customer_service import get_customer_record_by_wa_id
-                customer_rec = get_customer_record_by_wa_id(db, wa_id)
-                display_name = (customer_rec.name.strip() if customer_rec and isinstance(customer_rec.name, str) else None) or "there"
+            except Exception as template_err:
+                print("[auto_webhook] Error saving mr_welcome:", template_err)
+
+            # ---------------------------------------------------------
+            # NOW SEND THE CONFIRMATION BUTTONS (YES / NO)
+            # ---------------------------------------------------------
+            access_token_btn, phone_id_btn = _resolve_credentials()
+            if access_token_btn:
+                headers_btn = {
+                    "Authorization": f"Bearer {access_token_btn}",
+                    "Content-Type": "application/json"
+                }
+                payload_btn = {
+                    "messaging_product": "whatsapp",
+                    "to": wa_id,
+                    "type": "interactive",
+                    "interactive": {
+                        "type": "button",
+                        "body": {"text": "Are your name and contact number correct? "},
+                        "action": {
+                            "buttons": [
+                                {"type": "reply", "reply": {"id": "confirm_yes", "title": "Yes"}},
+                                {"type": "reply", "reply": {"id": "confirm_no", "title": "No"}},
+                            ]
+                        },
+                    },
+                }
+
                 try:
-                    import re as _re
-                    digits = _re.sub(r"\D", "", wa_id)
-                    last10 = digits[-10:] if len(digits) >= 10 else None
-                    display_phone = f"+91{last10}" if last10 and len(last10) == 10 else wa_id
-                except Exception:
-                    display_phone = wa_id
+                    btn_resp = requests.post(get_messages_url(phone_id_btn), headers=headers_btn, json=payload_btn)
 
-                confirm_msg = (
-                    f"To help us serve you better, please confirm your contact details:\n*{display_name}*\n*{display_phone}*"
-                )
-                # Send confirmation via the SAME phone_number_id as mr_welcome
-                await send_message_to_waid(wa_id, confirm_msg, db, phone_id_hint=str(phone_id))
+                    if btn_resp.status_code == 200:
+                        response_data = btn_resp.json()
+                        confirm_message_id = (
+                            response_data.get("messages", [{}])[0].get("id")
+                            or f"outbound_{datetime.now().timestamp()}"
+                        )
 
-                access_token_btn, phone_id_btn = _resolve_credentials()
-                if access_token_btn:
-                    headers_btn = {"Authorization": f"Bearer {access_token_btn}", "Content-Type": "application/json"}
-                    payload_btn = {
-                        "messaging_product": "whatsapp",
+                        # Save interactive YES/NO message
+                        confirm_interactive = MessageCreate(
+                            message_id=confirm_message_id,
+                            from_wa_id=to_wa_id,
+                            to_wa_id=wa_id,
+                            type="interactive",
+                            body="Are your name and contact number correct? ",
+                            timestamp=datetime.now(),
+                            customer_id=customer.id,
+                        )
+                        message_service.create_message(db, confirm_interactive)
+                        db.commit()
+
+                        print("[auto_webhook] ✔ Saved confirmation buttons to DB")
+
+                except Exception as e_btn:
+                    print("[auto_webhook] ERROR sending confirmation buttons:", e_btn)
+
+                # Broadcast buttons to UI
+                try:
+                    await manager.broadcast({
+                        "from": to_wa_id,
                         "to": wa_id,
                         "type": "interactive",
-                        "interactive": {
-                            "type": "button",
-                            "body": {"text": "Are your name and contact number correct? "},
-                            "action": {
-                                "buttons": [
-                                    {"type": "reply", "reply": {"id": "confirm_yes", "title": "Yes"}},
-                                    {"type": "reply", "reply": {"id": "confirm_no", "title": "No"}},
-                                ]
-                            },
-                        },
-                    }
-                    try:
-                        _resp_btn = requests.post(get_messages_url(phone_id_btn), headers=headers_btn, json=payload_btn)
-                        try:
-                            print(f"[auto_webhook] DEBUG - confirm buttons sent phone_id={phone_id_btn} status={_resp_btn.status_code}")
-                        except Exception:
-                            pass
+                        "message": "Are your name and contact number correct? ",
+                        "timestamp": datetime.now().isoformat(),
+                        "meta": {"kind": "buttons", "options": ["Yes", "No"]},
+                    })
+                except:
+                    pass
 
-                        # Persist confirmation buttons interactive message to database
-                        if _resp_btn.status_code == 200:
-                            try:
-                                response_data = _resp_btn.json()
-                                confirm_message_id = response_data.get("messages", [{}])[0].get(
-                                    "id", f"outbound_{datetime.now().timestamp()}"
-                                )
-
-                                from services.customer_service import get_or_create_customer
-                                from schemas.customer_schema import CustomerCreate
-                                from services.message_service import create_message
-                                from schemas.message_schema import MessageCreate
-
-                                customer_btn = get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
-
-                                confirm_interactive = MessageCreate(
-                                    message_id=confirm_message_id,
-                                    from_wa_id=to_wa_id,
-                                    to_wa_id=wa_id,
-                                    type="interactive",
-                                    body="Are your name and contact number correct? ",
-                                    timestamp=datetime.now(),
-                                    customer_id=customer_btn.id,
-                                )
-                                create_message(db, confirm_interactive)
-                                print(
-                                    f"[auto_webhook] ✅ Saved confirmation buttons to database (auto_welcome): "
-                                    f"message_id={confirm_message_id}"
-                                )
-                            except Exception as db_error:
-                                import traceback
-                                print(
-                                    f"[auto_webhook] ❌ ERROR saving confirmation buttons to database (auto_welcome): "
-                                    f"{str(db_error)}"
-                                )
-                                print(f"[auto_webhook] Traceback: {traceback.format_exc()}")
-                    except Exception as _e_btn:
-                        print(f"[auto_webhook] ERROR - confirm buttons post failed: {_e_btn}")
-                    # Broadcast Yes/No buttons to websocket UI
-                    try:
-                        await manager.broadcast({
-                            "from": to_wa_id,
-                            "to": wa_id,
-                            "type": "interactive",
-                            "message": "Are your name and contact number correct? ",
-                            "timestamp": datetime.now().isoformat(),
-                            "meta": {"kind": "buttons", "options": ["Yes", "No"]}
-                        })
-                    except Exception:
-                        pass
-            except Exception:
-                pass
             return {"status": "welcome_and_confirm_sent", "message_id": message_id}
+
         else:
-            try:
-                    print("[auto_webhook] mr_welcome send failed:", resp.status_code, resp.text[:500])
-            except Exception:
-                pass
-                return {"status": "welcome_failed", "error": resp.text}
+            print("[auto_webhook] mr_welcome failed:", resp.status_code, resp.text[:300])
+            return {"status": "welcome_failed", "error": resp.text}
+
         
         # If not prefill message, continue with name/phone validation flow
         # (The name/phone validation logic is already handled above in the text message section)
