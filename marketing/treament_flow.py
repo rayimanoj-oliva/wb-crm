@@ -98,21 +98,23 @@ async def run_treament_flow(
             normalized_body=normalized_body,
         )
 
-        # 3) Prefill detection for mr_welcome (also trigger on simple greetings like "hi")
-        prefill_regexes = [
-            r"^hi,?\s*oliva\s+i\s+want\s+to\s+know\s+more\s+about\s+services\s+in\s+[a-z\s]+,\s*[a-z\s]+\s+clinic$",
-            r"^hi,?\s*oliva\s+i\s+want\s+to\s+know\s+more\s+about\s+your\s+services$",
-            # greetings
-            r"^hi$",
-            r"^hello$",
-            r"^hlo$",
-        ]
-        matched_pattern = None
-        for rx in prefill_regexes:
-            if re.match(rx, normalized_body, flags=re.IGNORECASE):
-                matched_pattern = rx
-                break
-        prefill_detected = matched_pattern is not None
+        # 3) Prefill detection for mr_welcome
+        # Rule: trigger ONLY when this looks like the *start* of a treatment conversation,
+        # not in the middle of an already-running flow.
+        in_active_treatment_flow = False
+        try:
+            from controllers.web_socket import appointment_state as _appt_state  # type: ignore
+            st_now = _appt_state.get(wa_id) or {}
+            flow_ctx = st_now.get("flow_context")
+            expect_step = st_now.get("treatment_expect_interactive")
+            already_welcome = bool(st_now.get("mr_welcome_sent"))
+            # If we already know we're in treatment context or waiting for a step, treat this as "in flow"
+            in_active_treatment_flow = (flow_ctx == "treatment") or bool(expect_step) or already_welcome
+        except Exception:
+            in_active_treatment_flow = False
+
+        prefill_detected = bool(normalized_body) and not in_active_treatment_flow
+        matched_pattern = "any_text_start" if prefill_detected else None
 
         _safe_debug(
             "prefill_detection",
@@ -121,6 +123,7 @@ async def run_treament_flow(
             normalized_body=normalized_body,
             prefill_detected=prefill_detected,
             matched_pattern=matched_pattern,
+            in_active_treatment_flow=in_active_treatment_flow,
         )
 
         if prefill_detected:
