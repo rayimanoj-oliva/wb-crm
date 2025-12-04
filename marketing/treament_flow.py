@@ -85,6 +85,31 @@ async def run_treament_flow(
         except Exception:
             pass
         
+        # 3.5) Check database to see if mr_welcome template was already sent to this customer
+        # This prevents sending welcome template again when user triggers flow in the middle
+        welcome_already_sent = False
+        try:
+            from models.models import Message
+            from services.customer_service import get_customer_record_by_wa_id
+            cust_check = get_customer_record_by_wa_id(db, wa_id)
+            if cust_check:
+                # Check if mr_welcome template was already sent (check various body formats)
+                existing_welcome = db.query(Message).filter(
+                    Message.customer_id == cust_check.id,
+                    Message.type == "template",
+                    Message.to_wa_id == wa_id,
+                    (
+                        Message.body.like("%mr_welcome%") |
+                        Message.body.like("%TEMPLATE: mr_welcome%") |
+                        Message.body.like("%Template: mr_welcome%")
+                    )
+                ).first()
+                if existing_welcome:
+                    welcome_already_sent = True
+                    print(f"[treatment_flow] DEBUG - mr_welcome already sent to {wa_id} (found in database, message_id={existing_welcome.id})")
+        except Exception as e:
+            print(f"[treatment_flow] WARNING - Could not check database for existing welcome: {e}")
+        
         # 4) Prefill detection for mr_welcome (also trigger on simple greetings like "hi")
         prefill_regexes = [
             r"^hi,?\s*oliva\s+i\s+want\s+to\s+know\s+more\s+about\s+services\s+in\s+[a-z\s]+,\s*[a-z\s]+\s+clinic$",
@@ -96,12 +121,12 @@ async def run_treament_flow(
         ]
         prefill_detected = any(re.match(rx, normalized_body, flags=re.IGNORECASE) for rx in prefill_regexes)
         
-        # Send template for ANY text message if customer is NOT already in the flow
+        # Send template for ANY text message if customer is NOT already in the flow AND welcome not already sent
         # This ensures template is sent for all messages, not just specific greetings
-        # Only send if customer is NOT in flow (prevents duplicate sends when customer is already in flow)
-        should_send_template = not is_in_flow and (prefill_detected or normalized_body.strip())
+        # Only send if customer is NOT in flow AND welcome not already sent (prevents duplicate sends when customer is already in flow or welcome was sent)
+        should_send_template = not is_in_flow and not welcome_already_sent and (prefill_detected or normalized_body.strip())
         
-        print(f"[treatment_flow] DEBUG - Template send decision: prefill_detected={prefill_detected}, is_in_flow={is_in_flow}, normalized_body='{normalized_body[:50]}', should_send_template={should_send_template}")
+        print(f"[treatment_flow] DEBUG - Template send decision: prefill_detected={prefill_detected}, is_in_flow={is_in_flow}, welcome_already_sent={welcome_already_sent}, normalized_body='{normalized_body[:50]}', should_send_template={should_send_template}")
         
         if should_send_template:
             # Clear stale state FIRST to allow flow restart when customer sends ANY message (not just prefill)
