@@ -274,8 +274,12 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             if is_treatment_flow_number:
                 st_route["flow_context"] = "treatment"
                 st_route["from_treatment_flow"] = True
+                # CRITICAL: Always update treatment_flow_phone_id to the CURRENT number customer is messaging
+                # This allows customers to switch between treatment flow numbers (7617613030 and 8297882978)
                 st_route["treatment_flow_phone_id"] = phone_number_id_str
-                print(f"[ws_webhook] DEBUG - Stored treatment_flow_phone_id={phone_number_id_str} for wa_id={wa_id}")
+                # Also update incoming_phone_id to ensure replies come from the current number
+                st_route["incoming_phone_id"] = phone_number_id_str
+                print(f"[ws_webhook] DEBUG - Updated treatment_flow_phone_id={phone_number_id_str} and incoming_phone_id={phone_number_id_str} for wa_id={wa_id} (customer can use both numbers)")
             elif is_lead_appointment_number:
                 st_route["flow_context"] = "lead_appointment"
                 # Also store the lead_phone_id in appointment_state for credential resolution

@@ -32,19 +32,23 @@ def _resolve_credentials(db, *, hint_phone_id: str | None = None, hint_display_n
     """
     # CRITICAL: Check stored incoming_phone_id FIRST (the number customer messaged to)
     # This is the MOST important - ensures replies go from the same number customer contacted
-    # DO NOT fallback to other numbers if incoming_phone_id is set - this prevents confusion
+    # For treatment flow numbers, always use the CURRENT incoming_phone_id to allow switching between numbers
     if wa_id:
         try:
             from controllers.web_socket import appointment_state  # type: ignore
+            from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS  # type: ignore
             st = appointment_state.get(wa_id) or {}
             
-            # FIRST: Check incoming_phone_id - this is the number customer messaged to
+            # FIRST: Check incoming_phone_id - this is the CURRENT number customer messaged to
+            # For treatment flow, this allows customers to switch between 7617613030 and 8297882978
             incoming_phone_id = st.get("incoming_phone_id")
             if incoming_phone_id and isinstance(WHATSAPP_NUMBERS, dict) and incoming_phone_id in WHATSAPP_NUMBERS:
                 cfg = WHATSAPP_NUMBERS.get(incoming_phone_id) or {}
                 tok = cfg.get("token")
                 if tok:
-                    print(f"[_resolve_credentials] RESOLVED via incoming_phone_id: {incoming_phone_id} for wa_id={wa_id}")
+                    # Verify it's a treatment flow number (both numbers should work)
+                    is_treatment_number = str(incoming_phone_id) in TREATMENT_FLOW_ALLOWED_PHONE_IDS if TREATMENT_FLOW_ALLOWED_PHONE_IDS else False
+                    print(f"[_resolve_credentials] RESOLVED via incoming_phone_id: {incoming_phone_id} for wa_id={wa_id} (treatment_flow={is_treatment_number})")
                     return tok, incoming_phone_id
                 else:
                     print(f"[_resolve_credentials] WARNING - incoming_phone_id {incoming_phone_id} found but no token available for wa_id={wa_id}")
@@ -209,19 +213,43 @@ async def send_message_to_waid(wa_id: str, message_body: str, db, from_wa_id="91
             pass
 
         # Determine if we should schedule follow-up
+        # CRITICAL: Only schedule follow-ups if:
+        # 1. Explicitly requested (schedule_followup=True), AND
+        # 2. Customer is in a flow (treatment or lead appointment), AND
+        # 3. Flow is NOT completed
         should_schedule = False
+        
+        # Check if customer is in treatment flow
+        is_in_treatment_flow = False
+        try:
+            from controllers.web_socket import appointment_state  # type: ignore
+            st = appointment_state.get(wa_id) or {}
+            is_in_treatment_flow = (
+                st.get("flow_context") == "treatment" or
+                bool(st.get("from_treatment_flow")) or
+                bool(st.get("treatment_flow_phone_id"))
+            )
+        except Exception:
+            pass
+        
+        # Only schedule if:
+        # 1. Explicitly requested AND in a flow AND flow not completed
         if schedule_followup:
-            # Explicitly requested to schedule
-            should_schedule = True
-        elif not schedule_followup and flow_completed:
-            # Explicitly disabled OR flow completed - do NOT schedule
+            if (is_in_treatment_flow or _in_lead_flow(wa_id)) and not flow_completed:
+                should_schedule = True
+            else:
+                print(f"[send_message_to_waid] DEBUG - Not scheduling follow-up: schedule_followup=True but not in flow or flow completed (treatment={is_in_treatment_flow}, lead={_in_lead_flow(wa_id)}, completed={flow_completed})")
+        # Do NOT schedule for normal messages (not in flow)
+        # Do NOT schedule if flow is completed
+        elif flow_completed:
             should_schedule = False
-        elif not _in_lead_flow(wa_id) and not flow_completed:
-            # Default behavior: schedule if not in lead flow AND flow not completed
-            should_schedule = True
+        elif not is_in_treatment_flow and not _in_lead_flow(wa_id):
+            # Normal message (not in any flow) - do NOT schedule
+            should_schedule = False
 
         if should_schedule:
             schedule_next_followup(db, customer_id=customer.id, delay_minutes=FOLLOW_UP_1_DELAY_MINUTES, stage_label=stage_label)
+            print(f"[send_message_to_waid] DEBUG - Scheduled follow-up for wa_id={wa_id} (in flow, not completed)")
     except Exception:
         pass
     

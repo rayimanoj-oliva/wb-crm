@@ -100,16 +100,56 @@ async def run_treament_flow(
 
         # 3) Prefill detection for mr_welcome
         # Rule: trigger ONLY when this looks like the *start* of a treatment conversation,
-        # not in the middle of an already-running flow.
+        # Check if customer is in treatment flow - allow access from BOTH treatment flow numbers
+        # Customers should be able to switch between 7617613030 and 8297882978
         in_active_treatment_flow = False
         try:
             from controllers.web_socket import appointment_state as _appt_state  # type: ignore
+            from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS  # type: ignore
             st_now = _appt_state.get(wa_id) or {}
             flow_ctx = st_now.get("flow_context")
             expect_step = st_now.get("treatment_expect_interactive")
             already_welcome = bool(st_now.get("mr_welcome_sent"))
-            # If we already know we're in treatment context or waiting for a step, treat this as "in flow"
-            in_active_treatment_flow = (flow_ctx == "treatment") or bool(expect_step) or already_welcome
+            stored_phone_id = st_now.get("treatment_flow_phone_id")
+            
+            # Check if customer is in treatment flow context
+            is_in_treatment_context = (flow_ctx == "treatment") or bool(expect_step) or already_welcome
+            
+            # Also check if the CURRENT incoming number is a treatment flow number
+            # This allows customers to switch between treatment flow numbers
+            phone_id_meta = ((value or {}).get("metadata", {}) or {}).get("phone_number_id")
+            is_current_number_treatment = False
+            if phone_id_meta and str(phone_id_meta) in TREATMENT_FLOW_ALLOWED_PHONE_IDS:
+                is_current_number_treatment = True
+            elif to_wa_id:
+                # Check by display number
+                import re as _re
+                from marketing.whatsapp_numbers import WHATSAPP_NUMBERS  # type: ignore
+                disp_digits = _re.sub(r"\D", "", str(to_wa_id))
+                disp_last10 = disp_digits[-10:] if len(disp_digits) >= 10 else disp_digits
+                for pid in TREATMENT_FLOW_ALLOWED_PHONE_IDS:
+                    cfg = WHATSAPP_NUMBERS.get(pid) if isinstance(WHATSAPP_NUMBERS, dict) else None
+                    if cfg:
+                        name_digits = _re.sub(r"\D", "", (cfg.get("name") or ""))
+                        name_last10 = name_digits[-10:] if len(name_digits) >= 10 else name_digits
+                        if name_last10 and disp_last10 and name_last10 == disp_last10:
+                            is_current_number_treatment = True
+                            break
+            
+            # Customer is in treatment flow if:
+            # 1. They're in treatment context (from previous message), OR
+            # 2. They're messaging a treatment flow number (allows switching between numbers)
+            in_active_treatment_flow = is_in_treatment_context or is_current_number_treatment
+            
+            # If customer is messaging a treatment flow number but stored phone_id is different, update it
+            # This allows customers to switch between 7617613030 and 8297882978
+            if is_current_number_treatment and phone_id_meta and str(phone_id_meta) != str(stored_phone_id):
+                st_now["treatment_flow_phone_id"] = str(phone_id_meta)
+                st_now["incoming_phone_id"] = str(phone_id_meta)
+                st_now["flow_context"] = "treatment"
+                st_now["from_treatment_flow"] = True
+                _appt_state[wa_id] = st_now
+                print(f"[treatment_flow] DEBUG - Updated treatment_flow_phone_id from {stored_phone_id} to {phone_id_meta} for wa_id={wa_id} (customer switched numbers)")
         except Exception:
             in_active_treatment_flow = False
 
@@ -190,7 +230,8 @@ async def run_treament_flow(
                     # Send welcome message
                     welcome_message = "Hi! Thanks for reaching out to Oliva Clinics. I'm your virtual assistant here to help you instantly."
                     print(f"[treatment_flow] DEBUG - Sending welcome message to wa_id={wa_id} from phone_id={phone_id_welcome}")
-                    await _send_msg(wa_id, welcome_message, db, phone_id_hint=str(phone_id_welcome))
+                    # CRITICAL: schedule_followup=True - Start follow-up sequence after welcome message (flow has started)
+                    await _send_msg(wa_id, welcome_message, db, phone_id_hint=str(phone_id_welcome), schedule_followup=True)
                     
                     # Mark flow context and store phone_id
                     try:
