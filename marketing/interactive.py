@@ -216,7 +216,7 @@ def send_concern_buttons(
         "type": "interactive",
         "interactive": {
             "type": "button",
-            "body": {"text": "Please choose your area of concern:"},
+            "body": {"text": "Select your concern"},
             "action": {
                 "buttons": [
                     {"type": "reply", "reply": {"id": "skin", "title": "Skin"}},
@@ -245,7 +245,7 @@ def send_concern_buttons(
                 from_wa_id=_display_from_for_phone_id(phone_id),
                 to_wa_id=wa_id,
                 type="interactive",
-                body="Please choose your area of concern:",
+                # body="Please choose your area of concern:",
                 timestamp=datetime.now(),
                 customer_id=customer.id,
             )
@@ -283,7 +283,7 @@ def send_concern_buttons(
             "from": _display_from_for_phone_id(phone_id),
             "to": wa_id,
             "type": "interactive",
-            "message": "Please choose your area of concern:",
+            # "message": "Please choose your area of concern:",
             "timestamp": datetime.now().isoformat(),
             "interactive_type": "button",
             "interactive_data": {"kind": "buttons", "options": ["Skin", "Hair", "Body"]},

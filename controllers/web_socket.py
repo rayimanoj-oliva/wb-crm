@@ -227,6 +227,30 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         
         # Determine flow context based on phone_number_id
         is_treatment_flow_number = phone_number_id_str in TREATMENT_FLOW_ALLOWED_PHONE_IDS if phone_number_id_str else False
+        
+        # Fallback: Also check by display_phone_number for local testing
+        if not is_treatment_flow_number and value:
+            try:
+                display_phone = value.get("metadata", {}).get("display_phone_number")
+                if display_phone:
+                    import re as _re
+                    from marketing.whatsapp_numbers import WHATSAPP_NUMBERS as _MAP
+                    disp_digits = _re.sub(r"\D", "", str(display_phone))
+                    disp_last10 = disp_digits[-10:] if len(disp_digits) >= 10 else disp_digits
+                    for pid in TREATMENT_FLOW_ALLOWED_PHONE_IDS:
+                        cfg = _MAP.get(pid) if isinstance(_MAP, dict) else None
+                        if cfg:
+                            name_digits = _re.sub(r"\D", "", (cfg.get("name") or ""))
+                            name_last10 = name_digits[-10:] if len(name_digits) >= 10 else name_digits
+                            if name_last10 and disp_last10 and name_last10 == disp_last10:
+                                is_treatment_flow_number = True
+                                # Update phone_number_id_str to the matched phone_id for downstream use
+                                phone_number_id_str = str(pid)
+                                print(f"[ws_webhook] DEBUG - Matched treatment flow by display number: {display_phone} -> {pid}")
+                                break
+            except Exception as e:
+                print(f"[ws_webhook] WARNING - Could not check display number for treatment flow: {e}")
+        
         is_lead_appointment_number = phone_number_id_str == str(LEAD_APPOINTMENT_PHONE_ID) if (phone_number_id_str and LEAD_APPOINTMENT_PHONE_ID) else False
         
         if treatment_flow_disabled:
@@ -662,69 +686,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         print(f"[lead_appointment_flow] ERROR - Traceback: {traceback.format_exc()}")
                         # Don't fail completely, let other flows try
 
-        # 2️⃣ Ensure mr_welcome is sent FIRST on the dedicated number (one-time per user)
-        # Only for the two allowed treatment flow numbers: 7617613030 and 8297882978
-        if treatment_flow_disabled:
-            try:
-                print("[treatment_flow] INFO - Treatment automation disabled; skipping welcome bootstrap.")
-            except Exception:
-                pass
-        else:
-            try:
-                from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
-                welcome_pid_env = os.getenv("WELCOME_PHONE_ID") or os.getenv("TREATMENT_FLOW_PHONE_ID")
-                phone_id_meta = (value or {}).get("metadata", {}).get("phone_number_id") if isinstance(value, dict) else None
-                
-                # Check if this is an allowed phone number for treatment flow
-                is_allowed_number = False
-                if phone_id_meta and str(phone_id_meta) in TREATMENT_FLOW_ALLOWED_PHONE_IDS:
-                    is_allowed_number = True
-                else:
-                    # Also check by display phone number as fallback - compare last 10 digits
-                    try:
-                        display_num = ((value or {}).get("metadata", {}) or {}).get("display_phone_number") or to_wa_id or ""
-                        import re as _re
-                        from marketing.whatsapp_numbers import WHATSAPP_NUMBERS
-                        disp_digits = _re.sub(r"\D", "", display_num or "")
-                        # Get last 10 digits of display number (phone number without country code)
-                        disp_last10 = disp_digits[-10:] if len(disp_digits) >= 10 else disp_digits
-                        
-                        for pid in TREATMENT_FLOW_ALLOWED_PHONE_IDS:
-                            cfg = WHATSAPP_NUMBERS.get(pid)
-                            if cfg:
-                                name_digits = _re.sub(r"\D", "", (cfg.get("name") or ""))
-                                # Get last 10 digits of stored phone number
-                                name_last10 = name_digits[-10:] if len(name_digits) >= 10 else name_digits
-                                # Match if last 10 digits are the same
-                                if name_last10 and disp_last10 and name_last10 == disp_last10:
-                                    is_allowed_number = True
-                                    break
-                    except Exception:
-                        pass
-                
-                already_welcomed = bool((appointment_state.get(wa_id) or {}).get("mr_welcome_sent"))
-                # Only send mr_welcome for allowed numbers and on the user's first inbound text (unless already sent)
-                should_send_welcome = is_allowed_number and not already_welcomed
-                if should_send_welcome:
-                    welcome_result = await run_mr_welcome_number_flow(
-                        db,
-                        wa_id=wa_id,
-                        to_wa_id=to_wa_id,
-                        message_id=message_id,
-                        message_type=message_type,
-                        timestamp=timestamp,
-                        customer=customer,
-                        value=value,
-                    )
-                    if (welcome_result or {}).get("status") == "welcome_sent":
-                        st = appointment_state.get(wa_id) or {}
-                        st["mr_welcome_sent"] = True
-                        appointment_state[wa_id] = st
-                        return welcome_result
-            except Exception:
-                pass
-
-        # 3️⃣ AUTO WELCOME VALIDATION - extracted to component function
+      
         if (not treatment_flow_disabled) and (not handled_text) and message_type == "text":
             result = await run_treament_flow(
                 db,
@@ -997,103 +959,9 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                 except Exception:
                     pass
 
-            # If treatment flow expects an interactive response, gently prompt the user
-            # BUT: Only send error AFTER buttons are sent (contact_confirm_sent), not when template is first sent
-            # AND: Only send error for text messages, not for button clicks (interactive messages)
-            # Skip error check entirely if this message might trigger welcome flow (to prevent race conditions)
-            if not waiting_details and message_type == "text":
-                try:
-                    st_expect = appointment_state.get(wa_id) or {}
-                    expect_marker = st_expect.get("treatment_expect_interactive")
-                    flow_ctx = st_expect.get("flow_context")
-                    contact_confirm_sent = bool(st_expect.get("contact_confirm_sent"))
-                    mr_welcome_sent = bool(st_expect.get("mr_welcome_sent"))
-                    # Store buttons_just_sent value BEFORE clearing it
-                    buttons_just_sent = bool(st_expect.get("buttons_just_sent"))
-                    # Check if buttons were just sent (within last 3 seconds) using timestamp for more reliable check
-                    buttons_sent_ts = st_expect.get("buttons_sent_timestamp")
-                    buttons_recently_sent = False
-                    if buttons_sent_ts:
-                        try:
-                            # datetime and timedelta are already imported at module level
-                            ts_obj = datetime.fromisoformat(buttons_sent_ts) if isinstance(buttons_sent_ts, str) else None
-                            if ts_obj:
-                                time_diff = datetime.utcnow() - ts_obj
-                                if time_diff < timedelta(seconds=3):
-                                    buttons_recently_sent = True
-                        except Exception:
-                            pass
-                    # Check if welcome template was just sent (within last few seconds) - if so, skip error
-                    welcome_sending_ts = st_expect.get("mr_welcome_sending_ts")
-                    is_welcome_just_sent = False
-                    if welcome_sending_ts:
-                        try:
-                            # datetime and timedelta are already imported at module level
-                            ts_obj = datetime.fromisoformat(welcome_sending_ts) if isinstance(welcome_sending_ts, str) else None
-                            if ts_obj and (datetime.utcnow() - ts_obj) < timedelta(seconds=5):
-                                is_welcome_just_sent = True
-                        except Exception:
-                            pass
-                    # Clear the buttons_just_sent flag after storing value to allow error on subsequent messages
-                    if buttons_just_sent:
-                        try:
-                            st_expect.pop("buttons_just_sent", None)
-                            appointment_state[wa_id] = st_expect
-                        except Exception:
-                            pass
-                except Exception:
-                    st_expect = {}
-                    expect_marker = None
-                    flow_ctx = None
-                    contact_confirm_sent = False
-                    mr_welcome_sent = False
-                    buttons_just_sent = False
-                    is_welcome_just_sent = False
-
-                # Only send error message if:
-                # 1. Buttons were already sent (contact_confirm_sent)
-                # 2. Welcome template was already sent (mr_welcome_sent) - ensures it's not the initial template send
-                # 3. This is a text message (not a button click)
-                # 4. Buttons were NOT just sent (prevents error with initial template) - check both flag and timestamp
-                # 5. Welcome template was NOT just sent (prevents error during initial template send)
-                # Note: buttons_just_sent value is stored before clearing, so this check uses the original value
-                # Use timestamp check (buttons_recently_sent) as primary check, with flag as backup
-                if expect_marker and flow_ctx == "treatment" and contact_confirm_sent and mr_welcome_sent and not buttons_recently_sent and not buttons_just_sent and not is_welcome_just_sent:
-                    phone_id_hint = st_expect.get("treatment_flow_phone_id")
-                    if not phone_id_hint:
-                        try:
-                            from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
-                            phone_id_hint = (list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0] if TREATMENT_FLOW_ALLOWED_PHONE_IDS else None)
-                        except Exception:
-                            phone_id_hint = None
-
-                    await send_message_to_waid(
-                        wa_id,
-                        "We didn't quite get that.\n\nPlease select an above option.",
-                        db,
-                        phone_id_hint=(str(phone_id_hint) if phone_id_hint else None),
-                    )
-
-                    # Broadcast the inbound text for agent visibility
-                    try:
-                        flow_context = "treatment" if is_treatment_flow_number else ("lead_appointment" if is_lead_appointment_number else "unknown")
-                        await manager.broadcast({
-                            "from": wa_id,
-                            "to": to_wa_id,
-                            "type": "text",
-                            "message": body_text,
-                            "timestamp": timestamp.isoformat(),
-                            "meta": {
-                                "flow": flow_context,
-                                "action": "customer_message",
-                                "flag": "interactive_prompt"
-                            }
-                        })
-                    except Exception:
-                        pass
-
-                    handled_text = True
-                    return {"status": "treatment_interactive_prompted", "message_id": message_id}
+            # REMOVED: Error prompt for treatment/marketing flow
+            # Marketing flow should proceed naturally without sending "We didn't quite get that" error messages
+            # Customers can send free text and the flow will continue without interruption
 
             # Only broadcast if not already broadcasted early and not handled by treatment flow
             if not message_broadcasted and not handled_text:
@@ -1991,16 +1859,24 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                     button_reply = interactive.get("button_reply", {})
                     button_id = (button_reply.get("id", "") or "").strip().lower()
                     if button_id == "followup_yes":
-                        # Clear any pending follow-up timers but DON'T reset timer - mr_welcome will schedule a new one
+                        # Clear any pending follow-up timers but DON'T reset timer - welcome flow will schedule a new one
                         try:
                             from services.followup_service import mark_customer_replied as _mark_replied
                             _mark_replied(db, customer_id=customer.id, reset_followup_timer=False)
                         except Exception:
                             pass
                         
-                        # Set treatment flow context so subsequent messages use Treatment Flow number
+                        # Clear previous flow state to restart from beginning
                         try:
                             st_fu = appointment_state.get(wa_id) or {}
+                            # Clear all previous flow markers
+                            st_fu.pop("mr_welcome_sent", None)
+                            st_fu.pop("contact_confirm_sent", None)
+                            st_fu.pop("flow_completed", None)
+                            st_fu.pop("selected_concern", None)
+                            st_fu.pop("treatment_expect_interactive", None)
+                            st_fu.pop("error_prompt_sent_timestamp", None)
+                            # Set treatment flow context
                             st_fu["flow_context"] = "treatment"
                             st_fu["from_treatment_flow"] = True
                             appointment_state[wa_id] = st_fu
@@ -2025,11 +1901,11 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                             try:
                                 import re as _re
                                 disp_num_fu = ((value or {}).get("metadata", {}) or {}).get("display_phone_number") or to_wa_id or ""
-                                disp_digits_fu = _re.sub(r"\\D", "", disp_num_fu or "")
+                                disp_digits_fu = _re.sub(r"\D", "", disp_num_fu or "")
                                 disp_last10_fu = disp_digits_fu[-10:] if len(disp_digits_fu) >= 10 else disp_digits_fu
                                 for _pid, _cfg in (_MAP or {}).items():
                                     if _pid in TREATMENT_FLOW_ALLOWED_PHONE_IDS:
-                                        name_digits_fu = _re.sub(r"\\D", "", (_cfg.get("name") or ""))
+                                        name_digits_fu = _re.sub(r"\D", "", (_cfg.get("name") or ""))
                                         name_last10_fu = name_digits_fu[-10:] if len(name_digits_fu) >= 10 else name_digits_fu
                                         if name_last10_fu and disp_last10_fu and name_last10_fu == disp_last10_fu:
                                             phone_id_fu = str(_pid)
@@ -2057,197 +1933,32 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                 # Store this phone_id in state for future use
                                 try:
                                     st_fu["treatment_flow_phone_id"] = str(phone_id_fu)
+                                    st_fu["incoming_phone_id"] = str(phone_id_fu)
                                     appointment_state[wa_id] = st_fu
                                 except Exception:
                                     pass
                         
-                        if access_token_fu:
-                            lang_code_fu = os.getenv("WELCOME_TEMPLATE_LANG", "en_US")
-
-                            # Send mr_welcome template from Treatment Flow number
-                            from controllers.auto_welcome_controller import _send_template as _send_tpl
-                            body_components_fu = [{
-                                "type": "body",
-                                "parameters": [
-                                    {"type": "text", "text": (sender_name or wa_id)}
-                                ]
-                            }]
-                            resp_fu = _send_tpl(
-                                wa_id=wa_id,
-                                template_name="mr_welcome",
-                                access_token=access_token_fu,
-                                phone_id=str(phone_id_fu),
-                                components=body_components_fu,
-                                lang_code=lang_code_fu,
-                            )
-                            
-                            # Persist mr_welcome template in DB and broadcast to frontend
-                            if resp_fu is not None and resp_fu.status_code == 200:
+                        if access_token_fu and phone_id_fu:
+                            # Step 1: Send welcome message
+                            try:
+                                from utils.whatsapp import send_message_to_waid as _send_msg
+                                welcome_message = "Hi! Thanks for reaching out to Oliva Clinics. I'm your virtual assistant here to help you instantly."
+                                await _send_msg(wa_id, welcome_message, db, phone_id_hint=str(phone_id_fu), schedule_followup=True)
+                                
+                                # Step 2: Send city selection
                                 try:
-                                    resp_data_fu = resp_fu.json()
-                                except Exception:
-                                    resp_data_fu = {}
-                                template_message_id = (
-                                    ((resp_data_fu.get("messages") or [{}])[0] or {}).get("id")
-                                    if isinstance(resp_data_fu, dict)
-                                    else None
-                                ) or f"outbound_{datetime.utcnow().timestamp()}"
-                                try:
-                                    display_from_fu = os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376")
-                                    try:
-                                        if isinstance(_MAP, dict) and str(phone_id_fu) in _MAP:
-                                            import re as _re
-                                            digits = _re.sub(r"\D", "", (_MAP[str(phone_id_fu)].get("name") or ""))
-                                            if digits:
-                                                display_from_fu = digits
-                                    except Exception:
-                                        pass
-                                    
-                                    outbound_template = MessageCreate(
-                                        message_id=template_message_id,
-                                        from_wa_id=display_from_fu,
-                                        to_wa_id=wa_id,
-                                        type="template",
-                                        body="Template: mr_welcome",
-                                        timestamp=datetime.utcnow(),
-                                        customer_id=customer.id,
-                                    )
-                                    message_service.create_message(db, outbound_template)
-                                    await manager.broadcast({
-                                        "from": display_from_fu,
-                                        "to": wa_id,
-                                        "type": "template",
-                                        "message": "Template: mr_welcome",
-                                        "timestamp": datetime.utcnow().isoformat(),
-                                        "meta": {
-                                            "template_name": "mr_welcome",
-                                            "flow": "treatment",
-                                        },
-                                    })
-                                except Exception as log_err:
-                                    print(f"[followup_yes] WARNING - Could not persist/broadcast mr_welcome template: {log_err}")
-                            
-                            # Mark mr_welcome as sent to prevent duplicates and store phone id
-                            try:
-                                st_fu_mark = appointment_state.get(wa_id) or {}
-                                if resp_fu.status_code == 200:
-                                    st_fu_mark["mr_welcome_sent"] = True
-                                    st_fu_mark["treatment_flow_phone_id"] = str(phone_id_fu)
-                                appointment_state[wa_id] = st_fu_mark
-                            except Exception:
-                                pass
-
-                            # Schedule follow-up only for mr_welcome
-                            try:
-                                from services.followup_service import schedule_next_followup as _schedule, FOLLOW_UP_1_DELAY_MINUTES
-                                _schedule(db, customer_id=customer.id, delay_minutes=FOLLOW_UP_1_DELAY_MINUTES, stage_label="mr_welcome_sent")
-                            except Exception:
-                                pass
-
-                            # Send name/phone confirmation prompt from Treatment Flow number
-                            try:
-                                from services.customer_service import get_customer_record_by_wa_id
-                                customer_rec = get_customer_record_by_wa_id(db, wa_id)
-                                display_name = (customer_rec.name.strip() if customer_rec and isinstance(customer_rec.name, str) else None) or "there"
-                                import re as _re
-                                digits = _re.sub(r"\D", "", wa_id)
-                                last10 = digits[-10:] if len(digits) >= 10 else None
-                                display_phone = f"+91{last10}" if last10 and len(last10) == 10 else wa_id
-                            except Exception:
-                                display_name = "there"
-                                display_phone = wa_id
-
-                            # Avoid duplicate confirmation if mr_welcome flow already sent it
-                            try:
-                                st_chk = appointment_state.get(wa_id) or {}
-                                if not bool(st_chk.get("contact_confirm_sent")):
-                                    await send_message_to_waid(wa_id, f"To help us serve you better, please confirm your contact details:\n*{display_name}*\n*{display_phone}*", db, phone_id_hint=str(phone_id_fu))
-                                    st_chk["contact_confirm_sent"] = True
-                                    appointment_state[wa_id] = st_chk
-                            except Exception:
-                                await send_message_to_waid(wa_id, f"To help us serve you better, please confirm your contact details:\n*{display_name}*\n*{display_phone}*", db, phone_id_hint=str(phone_id_fu))
-
-                            # Send Yes/No buttons for confirmation from Treatment Flow number
-                            headers_btn = {"Authorization": f"Bearer {access_token_fu}", "Content-Type": "application/json"}
-                            payload_btn = {
-                                "messaging_product": "whatsapp",
-                                "to": wa_id,
-                                "type": "interactive",
-                                "interactive": {
-                                    "type": "button",
-                                    "body": {"text": "Are your name and contact number correct? "},
-                                    "action": {
-                                        "buttons": [
-                                            {"type": "reply", "reply": {"id": "confirm_yes", "title": "Yes"}},
-                                            {"type": "reply", "reply": {"id": "confirm_no", "title": "No"}},
-                                        ]
-                                    },
-                                },
-                            }
-                            resp_btn = requests.post(get_messages_url(str(phone_id_fu)), headers=headers_btn, json=payload_btn)
-                            
-                            if resp_btn is not None and resp_btn.status_code == 200:
-                                try:
-                                    resp_btn_json = resp_btn.json()
-                                except Exception:
-                                    resp_btn_json = {}
-                                btn_message_id = (
-                                    ((resp_btn_json.get("messages") or [{}])[0] or {}).get("id")
-                                    if isinstance(resp_btn_json, dict)
-                                    else None
-                                ) or f"outbound_{datetime.utcnow().timestamp()}"
-                                try:
-                                    display_from_btn = os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376")
-                                    try:
-                                        if isinstance(_MAP, dict) and str(phone_id_fu) in _MAP:
-                                            import re as _re
-                                            digits = _re.sub(r"\D", "", (_MAP[str(phone_id_fu)].get("name") or ""))
-                                            if digits:
-                                                display_from_btn = digits
-                                    except Exception:
-                                        pass
-                                    
-                                    confirmation_body = "Are your name and contact number correct?"
-                                    outbound_btn = MessageCreate(
-                                        message_id=btn_message_id,
-                                        from_wa_id=display_from_btn,
-                                        to_wa_id=wa_id,
-                                        type="interactive",
-                                        body=confirmation_body,
-                                        timestamp=datetime.utcnow(),
-                                        customer_id=customer.id,
-                                    )
-                                    message_service.create_message(db, outbound_btn)
-                                    await manager.broadcast({
-                                        "from": display_from_btn,
-                                        "to": wa_id,
-                                        "type": "interactive",
-                                        "message": confirmation_body,
-                                        "timestamp": datetime.utcnow().isoformat(),
-                                        "meta": {
-                                            "kind": "buttons",
-                                            "options": ["Yes", "No"],
-                                            "flow": "treatment",
-                                        },
-                                    })
-                                except Exception as btn_log_err:
-                                    print(f"[followup_yes] WARNING - Could not persist/broadcast confirmation buttons: {btn_log_err}")
-                            
-                            # Set treatment_expect_interactive flag after buttons are sent
-                            # This ensures error message is sent only when user types free text AFTER buttons are shown
-                            # Also set a flag to indicate buttons were just sent, to prevent error in same request
-                            # Use timestamp to track when buttons were sent (more reliable than boolean flag)
-                            try:
-                                # datetime is already imported at module level
-                                st_btn = appointment_state.get(wa_id) or {}
-                                st_btn["treatment_expect_interactive"] = "contact_confirmation"
-                                st_btn["flow_context"] = "treatment"
-                                st_btn["buttons_just_sent"] = True  # Flag to prevent error in same request
-                                st_btn["buttons_sent_timestamp"] = datetime.utcnow().isoformat()  # Timestamp for more reliable check
-                                appointment_state[wa_id] = st_btn
-                            except Exception:
-                                pass
-                        return {"status": "followup_yes_flow_started", "message_id": message_id}
+                                    from marketing.city_selection import send_city_selection
+                                    await send_city_selection(db, wa_id=wa_id, phone_id_hint=str(phone_id_fu))
+                                except Exception as e:
+                                    print(f"[followup_yes] WARNING - Could not send city selection: {e}")
+                                
+                                print(f"[followup_yes] DEBUG - Restarted treatment flow for wa_id={wa_id} (welcome + city selection)")
+                            except Exception as e:
+                                print(f"[followup_yes] ERROR - Could not restart treatment flow: {e}")
+                                import traceback
+                                traceback.print_exc()
+                        
+                        return {"status": "followup_yes_flow_restarted", "message_id": message_id}
             except Exception:
                 pass
 
@@ -2299,195 +2010,6 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         if date_iso and time_label:
                             await _confirm_appointment(wa_id, db, date_iso, time_label)
                             return {"status": "appointment_captured", "message_id": message_id}
-                    # Handle Yes/No confirmation for name/phone (accept common ids/titles)
-                    norm_btn_id = (button_id or "").strip().lower()
-                    norm_btn_title = (button_title or "").strip().lower()
-                    yes_ids = {"confirm_yes", "yes", "y", "ok", "confirm"}
-                    no_ids = {"confirm_no", "no", "n", "incorrect"}
-                    if norm_btn_id in yes_ids or norm_btn_title in yes_ids or norm_btn_id in no_ids or norm_btn_title in no_ids:
-                        # Retrieve stored date/time
-                        date_iso = (appointment_state.get(wa_id) or {}).get("date")
-                        time_label = (appointment_state.get(wa_id) or {}).get("time")
-                        try:
-                            from services.customer_service import get_customer_record_by_wa_id
-                            customer = get_customer_record_by_wa_id(db, wa_id)
-                            display_name = (customer.name.strip() if customer and isinstance(customer.name, str) else None) or "there"
-                        except Exception:
-                            display_name = "there"
-                        # Derive phone from wa_id
-                        try:
-                            import re as _re
-                            digits = _re.sub(r"\D", "", wa_id)
-                            last10 = digits[-10:] if len(digits) >= 10 else None
-                            display_phone = f"+91{last10}" if last10 and len(last10) == 10 else wa_id
-                        except Exception:
-                            display_phone = wa_id
-
-                        # Check if this is from treatment flow
-                        st = appointment_state.get(wa_id) or {}
-                        from_treatment_flow = st.get("from_treatment_flow", False)
-                        
-                        # Clear treatment_expect_interactive flag when user clicks Yes/No button
-                        # This prevents error message from being sent for button clicks
-                        try:
-                            st.pop("treatment_expect_interactive", None)
-                            appointment_state[wa_id] = st
-                        except Exception:
-                            pass
-                        
-                        if (norm_btn_id in yes_ids or norm_btn_title in yes_ids):
-                            if from_treatment_flow:
-                                # On Yes → proceed to city selection FIRST; mr_treatment will be sent after city selection
-                                # Resolve phone_id from stored state or webhook metadata
-                                phone_id_confirm = None
-                                try:
-                                    # First priority: incoming_phone_id (the number customer messaged to)
-                                    phone_id_confirm = st.get("incoming_phone_id")
-                                    if phone_id_confirm:
-                                        phone_id_confirm = str(phone_id_confirm)
-                                        print(f"[ws_webhook] confirm_yes - RESOLVED via incoming_phone_id: {phone_id_confirm} for wa_id={wa_id}")
-                                    # Second priority: stored treatment_flow_phone_id
-                                    if not phone_id_confirm:
-                                        phone_id_confirm = st.get("treatment_flow_phone_id")
-                                        if phone_id_confirm:
-                                            phone_id_confirm = str(phone_id_confirm)
-                                            print(f"[ws_webhook] confirm_yes - RESOLVED via treatment_flow_phone_id: {phone_id_confirm} for wa_id={wa_id}")
-                                    # Third priority: webhook metadata phone_number_id
-                                    if not phone_id_confirm:
-                                        try:
-                                            from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
-                                            phone_id_meta = (value or {}).get("metadata", {}).get("phone_number_id") if isinstance(value, dict) else None
-                                            if phone_id_meta and str(phone_id_meta) in TREATMENT_FLOW_ALLOWED_PHONE_IDS:
-                                                phone_id_confirm = str(phone_id_meta)
-                                        except Exception:
-                                            pass
-                                    # Fourth priority: first allowed treatment flow number
-                                    if not phone_id_confirm:
-                                        from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
-                                        phone_id_confirm = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
-                                        print(f"[ws_webhook] confirm_yes - WARNING FALLBACK to first treatment number: {phone_id_confirm} for wa_id={wa_id}")
-                                except Exception:
-                                    from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
-                                    phone_id_confirm = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
-                                
-                                try:
-                                    from marketing.city_selection import send_city_selection  # type: ignore
-                                    result = await send_city_selection(db, wa_id=wa_id, phone_id_hint=phone_id_confirm)
-                                    return {"status": "proceed_to_city_selection", "message_id": message_id, "result": result}
-                                except Exception as e:
-                                    print(f"[treatment_flow] WARNING - Could not send city selection: {e}")
-                                    return {"status": "failed", "message_id": message_id}
-                            elif date_iso and time_label:
-                                
-                                # Regular appointment flow with date/time
-                                thank_you = (
-                                f"✅ Thank you! Your preferred appointment is on {date_iso} at {time_label} with {display_name} ({display_phone}). "
-                                f"Your appointment is booked, and our team will call to confirm shortly."
-                            )
-                            # Persist appointment details to DB (create additional record for same wa_id)
-                            try:
-                                from services.referrer_service import referrer_service
-                                existing_ref = referrer_service.get_referrer_by_wa_id(db, wa_id)
-                                existing_treat = getattr(existing_ref, 'treatment_type', None) if existing_ref else ''
-                                # Create a new appointment row (allow multiple per wa_id)
-                                referrer_service.create_appointment_booking(
-                                    db,
-                                    wa_id,
-                                    date_iso,
-                                    time_label,
-                                    existing_treat or ''
-                                )
-                            except Exception:
-                                pass
-                            await send_message_to_waid(wa_id, thank_you, db)
-                            # Now clear state completely to allow new flow to start
-                            try:
-                                if wa_id in appointment_state:
-                                    appointment_state.pop(wa_id, None)
-                                # Also clear lead_appointment_state if present
-                                if wa_id in lead_appointment_state:
-                                    lead_appointment_state.pop(wa_id, None)
-                                print(f"[ws_webhook] DEBUG - Cleared all flow state after appointment confirmation: wa_id={wa_id}")
-                            except Exception:
-                                pass
-                            return {"status": "appointment_confirmed", "message_id": message_id}
-                        elif (norm_btn_id in no_ids or norm_btn_title in no_ids):
-                            # Ask for name first, then number (validated via OpenAI-backed validators)
-                            try:
-                                st = appointment_state.get(wa_id) or {}
-                                # Try to recover date/time from DB if missing
-                                if not st.get("date") or not st.get("time"):
-                                    try:
-                                        from services.referrer_service import referrer_service
-                                        existing_ref = referrer_service.get_referrer_by_wa_id(db, wa_id)
-                                        if existing_ref and getattr(existing_ref, "appointment_date", None) and getattr(existing_ref, "appointment_time", None):
-                                            try:
-                                                date_iso_rec = getattr(existing_ref.appointment_date, "date", None)()
-                                                st["date"] = date_iso_rec.isoformat()
-                                            except Exception:
-                                                try:
-                                                    st["date"] = existing_ref.appointment_date.strftime("%Y-%m-%d")
-                                                except Exception:
-                                                    pass
-                                            st["time"] = existing_ref.appointment_time
-                                    except Exception:
-                                        pass
-                                st["awaiting_name"] = True
-                                st.pop("awaiting_phone", None)
-                                st.pop("corrected_name", None)
-                                st.pop("corrected_phone", None)
-                                appointment_state[wa_id] = st
-                            except Exception:
-                                pass
-                            # Ensure this corrective message goes from the same number that started the flow
-                            stored_phone_id = st.get("treatment_flow_phone_id")
-                            phone_id_hint = stored_phone_id if stored_phone_id else None
-                            if not phone_id_hint:
-                                from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
-                                phone_id_hint = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
-                            await send_message_to_waid(wa_id, "No problem. Let's update your details.\nPlease share your full name first.", db, phone_id_hint=str(phone_id_hint))
-                            return {"status": "awaiting_name", "message_id": message_id}
-                        else:
-                            # Before sending user back, try to recover any existing appointment from DB
-                            try:
-                                from services.referrer_service import referrer_service
-                                existing_ref = referrer_service.get_referrer_by_wa_id(db, wa_id)
-                                if existing_ref and getattr(existing_ref, "appointment_date", None) and getattr(existing_ref, "appointment_time", None):
-                                    st = appointment_state.get(wa_id) or {}
-                                    try:
-                                        date_iso_rec = getattr(existing_ref.appointment_date, "date", None)()
-                                        st["date"] = date_iso_rec.isoformat()
-                                    except Exception:
-                                        try:
-                                            st["date"] = existing_ref.appointment_date.strftime("%Y-%m-%d")
-                                        except Exception:
-                                            pass
-                                    st["time"] = existing_ref.appointment_time
-                                    appointment_state[wa_id] = st
-                                    # If we recovered date/time and the user had pressed Yes earlier, confirm now
-                                    if norm_btn_id in yes_ids or norm_btn_title in yes_ids:
-                                        await _confirm_appointment(wa_id, db, st.get("date"), st.get("time"))
-                                        return {"status": "appointment_captured", "message_id": message_id}
-                                    # If it was not an explicit Yes, at least proceed to name capture without resetting flow
-                                    stored_phone_id = st.get("treatment_flow_phone_id")
-                                    phone_id_hint = stored_phone_id if stored_phone_id else None
-                                    if not phone_id_hint:
-                                        from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
-                                        phone_id_hint = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
-                                    await send_message_to_waid(wa_id, "No problem. Let's update your details.\nPlease share your full name first.", db, phone_id_hint=str(phone_id_hint))
-                                    st["awaiting_name"] = True
-                                    appointment_state[wa_id] = st
-                                    return {"status": "awaiting_name", "message_id": message_id}
-                            except Exception:
-                                pass
-                            # Fallback: ask to pick week/date
-                            await send_message_to_waid(wa_id, "Please select a week and then a date.", db)
-                            try:
-                                from controllers.components.interactive_type import send_week_list  # type: ignore
-                                await send_week_list(db, wa_id)
-                            except Exception:
-                                pass
-                            return {"status": "need_date_first", "message_id": message_id}
             except Exception:
                 pass
 
@@ -2578,73 +2100,15 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                         except Exception as e:
                             print(f"[treatment_flow] WARNING - Could not store selected concern: {e}")
                     
-                    # Do NOT rebroadcast here; unified early broadcast already did it.
-                    # Trigger booking_appoint template right after treatment selection
-                    try:
-                        token_entry_book = get_latest_token(db)
-                        if token_entry_book and token_entry_book.token:
-                            phone_id_book = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
-                            lang_code_book = os.getenv("WELCOME_TEMPLATE_LANG", "en_US")
-                            from controllers.auto_welcome_controller import _send_template
-                            resp_book = _send_template(
-                                wa_id=wa_id,
-                                template_name="booking_appoint",
-                                access_token=token_entry_book.token,
-                                phone_id=phone_id_book,
-                                components=None,
-                                lang_code=lang_code_book
-                            )
-                            try:
-                                await manager.broadcast({
-                                    "from": to_wa_id,
-                                    "to": wa_id,
-                                    "type": "template" if resp_book.status_code == 200 else "template_error",
-                                    "message": "booking_appoint sent" if resp_book.status_code == 200 else "booking_appoint failed",
-                                    **({"status_code": resp_book.status_code} if resp_book.status_code != 200 else {}),
-                                    **({"error": (resp_book.text[:500] if isinstance(resp_book.text, str) else str(resp_book.text))} if resp_book.status_code != 200 else {}),
-                                    "timestamp": datetime.now().isoformat()
-                                })
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
-
-                    token_entry3 = get_latest_token(db)
-                    if token_entry3 and token_entry3.token:
-                        access_token3 = token_entry3.token
-                        headers3 = {"Authorization": f"Bearer {access_token3}", "Content-Type": "application/json"}
-                        phone_id3 = os.getenv("WHATSAPP_PHONE_ID", "367633743092037")
-
-                        payload_buttons = {
-                            "messaging_product": "whatsapp",
-                            "to": wa_id,
-                            "type": "interactive",
-                            "interactive": {
-                                "type": "button",
-                                "body": {"text": "Please choose one of the following options:"},
-                                "action": {
-                                    "buttons": [
-                                        {"type": "reply", "reply": {"id": "book_appointment", "title": "\ud83d\udcc5 📅 Book an Appointment"}},
-                                        {"type": "reply", "reply": {"id": "request_callback", "title": "\ud83d\udcde 📞 Request a Call Back"}}
-                                    ]
-                                }
-                            }
-                        }
-                        # Broadcast first so UI shows event even if WA API fails
-                        try:
-                            await manager.broadcast({
-                                "from": to_wa_id,
-                                "to": wa_id,
-                                "type": "interactive",
-                                "message": "Please choose one of the following options:",
-                                "timestamp": timestamp.isoformat(),
-                                "meta": {"kind": "buttons", "options": ["📅 Book an Appointment", "📞 Request a Call Back"]}
-                            })
-                        except Exception:
-                            pass
-                        # Then attempt to send to WhatsApp API
-                        requests.post(get_messages_url(phone_id3), headers=headers3, json=payload_buttons)
-                        return {"status": "next_actions_sent", "message_id": message_id}
+                        # NOTE: Final thank you message is handled in run_treatment_buttons_flow (treament_flow.py)
+                        # when specific concern is selected (acne, pigmentation, etc.)
+                        # Templates (skin_treat_flow/hair_treat_flow/body_treat_flow) are sent
+                        # when user clicks Skin/Hair/Body buttons via run_treatment_buttons_flow
+                        # No need to send final message here - it's handled in treament_flow.py
+                        print(f"[treatment_flow] DEBUG - Concern selected: {selected_concern}, final message handled in treament_flow.py")
+                    
+                    # booking_appoint template removed
+                    # Book Appointment / Request Call Back buttons removed
             except Exception:
                 pass
 
@@ -2814,54 +2278,6 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                 return {"status": "phone_captured_awaiting_name", "message_id": message_id}
         except Exception:
             pass
-        
-        # Handle text while awaiting_name using OpenAI-backed validator
-        try:
-            if message_type == "text":
-                st = appointment_state.get(wa_id) or {}
-                if bool(st.get("awaiting_name")):
-                    # Check if message is conversational (not a name input)
-                    conversational_indicators = [
-                        "thanks", "thank", "hi", "hello", "hey", "please", "share", 
-                        "your", "number", "want", "now", "need", "help", "ok", "okay"
-                    ]
-                    text_lower = body_text.lower()
-                    is_conversational = any(indicator in text_lower for indicator in conversational_indicators) and len(body_text.split()) > 5
-                    is_request = any(word in text_lower for word in ["share", "provide", "give", "send", "tell"])
-                    
-                    # Skip validation if message is clearly conversational or a request
-                    if is_conversational or is_request:
-                        # User is responding conversationally, not providing a name
-                        # Don't validate - this shouldn't happen if awaiting_name is correctly set,
-                        # but if it does, just skip validation to avoid incorrect error messages
-                        pass
-                    else:
-                        result = validate_human_name(body_text)
-                        if result.get("valid") and result.get("name"):
-                            # Save corrected name and clear awaiting_name; ask for phone next
-                            st["corrected_name"] = result.get("name").strip()
-                            st["awaiting_name"] = False
-                            st["awaiting_phone"] = True
-                            appointment_state[wa_id] = st
-                            # Use stored phone_id from treatment flow state
-                            stored_phone_id = st.get("treatment_flow_phone_id")
-                            phone_id_hint = stored_phone_id if stored_phone_id else None
-                            if not phone_id_hint:
-                                from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
-                                phone_id_hint = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
-                            await send_message_to_waid(wa_id, f"Thanks {st['corrected_name']}! Now please share your number.", db, phone_id_hint=str(phone_id_hint))
-                            return {"status": "name_captured_awaiting_phone", "message_id": message_id}
-                        else:
-                            # Use stored phone_id from treatment flow state
-                            stored_phone_id = st.get("treatment_flow_phone_id")
-                            phone_id_hint = stored_phone_id if stored_phone_id else None
-                            if not phone_id_hint:
-                                from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
-                                phone_id_hint = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
-                            await send_message_to_waid(wa_id, "❌ That doesn't look like a valid name. Please send your full name or first name (letters only).", db, phone_id_hint=str(phone_id_hint))
-                            return {"status": "invalid_name", "message_id": message_id}
-        except Exception:
-            pass
 
         # Handle text while awaiting_phone using validator
         try:
@@ -2907,12 +2323,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                 return {"status": "proceed_to_city_selection", "message_id": message_id, "result": result}
                             except Exception:
                                 return {"status": "failed_after_details", "message_id": message_id}
-                        elif date_iso and time_label and name_final and phone_final:
-                            # Regular appointment flow with date/time
-                            msg = (
-                                f"✅ Thank you! Your preferred appointment is on {date_iso} at {time_label} "
-                                f"with {name_final} ({phone_final}). Your appointment is booked, and our team will call to confirm shortly."
-                            )
+                        
                             # Persist appointment details to DB (create additional record for same wa_id)
                             try:
                                 from services.referrer_service import referrer_service

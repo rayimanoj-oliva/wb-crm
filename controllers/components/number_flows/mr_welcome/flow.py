@@ -124,142 +124,18 @@ async def run_mr_welcome_number_flow(
         except Exception:
             pass
 
-        # Use existing helper to send templates consistently
-        from controllers.auto_welcome_controller import _send_template  # local import to avoid circulars
-
-        # Optional: personalize with name if available via a single body param
-        def _extract_profile_name(_value: Optional[Dict[str, Any]]) -> Optional[str]:
-            try:
-                contacts = (_value or {}).get("contacts") or []
-                if isinstance(contacts, list) and contacts:
-                    prof = (contacts[0] or {}).get("profile") or {}
-                    nm = (prof.get("name") or "").strip()
-                    if nm:
-                        return nm
-            except Exception:
-                pass
-            try:
-                prof = (_value or {}).get("profile") or {}
-                nm = (prof.get("name") or "").strip()
-                if nm:
-                    return nm
-            except Exception:
-                pass
-            return None
-
-        name_hint = _extract_profile_name(value) or (getattr(customer, "name", None) or None)
-        body_components = [{
-            "type": "body",
-            "parameters": [
-                {"type": "text", "text": name_hint or "there"}
-            ],
-        }]
-
-        # Notify UI that we're attempting to send the template
+        # mr_welcome template and confirmation buttons removed
+        # Mark state so downstream handlers continue the flow consistently
         try:
-            await manager.broadcast({
-                "from": to_wa_id,
-                "to": wa_id,
-                "type": "template_attempt",
-                "message": "Sending mr_welcome...",
-                "timestamp": datetime.now().isoformat(),
-            })
+            from controllers.web_socket import appointment_state  # type: ignore
+            st = appointment_state.get(wa_id) or {}
+            st["from_treatment_flow"] = True
+            st["flow_context"] = "treatment"
+            st["treatment_flow_phone_id"] = str(phone_id)
+            appointment_state[wa_id] = st
         except Exception:
             pass
-
-        lang_code = os.getenv("WELCOME_TEMPLATE_LANG", "en_US")
-        resp = _send_template(
-            wa_id=wa_id,
-            template_name="mr_welcome",
-            access_token=access_token,
-            phone_id=phone_id,
-            components=body_components,
-            lang_code=lang_code,
-        )
-
-        try:
-            await manager.broadcast({
-                "from": to_wa_id,
-                "to": wa_id,
-                "type": "template" if resp.status_code == 200 else "template_error",
-                "message": "mr_welcome sent" if resp.status_code == 200 else "mr_welcome failed",
-                **({"status_code": resp.status_code} if resp.status_code != 200 else {}),
-                "meta": {"phone_id": phone_id},
-                "timestamp": datetime.now().isoformat(),
-            })
-        except Exception:
-            pass
-
-        if resp.status_code == 200:
-            # After template is sent, immediately send confirmation prompt from the same number.
-            try:
-                # Prepare name and phone display
-                display_name = name_hint or getattr(customer, "name", None) or "there"
-                import re as _re
-                digits = _re.sub(r"\D", "", wa_id or "")
-                last10 = digits[-10:] if len(digits) >= 10 else None
-                display_phone = f"+91{last10}" if last10 and len(last10) == 10 else wa_id
-
-                # 1) Send the confirmation text using the same phone_id
-                try:
-                    from utils.whatsapp import send_message_to_waid as _send_text
-                    await _send_text(wa_id, f"To help us serve you better, please confirm your contact details:\n*{display_name}*\n*{display_phone}*", db, phone_id_hint=str(phone_id))
-                except Exception:
-                    pass
-
-                # 2) Send Yes/No buttons for confirmation from the same number
-                try:
-                    headers_btn = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-                    payload_btn = {
-                        "messaging_product": "whatsapp",
-                        "to": wa_id,
-                        "type": "interactive",
-                        "interactive": {
-                            "type": "button",
-                            "body": {"text": "Are your name and contact number correct? "},
-                            "action": {
-                                "buttons": [
-                                    {"type": "reply", "reply": {"id": "confirm_yes", "title": "Yes"}},
-                                    {"type": "reply", "reply": {"id": "confirm_no", "title": "No"}},
-                                ]
-                            },
-                        },
-                    }
-                    requests.post(get_messages_url(str(phone_id)), headers=headers_btn, json=payload_btn)
-                except Exception:
-                    pass
-
-                # Mark state so downstream handlers continue the flow consistently
-                try:
-                    from controllers.web_socket import appointment_state  # type: ignore
-                    st = appointment_state.get(wa_id) or {}
-                    st["from_treatment_flow"] = True
-                    st["flow_context"] = "treatment"
-                    st["mr_welcome_sent"] = True
-                    st["treatment_flow_phone_id"] = str(phone_id)
-                    st["contact_confirm_sent"] = True
-                    appointment_state[wa_id] = st
-                except Exception:
-                    pass
-
-                # Schedule follow-up only for mr_welcome (same as treatment_flow.py)
-                try:
-                    from services.followup_service import schedule_next_followup as _schedule, FOLLOW_UP_1_DELAY_MINUTES
-                    from services.customer_service import get_customer_record_by_wa_id as _get_c
-                    _cust = _get_c(db, wa_id)
-                    if _cust:
-                        _schedule(db, customer_id=_cust.id, delay_minutes=FOLLOW_UP_1_DELAY_MINUTES, stage_label="mr_welcome_sent")
-                        print(f"[mr_welcome_flow] INFO - Scheduled follow-up for customer {_cust.id} (wa_id: {wa_id}) after mr_welcome sent")
-                    else:
-                        print(f"[mr_welcome_flow] WARNING - Could not find customer to schedule follow-up for wa_id: {wa_id}")
-                except Exception as e:
-                    print(f"[mr_welcome_flow] ERROR - Failed to schedule follow-up for {wa_id}: {e}")
-                    import traceback
-                    traceback.print_exc()
-            except Exception:
-                pass
-            return {"status": "welcome_sent", "message_id": message_id}
-        return {"status": "welcome_failed", "message_id": message_id}
+        return {"status": "skipped", "message_id": message_id}
 
     except Exception as e:
         try:

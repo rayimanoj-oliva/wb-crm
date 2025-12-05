@@ -18,29 +18,26 @@ from marketing.whatsapp_numbers import WHATSAPP_NUMBERS
 def _resolve_credentials(db, *, hint_phone_id: str | None = None, hint_display_number: str | None = None, wa_id: str | None = None):
     """Pick the correct token and phone_id for outbound sends.
 
+    CRITICAL: For treatment flow, ALWAYS use incoming_phone_id (the number customer messaged to).
+    This ensures replies go from the same number customer contacted, preventing confusion.
+    
     Preference order:
-    1) Explicit hint_phone_id mapping
-    2) Stored treatment_flow_phone_id from state (if in treatment flow)
-    3) Stored lead_appointment_phone_id from lead state
-    4) Env WHATSAPP_PHONE_ID mapping
-    5) Single entry in WHATSAPP_NUMBERS
-    6) Fallback to DB token + env WHATSAPP_PHONE_ID
+    1) Stored incoming_phone_id from state (MOST IMPORTANT - the number customer messaged to)
+    2) Explicit hint_phone_id mapping (if incoming_phone_id not set)
+    3) Stored treatment_flow_phone_id from state (if incoming_phone_id not set)
+    4) Stored lead_appointment_phone_id from lead state (if incoming_phone_id not set)
+    5) Env WHATSAPP_PHONE_ID mapping
+    6) Single entry in WHATSAPP_NUMBERS
+    7) Fallback to DB token + env WHATSAPP_PHONE_ID
     """
-    # 1) Explicit phone_id hint
-    if hint_phone_id and isinstance(WHATSAPP_NUMBERS, dict) and hint_phone_id in WHATSAPP_NUMBERS:
-        cfg = WHATSAPP_NUMBERS.get(hint_phone_id) or {}
-        tok = cfg.get("token")
-        if tok:
-            print(f"[_resolve_credentials] RESOLVED via hint_phone_id: {hint_phone_id} for wa_id={wa_id}")
-            return tok, hint_phone_id
-
-    # 2) Check stored incoming_phone_id FIRST (the number customer messaged to)
+    # CRITICAL: Check stored incoming_phone_id FIRST (the number customer messaged to)
     # This is the MOST important - ensures replies go from the same number customer contacted
+    # DO NOT fallback to other numbers if incoming_phone_id is set - this prevents confusion
     if wa_id:
         try:
             from controllers.web_socket import appointment_state  # type: ignore
             st = appointment_state.get(wa_id) or {}
-
+            
             # FIRST: Check incoming_phone_id - this is the number customer messaged to
             incoming_phone_id = st.get("incoming_phone_id")
             if incoming_phone_id and isinstance(WHATSAPP_NUMBERS, dict) and incoming_phone_id in WHATSAPP_NUMBERS:
@@ -49,8 +46,25 @@ def _resolve_credentials(db, *, hint_phone_id: str | None = None, hint_display_n
                 if tok:
                     print(f"[_resolve_credentials] RESOLVED via incoming_phone_id: {incoming_phone_id} for wa_id={wa_id}")
                     return tok, incoming_phone_id
+                else:
+                    print(f"[_resolve_credentials] WARNING - incoming_phone_id {incoming_phone_id} found but no token available for wa_id={wa_id}")
+        except Exception as e:
+            print(f"[_resolve_credentials] WARNING - Could not check incoming_phone_id: {e}")
 
-            # Check for treatment flow phone_id
+    # 2) Explicit phone_id hint (only if incoming_phone_id not set)
+    if hint_phone_id and isinstance(WHATSAPP_NUMBERS, dict) and hint_phone_id in WHATSAPP_NUMBERS:
+        cfg = WHATSAPP_NUMBERS.get(hint_phone_id) or {}
+        tok = cfg.get("token")
+        if tok:
+            print(f"[_resolve_credentials] RESOLVED via hint_phone_id: {hint_phone_id} for wa_id={wa_id}")
+            return tok, hint_phone_id
+
+    # 3) Check for treatment flow phone_id (only if incoming_phone_id not set)
+    if wa_id:
+        try:
+            from controllers.web_socket import appointment_state  # type: ignore
+            st = appointment_state.get(wa_id) or {}
+            
             stored_phone_id = st.get("treatment_flow_phone_id")
             if stored_phone_id and isinstance(WHATSAPP_NUMBERS, dict) and stored_phone_id in WHATSAPP_NUMBERS:
                 cfg = WHATSAPP_NUMBERS.get(stored_phone_id) or {}
@@ -170,8 +184,11 @@ async def send_message_to_waid(wa_id: str, message_body: str, db, from_wa_id="91
     new_msg = message_service.create_message(db, message_data)
 
     # Schedule a follow-up for outbound messages for treatment flow only.
-    # If caller asked explicitly, honor schedule_followup flag.
-    # Otherwise, auto-schedule when NOT in lead appointment flow.
+    # CRITICAL: If schedule_followup=False is explicitly passed, do NOT schedule.
+    # If schedule_followup=True is explicitly passed, DO schedule.
+    # If schedule_followup is not provided (default False), check flow state:
+    #   - If flow is completed, do NOT schedule
+    #   - If not in lead appointment flow, schedule (default behavior)
     try:
         from services.followup_service import FOLLOW_UP_1_DELAY_MINUTES
         def _in_lead_flow(_wa_id: str) -> bool:
@@ -182,7 +199,27 @@ async def send_message_to_waid(wa_id: str, message_body: str, db, from_wa_id="91
             except Exception:
                 return False
 
-        should_schedule = schedule_followup or (not schedule_followup and not _in_lead_flow(wa_id))
+        # Check if flow is completed (final step reached)
+        flow_completed = False
+        try:
+            from controllers.web_socket import appointment_state  # type: ignore
+            st = appointment_state.get(wa_id) or {}
+            flow_completed = st.get("flow_completed", False)
+        except Exception:
+            pass
+
+        # Determine if we should schedule follow-up
+        should_schedule = False
+        if schedule_followup:
+            # Explicitly requested to schedule
+            should_schedule = True
+        elif not schedule_followup and flow_completed:
+            # Explicitly disabled OR flow completed - do NOT schedule
+            should_schedule = False
+        elif not _in_lead_flow(wa_id) and not flow_completed:
+            # Default behavior: schedule if not in lead flow AND flow not completed
+            should_schedule = True
+
         if should_schedule:
             schedule_next_followup(db, customer_id=customer.id, delay_minutes=FOLLOW_UP_1_DELAY_MINUTES, stage_label=stage_label)
     except Exception:

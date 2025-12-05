@@ -85,7 +85,7 @@ class ZohoLeadRetrievalService:
                     params["created_time"] = f"{date_to}T23:59:59+05:30"
             
             # Build the query string for WhatsApp source leads
-            query_conditions = ["Lead_Source:equals:WhatsApp Lead-to-Appointment Flow"]
+            query_conditions = ["Lead_Source:equals:Facebook"]
             
             # Add lead status filter if provided
             if lead_status:

@@ -50,7 +50,7 @@ async def trigger_zoho_auto_dial(
             "appointment_date": appointment_date,
             "callback_reason": "Appointment Confirmation",
             "priority": "High",
-            "source": "WhatsApp Lead-to-Appointment Flow"
+            "source": "Facebook"
         }
         
         # Make API call to Zoho Auto-Dial
@@ -97,7 +97,7 @@ async def trigger_zoho_lead_creation(
     (used from treatment flow and Follow-Up 2 drop-off logic).
 
     We intentionally skip creating leads here to avoid duplicate / incorrect
-    Lead Source values such as "WhatsApp Lead-to-Appointment Flow" or "Facebook"
+    Lead Source values such as "Facebook" (for lead appointment flow) or "Business Listing" (for treatment flow)
     when the marketing treatment flow is in use.
     """
 
@@ -239,7 +239,7 @@ async def trigger_zoho_lead_creation(
         
         # Create lead description
         description_parts = [
-            f"Lead from WhatsApp Lead-to-Appointment Flow",
+            f"Lead from Facebook",
             f"City: {city}",
             f"Clinic: {clinic}",
             f"Preferred Date: {appointment_date}",
@@ -272,9 +272,10 @@ async def trigger_zoho_lead_creation(
         # Set Lead Source and Sub Source based on flow type
         if is_treatment_flow:
             lead_source_val = "Business Listing"
-            sub_source_val = "WhatsApp"
+            sub_source_val = "WhatsApp Dial"  # Changed from "WhatsApp" to "WhatsApp Dial" for treatment flow
         else:
-            lead_source_val = "WhatsApp Lead-to-Appointment Flow"
+            # Lead appointment flow → always use "Facebook" as lead source
+            lead_source_val = "Facebook"
             sub_source_val = None
 
         # Simplified lead data without custom fields to avoid API errors

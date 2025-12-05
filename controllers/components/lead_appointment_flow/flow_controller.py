@@ -112,35 +112,99 @@ async def run_lead_appointment_flow(
                 
                 # If customer is in the flow (between flow trigger until flow completed), send interruption message
                 if is_in_flow:
-                    print(f"[lead_appointment_flow] ⚠️⚠️⚠️ DEBUG - Customer {wa_id} is in flow, sending interruption message")
+                    # CRITICAL: Check if error prompt was already sent by treatment flow or lead flow
+                    # This prevents duplicate error messages when both flows are active
+                    error_already_sent = False
                     try:
-                        from utils.whatsapp import send_message_to_waid
-                        from .config import LEAD_APPOINTMENT_PHONE_ID, LEAD_APPOINTMENT_DISPLAY_LAST10
-                        import os
+                        from controllers.web_socket import appointment_state, lead_appointment_state  # type: ignore
+                        from datetime import datetime, timedelta
                         
-                        interactive_reminder = (
-                            "We didn't quite get that.\n\n"
-                            "Please select an above option."
-                        )
+                        # Check appointment_state (treatment flow)
+                        appt_st = appointment_state.get(wa_id) or {}
+                        error_ts_appt = appt_st.get("error_prompt_sent_timestamp")
                         
-                        # Use the lead appointment display number
-                        from_wa_id = os.getenv("WHATSAPP_DISPLAY_NUMBER", "91" + LEAD_APPOINTMENT_DISPLAY_LAST10)
+                        # Check lead_appointment_state (lead flow)
+                        lead_st = lead_appointment_state.get(wa_id) or {}
+                        error_ts_lead = lead_st.get("error_prompt_sent_timestamp")
                         
-                        await send_message_to_waid(
-                            wa_id, 
-                            interactive_reminder, 
-                            db, 
-                            from_wa_id=from_wa_id,
-                            phone_id_hint=str(LEAD_APPOINTMENT_PHONE_ID)
-                        )
-                        print(f"[lead_appointment_flow] ✅ Sent interactive reminder to {wa_id} (in flow)")
-                        # Return immediately to prevent "Thank you" message from being sent
-                        return result
+                        # Use the most recent timestamp
+                        error_ts = error_ts_lead if (error_ts_lead and (not error_ts_appt or error_ts_lead > error_ts_appt)) else error_ts_appt
+                        
+                        if error_ts:
+                            try:
+                                ts_obj = datetime.fromisoformat(error_ts) if isinstance(error_ts, str) else None
+                                if ts_obj and (datetime.utcnow() - ts_obj) < timedelta(seconds=15):
+                                    error_already_sent = True
+                                    print(f"[lead_appointment_flow] DEBUG - Skipping error prompt (already sent {datetime.utcnow() - ts_obj} ago by another flow)")
+                            except Exception:
+                                pass
                     except Exception as e:
-                        print(f"[lead_appointment_flow] ❌ ERROR sending interactive reminder: {str(e)}")
-                        import traceback
-                        traceback.print_exc()
-                        # Return even on error to prevent "Thank you" message
+                        print(f"[lead_appointment_flow] WARNING - Could not check error prompt timestamp: {e}")
+                    
+                    if not error_already_sent:
+                        print(f"[lead_appointment_flow] ⚠️⚠️⚠️ DEBUG - Customer {wa_id} is in flow, sending interruption message")
+                        try:
+                            from utils.whatsapp import send_message_to_waid
+                            from .config import LEAD_APPOINTMENT_PHONE_ID, LEAD_APPOINTMENT_DISPLAY_LAST10
+                            import os
+                            
+                            interactive_reminder = (
+                                "We didn't quite get that.\n\n"
+                                "Please select an above option."
+                            )
+                            
+                            # CRITICAL: Mark error prompt as sent BEFORE sending to prevent race conditions
+                            # Set timestamp in BOTH appointment_state and lead_appointment_state for cross-flow deduplication
+                            try:
+                                from controllers.web_socket import appointment_state, lead_appointment_state  # type: ignore
+                                from datetime import datetime
+                                current_time = datetime.utcnow().isoformat()
+                                
+                                appt_st = appointment_state.get(wa_id) or {}
+                                appt_st["error_prompt_sent_timestamp"] = current_time
+                                appointment_state[wa_id] = appt_st
+                                
+                                lead_st = lead_appointment_state.get(wa_id) or {}
+                                lead_st["error_prompt_sent_timestamp"] = current_time
+                                lead_appointment_state[wa_id] = lead_st
+                                
+                                print(f"[lead_appointment_flow] DEBUG - Marked error prompt timestamp: {current_time} for wa_id={wa_id} (cross-flow deduplication)")
+                            except Exception as e:
+                                print(f"[lead_appointment_flow] WARNING - Could not set error prompt timestamp: {e}")
+                            
+                            # Use the lead appointment display number
+                            from_wa_id = os.getenv("WHATSAPP_DISPLAY_NUMBER", "91" + LEAD_APPOINTMENT_DISPLAY_LAST10)
+                            
+                            await send_message_to_waid(
+                                wa_id, 
+                                interactive_reminder, 
+                                db, 
+                                from_wa_id=from_wa_id,
+                                phone_id_hint=str(LEAD_APPOINTMENT_PHONE_ID)
+                            )
+                            print(f"[lead_appointment_flow] ✅ Sent interactive reminder to {wa_id} (in flow)")
+                            # Return immediately to prevent "Thank you" message from being sent
+                            return result
+                        except Exception as e:
+                            print(f"[lead_appointment_flow] ❌ ERROR sending interactive reminder: {str(e)}")
+                            import traceback
+                            traceback.print_exc()
+                            # If send failed, clear the timestamp so it can be retried
+                            try:
+                                from controllers.web_socket import appointment_state, lead_appointment_state  # type: ignore
+                                appt_st = appointment_state.get(wa_id) or {}
+                                appt_st.pop("error_prompt_sent_timestamp", None)
+                                appointment_state[wa_id] = appt_st
+                                
+                                lead_st = lead_appointment_state.get(wa_id) or {}
+                                lead_st.pop("error_prompt_sent_timestamp", None)
+                                lead_appointment_state[wa_id] = lead_st
+                            except Exception:
+                                pass
+                            # Return even on error to prevent "Thank you" message
+                            return result
+                    else:
+                        print(f"[lead_appointment_flow] DEBUG - Skipping error prompt (already sent by another flow)")
                         return result
                 else:
                     # Customer is not in flow (flow complete or never started) - send auto-reply

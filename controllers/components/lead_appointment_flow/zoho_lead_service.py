@@ -810,19 +810,6 @@ async def create_lead_for_appointment(
         # Stop persisting description/lead_status to DB; retain for external Zoho payload only
         final_description = None
 
-        # flow_type was already determined earlier for duplicate checking
-        # If lead-appointment flows are not live, avoid creating non-treatment leads in Zoho
-        if flow_type != "treatment_flow":
-            print(
-                "[LEAD APPOINTMENT FLOW] Skipping Zoho lead creation for non-treatment flow "
-                f"(flow_type={flow_type!r}) to prevent unnecessary 'WhatsApp Lead-to-Appointment Flow' leads."
-            )
-            return {
-                "success": True,
-                "skipped": True,
-                "reason": "lead_appointment_disabled",
-            }
-
         # -------- Final Lead Source / Sub Source / Language for Zoho --------
         try:
             _session_lead_source = session_data.get("lead_source")
@@ -831,10 +818,23 @@ async def create_lead_for_appointment(
             _session_lead_source = None
             _session_language = None
 
-        # Marketing treatment flow → always Business Listing / WhatsApp
-        lead_source_val = "Business Listing"
-        sub_source_val = "WhatsApp"
-        language_val = None  # not used for treatment flow
+        # Determine lead source based on flow type
+        if flow_type == "treatment_flow":
+            # Marketing treatment flow → always Business Listing / WhatsApp Dial
+            lead_source_val = "Business Listing"
+            sub_source_val = "WhatsApp Dial"
+            language_val = None  # not used for treatment flow
+        else:
+            # Lead appointment flow → always use "Facebook" as lead source
+            # Use session lead_source if available (should be "Facebook"), otherwise default to "Facebook"
+            if _session_lead_source and _session_lead_source.strip():
+                lead_source_val = _session_lead_source.strip()
+                print(f"[LEAD APPOINTMENT FLOW] Using session lead_source: {lead_source_val}")
+            else:
+                lead_source_val = "Facebook"
+                print(f"[LEAD APPOINTMENT FLOW] No session lead_source found, defaulting to: {lead_source_val}")
+            sub_source_val = None  # No sub-source for lead appointment flow
+            language_val = _session_language if _session_language else None
 
         # Note: Duplicate checking (24-hour window) was already done earlier in this function
         # for treatment flow leads with Lead Source = "Business Listing"

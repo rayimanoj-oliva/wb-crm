@@ -517,6 +517,9 @@ async def send_followup2(db: Session, *, wa_id: str, from_wa_id: str = None):
     except Exception:
         pass
     
+    # REMOVED: Final thank you message after Follow-Up 2
+    # Flow: Follow-Up 1 → Follow-Up 2 → Lead created (no final thank you message)
+    
     try:
         # Mark Follow-Up 2 state on the customer
         cust = db.query(Customer).filter(Customer.id == customer.id).first()
@@ -584,11 +587,18 @@ async def send_followup2(db: Session, *, wa_id: str, from_wa_id: str = None):
                 lead_source = zoho_hit.get("Lead_Source") or zoho_hit.get("details", {}).get("Lead_Source")
                 if lead_source == "Business Listing":
                     lead_id_existing = str((zoho_hit or {}).get("id") or (zoho_hit or {}).get("Id") or "")
+                    print(f"\n{'='*80}")
+                    print(f"🔄 [LEAD DUPLICATION PREVENTED] After Follow-Up 2")
+                    print(f"   Customer: {wa_id}")
+                    print(f"   Reason: Existing 'Business Listing' lead found in Zoho")
+                    print(f"   Zoho Lead ID: {lead_id_existing}")
+                    print(f"   Action: Skipped lead creation (duplicate prevented)")
+                    print(f"{'='*80}\n")
                     logger.info(f"[followup_service] Zoho 'Business Listing' lead already exists for {wa_id} (lead_id={lead_id_existing}) in last 24h. Skipping dropoff lead creation.")
                     try:
                         log_flow_event(
                             db,
-                            flow_type="lead_appointment",
+                            flow_type="treatment",
                             step="result",
                             status_code=200,
                             wa_id=wa_id,
@@ -601,27 +611,90 @@ async def send_followup2(db: Session, *, wa_id: str, from_wa_id: str = None):
                 else:
                     logger.info(f"[followup_service] Zoho lead found but Lead Source is '{lead_source}', not 'Business Listing'. Proceeding with lead creation.")
 
+            print(f"\n{'='*80}")
+            print(f"📝 [LEAD CREATION] After Follow-Up 2")
+            print(f"   Customer: {wa_id}")
+            print(f"   Status: No duplicate found (DB+Zoho check passed)")
+            print(f"   Action: Creating new lead in Zoho...")
+            print(f"{'='*80}\n")
             logger.info(f"[followup_service] No 'Business Listing' lead found for {wa_id} (DB+Zoho) in last 24h. Creating dropoff lead after Follow-Up 2.")
             try:
-                from controllers.components.lead_appointment_flow.zoho_lead_service import create_lead_for_dropoff  # type: ignore
-                res = await create_lead_for_dropoff(db, wa_id=wa_id, customer=customer, dropoff_point="no_response_followup2")
+                from controllers.components.lead_appointment_flow.zoho_lead_service import create_lead_for_appointment  # type: ignore
+                # Use create_lead_for_appointment which handles treatment flow Lead Source/Sub Source correctly
+                # Prepare appointment details for treatment flow
+                appointment_details = {
+                    "flow_type": "treatment_flow",
+                    "selected_city": getattr(customer, "city", "") or "",
+                    "dropoff_point": "no_response_followup2"
+                }
+                res = await create_lead_for_appointment(
+                    db=db,
+                    wa_id=wa_id,
+                    customer=customer,
+                    appointment_details=appointment_details,
+                    lead_status="CALL_INITIATED",
+                    appointment_preference="Dropped off at: Follow-Up 2 (no response)"
+                )
+                
+                # Enhanced logging for lead creation result
+                if res and res.get("success") and not res.get("skipped"):
+                    zoho_lead_id = res.get("zoho_lead_id") or res.get("lead_id") or res.get("id") or "N/A"
+                    print(f"\n{'='*80}")
+                    print(f"✅ [LEAD CREATED SUCCESSFULLY] After Follow-Up 2")
+                    print(f"   Customer: {wa_id}")
+                    print(f"   Zoho Lead ID: {zoho_lead_id}")
+                    print(f"   Lead Source: Business Listing")
+                    print(f"   Sub Source: WhatsApp Dial")
+                    print(f"   Status: CALL_INITIATED")
+                    print(f"   Response: {json.dumps(res, default=str)[:200]}")
+                    print(f"{'='*80}\n")
+                elif res and res.get("skipped"):
+                    skip_reason = res.get("reason") or "Unknown reason"
+                    print(f"\n{'='*80}")
+                    print(f"⏭️  [LEAD CREATION SKIPPED] After Follow-Up 2")
+                    print(f"   Customer: {wa_id}")
+                    print(f"   Reason: {skip_reason}")
+                    print(f"{'='*80}\n")
+                else:
+                    error_msg = res.get("error") if res else "Unknown error"
+                    print(f"\n{'='*80}")
+                    print(f"❌ [LEAD CREATION FAILED] After Follow-Up 2")
+                    print(f"   Customer: {wa_id}")
+                    print(f"   Error: {error_msg}")
+                    print(f"   Response: {json.dumps(res, default=str) if res else 'No response'}")
+                    print(f"{'='*80}\n")
+                
                 # Log flow
                 try:
                     log_flow_event(
                         db,
-                        flow_type="lead_appointment",
+                        flow_type="treatment",
                         step="result",
                         status_code=200 if (res or {}).get("success") else 500,
                         wa_id=wa_id,
                         name=getattr(customer, "name", None) or "",
-                        description="Lead created after Follow-Up 2 (no response)" if (res or {}).get("success") else f"Lead creation failed after Follow-Up 2: {(res or {}).get('error')}",
+                        description=f"Lead created after Follow-Up 2 (no response) - Zoho ID: {res.get('zoho_lead_id') if res else 'N/A'}" if (res or {}).get("success") else f"Lead creation failed after Follow-Up 2: {(res or {}).get('error')}",
                         response_json=json.dumps(res, default=str) if res is not None else None,
                     )
                 except Exception:
                     pass
             except Exception as e:
+                print(f"\n{'='*80}")
+                print(f"❌ [LEAD CREATION EXCEPTION] After Follow-Up 2")
+                print(f"   Customer: {wa_id}")
+                print(f"   Exception: {str(e)}")
+                print(f"{'='*80}\n")
                 logger.error(f"[followup_service] Dropoff lead creation failed for {wa_id}: {e}")
         else:
+            print(f"\n{'='*80}")
+            print(f"🔄 [LEAD DUPLICATION PREVENTED] After Follow-Up 2")
+            print(f"   Customer: {wa_id}")
+            print(f"   Reason: Existing 'Business Listing' lead found in database")
+            print(f"   DB Lead ID: {existing.id}")
+            print(f"   Zoho Lead ID: {existing.zoho_lead_id or 'N/A'}")
+            print(f"   Created At: {existing.created_at}")
+            print(f"   Action: Skipped lead creation (duplicate prevented)")
+            print(f"{'='*80}\n")
             logger.info(f"[followup_service] Existing lead found for {wa_id} (lead_id={existing.zoho_lead_id}). Skipping dropoff lead creation.")
     except Exception as e:
         logger.error(f"[followup_service] Post-FU2 lead check failed for {wa_id}: {e}")

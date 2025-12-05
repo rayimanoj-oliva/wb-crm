@@ -198,7 +198,11 @@ async def handle_marketing_event(db: Session, *, value: Dict[str, Any]) -> Dict[
             print(f"[ws_marketing] DEBUG - handled text in marketing handler for wa_id={wa_id}")
         except Exception:
             pass
-        return {"status": "handled", **(res2 or {})}
+        # Ensure res2 is a dict before unpacking
+        if isinstance(res2, dict):
+            return {"status": "handled", **res2}
+        else:
+            return {"status": "handled", "message_id": message_id}
 
     # Non-text messages fall through to main handler
     return {"status": "ignored", "reason": "non_text_interactive_deferred"}

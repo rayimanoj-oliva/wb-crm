@@ -101,19 +101,7 @@ def log_last_step_reached(
     wa_id: Optional[str] = None,
     name: Optional[str] = None,
 ) -> str:
-    """Log the last step reached in a flow before follow-ups.
-    
-    Steps for lead_appointment flow:
-    - entry: Flow started (auto_welcome sent)
-    - city_selection: City selection list shown
-    - treatment: Treatment/concern selected
-    - concern_list: Concern list shown (if applicable)
-    - last_step: Final step before follow-ups (time slot selection or callback confirmation)
-    
-    If name is not provided, it will be retrieved from the appropriate flow state.
-    
-    Returns the created FlowLog id (as str) if successful, else empty string.
-    """
+   
     try:
         # If name not provided, try to get it from flow state
         if not name:

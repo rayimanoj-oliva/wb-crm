@@ -619,26 +619,30 @@ async def handle_city_selection(
             except Exception:
                 skip_template = False
 
-            # Use reusable interactive senders sourced from whatsapp_numbers
+            # Step 3: Send mr_treatment template after city selection
             try:
-                from marketing.interactive import send_mr_treatment, send_concern_buttons, send_next_actions  # type: ignore
-                # 1. Send confirmation message first
-                await send_message_to_waid(wa_id, f"✅ Great! You selected {selected_city}.", db, phone_id_hint=str(phone_id_hint))
-                # 2. Then send mr_treatment template
-                _ = send_mr_treatment(db, wa_id=wa_id, phone_id_hint=str(phone_id_hint))
+                from marketing.interactive import send_mr_treatment  # type: ignore
+                # Check if mr_treatment was already sent to prevent duplicates
                 try:
-                    from controllers.web_socket import lead_appointment_state as _lead_state_mark
-                    st_mark = _lead_state_mark.get(wa_id) or {}
-                    if st_mark.get("treatment_topics_sent"):
-                        st_mark["treatment_topics_lock"] = False
-                        _lead_state_mark[wa_id] = st_mark
-                        return {"status": "topics_already_sent", "city": selected_city}
-                    st_mark["treatment_topics_sent"] = True
-                    st_mark["topics_sent_ts"] = datetime.now().isoformat()
-                    _lead_state_mark[wa_id] = st_mark
+                    from controllers.web_socket import appointment_state as _appt_mr
+                    st_mr = _appt_mr.get(wa_id) or {}
+                    mr_sent = bool(st_mr.get("mr_treatment_sent"))
+                    if not mr_sent:
+                        _ = send_mr_treatment(db, wa_id=wa_id, phone_id_hint=str(phone_id_hint))
+                        print(f"[city_selection] DEBUG - Sent mr_treatment template for wa_id={wa_id}")
+                    else:
+                        print(f"[city_selection] DEBUG - Skipping mr_treatment template (already sent)")
                 except Exception:
-                    pass
-                # 3. Then send concern buttons (only if not already sent)
+                    _ = send_mr_treatment(db, wa_id=wa_id, phone_id_hint=str(phone_id_hint))
+            except Exception as _e_mr:
+                print(f"[city_selection] WARNING - Could not send mr_treatment template: {_e_mr}")
+            
+            # Step 4: Send concern buttons after mr_treatment template
+            try:
+                from marketing.interactive import send_concern_buttons  # type: ignore
+                # Send "Please choose your area of concern:" message before concern buttons
+                # await send_message_to_waid(wa_id, "Please choose your area of concern:", db, phone_id_hint=str(phone_id_hint))
+                # Then send concern buttons (only if not already sent)
                 try:
                     from controllers.web_socket import appointment_state as _appt_concern
                     st_concern = _appt_concern.get(wa_id) or {}
@@ -646,11 +650,9 @@ async def handle_city_selection(
                     if not concern_sent:
                         _ = send_concern_buttons(db, wa_id=wa_id, phone_id_hint=str(phone_id_hint))
                     else:
-                        print(f"[city_selection] DEBUG - Skipping concern buttons (already sent via template)")
+                        print(f"[city_selection] DEBUG - Skipping concern buttons (already sent)")
                 except Exception:
                     _ = send_concern_buttons(db, wa_id=wa_id, phone_id_hint=str(phone_id_hint))
-                # 4. Finally send next actions
-                _ = send_next_actions(db, wa_id=wa_id, phone_id_hint=str(phone_id_hint))
             except Exception as _e_int:
                 print(f"[city_selection] WARNING - interactive senders failed: {_e_int}")
             
