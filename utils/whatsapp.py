@@ -217,10 +217,12 @@ async def send_message_to_waid(wa_id: str, message_body: str, db, from_wa_id="91
         # 1. Explicitly requested (schedule_followup=True), AND
         # 2. Customer is in a flow (treatment or lead appointment), AND
         # 3. Flow is NOT completed
+        # 4. Flow has STARTED (after welcome + city selection for treatment flow)
         should_schedule = False
         
         # Check if customer is in treatment flow
         is_in_treatment_flow = False
+        flow_started = False
         try:
             from controllers.web_socket import appointment_state  # type: ignore
             st = appointment_state.get(wa_id) or {}
@@ -229,16 +231,22 @@ async def send_message_to_waid(wa_id: str, message_body: str, db, from_wa_id="91
                 bool(st.get("from_treatment_flow")) or
                 bool(st.get("treatment_flow_phone_id"))
             )
+            flow_started = bool(st.get("flow_started"))  # Check if flow has started (after welcome + city)
         except Exception:
             pass
         
         # Only schedule if:
-        # 1. Explicitly requested AND in a flow AND flow not completed
+        # 1. Explicitly requested AND in a flow AND flow not completed AND flow has started
         if schedule_followup:
             if (is_in_treatment_flow or _in_lead_flow(wa_id)) and not flow_completed:
-                should_schedule = True
+                # For treatment flow, also check if flow has started (after welcome + city)
+                if is_in_treatment_flow and not flow_started:
+                    print(f"[send_message_to_waid] DEBUG - Not scheduling follow-up: treatment flow not started yet (waiting for city selection)")
+                    should_schedule = False
+                else:
+                    should_schedule = True
             else:
-                print(f"[send_message_to_waid] DEBUG - Not scheduling follow-up: schedule_followup=True but not in flow or flow completed (treatment={is_in_treatment_flow}, lead={_in_lead_flow(wa_id)}, completed={flow_completed})")
+                print(f"[send_message_to_waid] DEBUG - Not scheduling follow-up: schedule_followup=True but not in flow or flow completed (treatment={is_in_treatment_flow}, lead={_in_lead_flow(wa_id)}, completed={flow_completed}, started={flow_started})")
         # Do NOT schedule for normal messages (not in flow)
         # Do NOT schedule if flow is completed
         elif flow_completed:
@@ -249,7 +257,7 @@ async def send_message_to_waid(wa_id: str, message_body: str, db, from_wa_id="91
 
         if should_schedule:
             schedule_next_followup(db, customer_id=customer.id, delay_minutes=FOLLOW_UP_1_DELAY_MINUTES, stage_label=stage_label)
-            print(f"[send_message_to_waid] DEBUG - Scheduled follow-up for wa_id={wa_id} (in flow, not completed)")
+            print(f"[send_message_to_waid] DEBUG - Scheduled follow-up for wa_id={wa_id} (in flow, started, not completed)")
     except Exception:
         pass
     

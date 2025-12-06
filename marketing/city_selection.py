@@ -656,6 +656,28 @@ async def handle_city_selection(
             except Exception as _e_int:
                 print(f"[city_selection] WARNING - interactive senders failed: {_e_int}")
             
+            # CRITICAL: After city selection + mr_treatment + concern buttons, flow is now STARTED
+            # Mark flow as started and schedule first follow-up
+            try:
+                from controllers.web_socket import appointment_state as _appt_started  # type: ignore
+                st_started = _appt_started.get(wa_id) or {}
+                st_started["flow_started"] = True  # Mark flow as started (after welcome + city)
+                _appt_started[wa_id] = st_started
+                print(f"[city_selection] DEBUG - Flow marked as started for wa_id={wa_id}")
+                
+                # Schedule first follow-up now that flow has started
+                try:
+                    from services.followup_service import schedule_next_followup
+                    from services.customer_service import get_or_create_customer
+                    from schemas.customer_schema import CustomerCreate
+                    customer = get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
+                    schedule_next_followup(db, customer_id=customer.id, delay_minutes=5, stage_label="flow_started")
+                    print(f"[city_selection] DEBUG - Scheduled first follow-up for wa_id={wa_id} (flow started)")
+                except Exception as e_fu:
+                    print(f"[city_selection] WARNING - Could not schedule follow-up: {e_fu}")
+            except Exception as e_start:
+                print(f"[city_selection] WARNING - Could not mark flow as started: {e_start}")
+            
             # release lock
                 try:
                     from controllers.web_socket import lead_appointment_state as _lead_unlock

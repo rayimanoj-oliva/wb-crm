@@ -98,27 +98,90 @@ async def run_treament_flow(
             normalized_body=normalized_body,
         )
 
-        # 3) Prefill detection for mr_welcome
+        # 3) Prefill detection for treatment welcome message
         # Rule: trigger ONLY when this looks like the *start* of a treatment conversation,
         # Check if customer is in treatment flow - allow access from BOTH treatment flow numbers
         # Customers should be able to switch between 7617613030 and 8297882978
+        
+        # CRITICAL: Check if flow was completed - if customer sends a new message, restart the flow
+        try:
+            from controllers.web_socket import appointment_state as _appt_state_restart  # type: ignore
+            from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS  # type: ignore
+            st_restart = _appt_state_restart.get(wa_id) or {}
+            flow_completed = bool(st_restart.get("flow_completed"))
+            
+            # Check if customer is messaging a treatment flow number
+            phone_id_meta_restart = ((value or {}).get("metadata", {}) or {}).get("phone_number_id")
+            is_treatment_number = False
+            if phone_id_meta_restart and str(phone_id_meta_restart) in TREATMENT_FLOW_ALLOWED_PHONE_IDS:
+                is_treatment_number = True
+            elif to_wa_id:
+                import re as _re_restart
+                from marketing.whatsapp_numbers import WHATSAPP_NUMBERS  # type: ignore
+                disp_digits_restart = _re_restart.sub(r"\D", "", str(to_wa_id))
+                disp_last10_restart = disp_digits_restart[-10:] if len(disp_digits_restart) >= 10 else disp_digits_restart
+                for pid_restart in TREATMENT_FLOW_ALLOWED_PHONE_IDS:
+                    cfg_restart = WHATSAPP_NUMBERS.get(pid_restart) if isinstance(WHATSAPP_NUMBERS, dict) else None
+                    if cfg_restart:
+                        name_digits_restart = _re_restart.sub(r"\D", "", (cfg_restart.get("name") or ""))
+                        name_last10_restart = name_digits_restart[-10:] if len(name_digits_restart) >= 10 else name_digits_restart
+                        if name_last10_restart and disp_last10_restart and name_last10_restart == disp_last10_restart:
+                            is_treatment_number = True
+                            break
+            
+            # If flow was completed and customer sends a new message to treatment number, restart flow
+            if flow_completed and is_treatment_number and bool(normalized_body):
+                print(f"[treatment_flow] DEBUG - Flow was completed, but customer sent new message. Restarting flow for wa_id={wa_id}")
+                # Clear all flow state to restart from beginning
+                st_restart.pop("flow_completed", None)
+                st_restart.pop("treatment_welcome_sent", None)
+                st_restart.pop("treatment_welcome_sending_ts", None)
+                st_restart.pop("treatment_expect_interactive", None)
+                st_restart.pop("mr_treatment_sent", None)
+                st_restart.pop("concern_buttons_sent", None)
+                st_restart.pop("flow_started", None)
+                st_restart.pop("error_prompt_sent_timestamp", None)
+                # Keep flow_context and phone_id so flow can restart
+                _appt_state_restart[wa_id] = st_restart
+                
+                # Also clear related state in lead_appointment_state if present
+                try:
+                    from controllers.web_socket import lead_appointment_state  # type: ignore
+                    lst_restart = lead_appointment_state.get(wa_id) or {}
+                    lst_restart.pop("treatment_topics_sent", None)
+                    lst_restart.pop("topics_sent_ts", None)
+                    lst_restart.pop("treatment_topics_lock", None)
+                    lst_restart.pop("treatment_topics_lock_ts", None)
+                    lst_restart.pop("treatment_template_sent", None)
+                    lst_restart.pop("treatment_template_ts", None)
+                    lst_restart.pop("last_city_reply_id", None)
+                    lst_restart.pop("selected_city", None)
+                    lst_restart.pop("selected_concern", None)
+                    lead_appointment_state[wa_id] = lst_restart
+                    print(f"[treatment_flow] DEBUG - Cleared lead_appointment_state for flow restart: wa_id={wa_id}")
+                except Exception as e_lead_clear:
+                    print(f"[treatment_flow] WARNING - Could not clear lead_appointment_state: {e_lead_clear}")
+        except Exception as e_restart:
+            print(f"[treatment_flow] WARNING - Could not check/clear flow_completed state: {e_restart}")
+        
         in_active_treatment_flow = False
+        already_welcome_sent = False
+        is_current_number_treatment = False
         try:
             from controllers.web_socket import appointment_state as _appt_state  # type: ignore
             from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS  # type: ignore
             st_now = _appt_state.get(wa_id) or {}
             flow_ctx = st_now.get("flow_context")
             expect_step = st_now.get("treatment_expect_interactive")
-            already_welcome = bool(st_now.get("mr_welcome_sent"))
+            already_welcome_sent = bool(st_now.get("treatment_welcome_sent"))  # Use treatment-specific flag
             stored_phone_id = st_now.get("treatment_flow_phone_id")
             
-            # Check if customer is in treatment flow context
-            is_in_treatment_context = (flow_ctx == "treatment") or bool(expect_step) or already_welcome
+            # Check if customer is in treatment flow context (has already started flow)
+            is_in_treatment_context = (flow_ctx == "treatment") or bool(expect_step) or already_welcome_sent
             
             # Also check if the CURRENT incoming number is a treatment flow number
             # This allows customers to switch between treatment flow numbers
             phone_id_meta = ((value or {}).get("metadata", {}) or {}).get("phone_number_id")
-            is_current_number_treatment = False
             if phone_id_meta and str(phone_id_meta) in TREATMENT_FLOW_ALLOWED_PHONE_IDS:
                 is_current_number_treatment = True
             elif to_wa_id:
@@ -136,10 +199,10 @@ async def run_treament_flow(
                             is_current_number_treatment = True
                             break
             
-            # Customer is in treatment flow if:
-            # 1. They're in treatment context (from previous message), OR
-            # 2. They're messaging a treatment flow number (allows switching between numbers)
-            in_active_treatment_flow = is_in_treatment_context or is_current_number_treatment
+            # Customer is in active treatment flow if:
+            # 1. They're in treatment context (from previous message) AND have already received welcome
+            # This prevents sending welcome again if they're already in the flow
+            in_active_treatment_flow = is_in_treatment_context and already_welcome_sent
             
             # If customer is messaging a treatment flow number but stored phone_id is different, update it
             # This allows customers to switch between 7617613030 and 8297882978
@@ -153,7 +216,11 @@ async def run_treament_flow(
         except Exception:
             in_active_treatment_flow = False
 
-        prefill_detected = bool(normalized_body) and not in_active_treatment_flow
+        # Prefill detected if:
+        # 1. There's a message body, AND
+        # 2. Customer is messaging a treatment flow number, AND
+        # 3. Customer has NOT already received welcome (not in active flow)
+        prefill_detected = bool(normalized_body) and is_current_number_treatment and not in_active_treatment_flow
         matched_pattern = "any_text_start" if prefill_detected else None
 
         _safe_debug(
@@ -230,8 +297,8 @@ async def run_treament_flow(
                     # Send welcome message
                     welcome_message = "Hi! Thanks for reaching out to Oliva Clinics. I'm your virtual assistant here to help you instantly."
                     print(f"[treatment_flow] DEBUG - Sending welcome message to wa_id={wa_id} from phone_id={phone_id_welcome}")
-                    # CRITICAL: schedule_followup=True - Start follow-up sequence after welcome message (flow has started)
-                    await _send_msg(wa_id, welcome_message, db, phone_id_hint=str(phone_id_welcome), schedule_followup=True)
+                    # CRITICAL: schedule_followup=False - Flow not started yet (will start after city selection)
+                    await _send_msg(wa_id, welcome_message, db, phone_id_hint=str(phone_id_welcome), schedule_followup=False)
                     
                     # Mark flow context and store phone_id
                     try:
@@ -241,7 +308,9 @@ async def run_treament_flow(
                         st["from_treatment_flow"] = True
                         st["treatment_flow_phone_id"] = str(phone_id_welcome)
                         st["incoming_phone_id"] = str(phone_id_welcome)
+                        st["treatment_welcome_sent"] = True  # Mark treatment welcome as sent to prevent duplicates
                         appointment_state[wa_id] = st
+                        print(f"[treatment_flow] DEBUG - Marked treatment_welcome_sent=True for wa_id={wa_id}")
                     except Exception:
                         pass
                     
@@ -318,21 +387,21 @@ async def run_treament_flow(
                 from controllers.web_socket import appointment_state  # type: ignore
                 from datetime import datetime, timedelta
                 st_lock = appointment_state.get(wa_id) or {}
-                # First check if mr_welcome was already sent - if so, skip sending again
-                if bool(st_lock.get("mr_welcome_sent")):
+                # First check if treatment welcome was already sent - if so, skip sending again
+                if bool(st_lock.get("treatment_welcome_sent")):
                     # Check timestamp to see if it was sent very recently (within 10 seconds)
-                    ts_str = st_lock.get("mr_welcome_sending_ts")
+                    ts_str = st_lock.get("treatment_welcome_sending_ts")
                     ts_obj = datetime.fromisoformat(ts_str) if isinstance(ts_str, str) else None
                     if ts_obj and (datetime.utcnow() - ts_obj) < timedelta(seconds=10):
-                        print(f"[treatment_flow] DEBUG - Skipping duplicate mr_welcome: already sent by another handler (wa_id={wa_id})")
-                        return {"status": "skipped", "message_id": message_id, "reason": "mr_welcome_already_sent"}
-                # Check if mr_welcome is currently being sent (within 10 seconds) to prevent race conditions
-                ts_str = st_lock.get("mr_welcome_sending_ts")
+                        print(f"[treatment_flow] DEBUG - Skipping duplicate treatment welcome: already sent by another handler (wa_id={wa_id})")
+                        return {"status": "skipped", "message_id": message_id, "reason": "treatment_welcome_already_sent"}
+                # Check if treatment welcome is currently being sent (within 10 seconds) to prevent race conditions
+                ts_str = st_lock.get("treatment_welcome_sending_ts")
                 ts_obj = datetime.fromisoformat(ts_str) if isinstance(ts_str, str) else None
                 if ts_obj and (datetime.utcnow() - ts_obj) < timedelta(seconds=10):
-                    return {"status": "skipped", "message_id": message_id, "reason": "mr_welcome_in_progress"}
+                    return {"status": "skipped", "message_id": message_id, "reason": "treatment_welcome_in_progress"}
                 # Set sending timestamp to prevent concurrent sends
-                st_lock["mr_welcome_sending_ts"] = datetime.utcnow().isoformat()
+                st_lock["treatment_welcome_sending_ts"] = datetime.utcnow().isoformat()
                 appointment_state[wa_id] = st_lock
             except Exception:
                 pass
@@ -440,7 +509,7 @@ async def run_treament_flow(
 
                 access_token_prefill, phone_id_prefill = _resolve_credentials_for_value()
                 if access_token_prefill:
-                    # mr_welcome template and confirmation buttons removed
+                    # Treatment welcome message (text) sent instead of mr_welcome template
                     # Mark context and set treatment flag
                     try:
                         from controllers.web_socket import appointment_state  # type: ignore
@@ -460,7 +529,7 @@ async def run_treament_flow(
                             "from": to_wa_id,
                             "to": wa_id,
                             "type": "template_error",
-                            "message": "mr_welcome not sent: no WhatsApp token",
+                            "message": "treatment welcome not sent: no WhatsApp token",
                             "timestamp": datetime.now().isoformat(),
                         })
                     except Exception:
