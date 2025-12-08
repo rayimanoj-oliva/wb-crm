@@ -473,10 +473,35 @@ def get_conversations_optimized(
         import re
         from sqlalchemy.sql import exists
 
-        digits = re.sub(r'\D', '', business_number)
-        last10 = digits[-10:] if len(digits) >= 10 else digits
-        variants = [business_number, digits, last10, f"91{last10}", f"+91{last10}"]
-        variants = list(dict.fromkeys(variants))
+        def _build_number_variants(num: str) -> list[str]:
+            """Return a rich set of variants for matching stored WhatsApp numbers."""
+            digits = re.sub(r"\D", "", num or "")
+            last10 = digits[-10:] if len(digits) >= 10 else digits
+            candidates = {
+                num,
+                digits,
+                last10,
+                f"91{last10}" if last10 else None,
+                f"+91{last10}" if last10 else None,
+                f"+{digits}" if digits else None,
+            }
+            # Also include whatsapp: prefixes
+            more = set()
+            for c in list(candidates):
+                if not c:
+                    continue
+                more.add(f"whatsapp:{c}")
+            candidates.update(more)
+            # Remove falsy and dedupe while preserving order
+            seen = set()
+            out = []
+            for c in candidates:
+                if c and c not in seen:
+                    seen.add(c)
+                    out.append(c)
+            return out
+
+        variants = _build_number_variants(business_number)
 
         # Exists subquery: any message (from/to) matches the business number variants
         msg_exists = (
