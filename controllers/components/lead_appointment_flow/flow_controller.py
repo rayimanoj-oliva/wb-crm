@@ -290,6 +290,28 @@ async def run_lead_appointment_flow(
                         )
                         print(f"[lead_appointment_flow] ✅ Sent auto-reply for non-triggering message to {wa_id}")
 
+                        # Push a lead to Zoho with Sub Source = Whatsapp No Dial (lead appointment dedicated number)
+                        try:
+                            from .zoho_lead_service import create_lead_for_appointment
+                            appointment_details = {
+                                "flow_type": "lead_appointment_flow",
+                                "lead_source": "Facebook",
+                                "sub_source": "Whatsapp No Dial",
+                                "selected_city": "Unknown",
+                                "selected_clinic": "Unknown",
+                            }
+                            await create_lead_for_appointment(
+                                db=db,
+                                wa_id=wa_id,
+                                customer=customer,
+                                appointment_details=appointment_details,
+                                lead_status="NO_CALLBACK",
+                                appointment_preference="Auto-reply (lead channel, no trigger)"
+                            )
+                            print(f"[lead_appointment_flow] ✅ Created Zoho lead for non-triggering message with Sub Source=Whatsapp No Dial")
+                        except Exception as lead_err:
+                            print(f"[lead_appointment_flow] WARNING - Could not create Zoho lead after auto-reply: {lead_err}")
+
                         # Explicitly clear any pending follow-ups so scheduler doesn't send FU1/FU2
                         try:
                             customer_id = getattr(customer, "id", None)
@@ -982,6 +1004,20 @@ async def handle_yes_callback(
             print(f"[lead_appointment_flow] DEBUG - Appointment details: {appointment_details}")
         except Exception as e:
             print(f"[lead_appointment_flow] WARNING - Could not get appointment details: {e}")
+
+        # If user clicked "Not right now" earlier today, allow duplicate lead creation
+        try:
+            from controllers.web_socket import appointment_state
+            appt_state = appointment_state.get(wa_id, {}) if 'appointment_state' in globals() else {}
+            not_now_ts = appt_state.get("not_now_ts")
+            if not_now_ts:
+                from datetime import datetime
+                ts_obj = datetime.fromisoformat(not_now_ts) if isinstance(not_now_ts, str) else None
+                if ts_obj and ts_obj.date() == datetime.utcnow().date():
+                    appointment_details["allow_duplicate_same_day"] = True
+                    print(f"[lead_appointment_flow] DEBUG - Allow duplicate same-day lead after Not Now for {wa_id}")
+        except Exception as e:
+            print(f"[lead_appointment_flow] WARNING - Could not set allow_duplicate_same_day: {e}")
         
         # Trigger Q5 auto dial event
         from .zoho_lead_service import trigger_q5_auto_dial_event
@@ -1087,6 +1123,17 @@ async def handle_no_callback_not_now(
             print(f"[lead_appointment_flow] DEBUG - Sent Not Now follow-up interactive")
         except Exception as e:
             print(f"[lead_appointment_flow] WARNING - Could not send Not Now follow-up interactive: {e}")
+        
+        # Mark timestamp of Not Now to allow a same-day Yes to bypass dedup
+        try:
+            from controllers.web_socket import appointment_state
+            from datetime import datetime
+            st = appointment_state.get(wa_id) or {}
+            st["not_now_ts"] = datetime.utcnow().isoformat()
+            appointment_state[wa_id] = st
+            print(f"[lead_appointment_flow] DEBUG - Stored not_now_ts for {wa_id}")
+        except Exception as e:
+            print(f"[lead_appointment_flow] WARNING - Could not store not_now_ts: {e}")
         
         # Create lead in Zoho with NO_CALLBACK status
         try:

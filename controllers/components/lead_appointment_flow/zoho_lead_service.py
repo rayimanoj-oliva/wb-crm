@@ -691,125 +691,128 @@ async def create_lead_for_appointment(
         else:
             expected_lead_source = _temp_session_lead_source if _temp_session_lead_source and _temp_session_lead_source.strip() else "Facebook"
 
-        # Duplication check: one lead per day per Lead Source
-        # Check for duplicates with same Lead Source on the same day
-        try:
-            from models.models import Lead as _Lead
-            from datetime import datetime as _dt, timedelta as _td
+        # Duplication check: one lead per day per Lead Source (unless explicitly allowed)
+        allow_dup = bool(appointment_details.get("allow_duplicate_same_day")) if isinstance(appointment_details, dict) else False
+        if not allow_dup:
+            try:
+                from models.models import Lead as _Lead
+                from datetime import datetime as _dt, timedelta as _td
 
-            def _digits_only(val: str | None) -> str:
-                try:
-                    import re as _re
-                    return _re.sub(r"\D", "", val or "")
-                except Exception:
-                    return val or ""
+                def _digits_only(val: str | None) -> str:
+                    try:
+                        import re as _re
+                        return _re.sub(r"\D", "", val or "")
+                    except Exception:
+                        return val or ""
 
-            phone_digits = _digits_only(phone_number)
-            last10 = phone_digits[-10:] if len(phone_digits) >= 10 else phone_digits
+                phone_digits = _digits_only(phone_number)
+                last10 = phone_digits[-10:] if len(phone_digits) >= 10 else phone_digits
 
-            phone_variants = {
-                phone_digits,
-                last10 if len(last10) == 10 else "",
-                f"+{phone_digits}" if phone_digits else "",
-                f"+91{last10}" if len(last10) == 10 else "",
-                f"91{last10}" if len(last10) == 10 else "",
-            }
-            phone_variants = {p for p in phone_variants if p}
+                phone_variants = {
+                    phone_digits,
+                    last10 if len(last10) == 10 else "",
+                    f"+{phone_digits}" if phone_digits else "",
+                    f"+91{last10}" if len(last10) == 10 else "",
+                    f"91{last10}" if len(last10) == 10 else "",
+                }
+                phone_variants = {p for p in phone_variants if p}
 
-            # Check for duplicates on the same day with same Lead Source
-            now_utc = _dt.utcnow()
-            day_start = _dt(now_utc.year, now_utc.month, now_utc.day, 0, 0, 0)
+                # Check for duplicates on the same day with same Lead Source
+                now_utc = _dt.utcnow()
+                day_start = _dt(now_utc.year, now_utc.month, now_utc.day, 0, 0, 0)
 
-            criteria = [
-                _Lead.lead_source == expected_lead_source,  # Same Lead Source
-                _Lead.created_at >= day_start,  # Same day
-            ]
-            
-            # Match by phone variants
-            if phone_variants:
-                phone_criteria = or_(
-                    _Lead.phone.in_(phone_variants),
-                    _Lead.mobile.in_(phone_variants),
-                )
-                criteria.append(phone_criteria)
-            
-            # Also match by wa_id
-            criteria.append(_Lead.wa_id == wa_id)
-
-            existing_lead_same_source = (
-                db.query(_Lead)
-                .filter(and_(*criteria))
-                .order_by(_Lead.created_at.desc())
-                .first()
-            )
-            
-            if existing_lead_same_source:
-                print(
-                    f"✅ [LEAD APPOINTMENT FLOW] Duplicate prevented: existing '{expected_lead_source}' lead found "
-                    f"for {wa_id} (phone={phone_number}) on same day (lead_id={existing_lead_same_source.zoho_lead_id})"
-                )
-                try:
-                    from utils.flow_log import log_flow_event  # type: ignore
-                    log_flow_event(
-                        db,
-                        flow_type="lead_appointment",
-                        step="result",
-                        status_code=200,
-                        wa_id=wa_id,
-                        name=getattr(customer, 'name', None) or '',
-                        description=f"Duplicate avoided: existing {expected_lead_source} lead {existing_lead_same_source.zoho_lead_id}",
+                criteria = [
+                    _Lead.lead_source == expected_lead_source,  # Same Lead Source
+                    _Lead.created_at >= day_start,  # Same day
+                ]
+                
+                # Match by phone variants
+                if phone_variants:
+                    phone_criteria = or_(
+                        _Lead.phone.in_(phone_variants),
+                        _Lead.mobile.in_(phone_variants),
                     )
-                except Exception:
-                    pass
-                return {"success": True, "duplicate": True, "lead_id": existing_lead_same_source.zoho_lead_id}
-            else:
-                print(
-                    f"🔍 [LEAD APPOINTMENT FLOW] No '{expected_lead_source}' lead found in DB for {wa_id} "
-                    f"(phone={phone_number}) on same day. Checking Zoho..."
-                )
-        except Exception as _e:
-            print(f"⚠️ [LEAD APPOINTMENT FLOW] DB duplicate check failed: {_e}")
+                    criteria.append(phone_criteria)
+                
+                # Also match by wa_id
+                criteria.append(_Lead.wa_id == wa_id)
 
-        # Zoho-side duplicate guard: check for leads by phone AND Lead Source (same day)
-        try:
-            existing_zoho = zoho_lead_service.find_existing_lead_by_phone_and_source(
-                phone_number, 
-                lead_source=expected_lead_source,
-                within_same_day=True
-            )
-            if existing_zoho and isinstance(existing_zoho, dict):
-                lead_id_existing = str(
-                    existing_zoho.get("id") or existing_zoho.get("Id") or ""
+                existing_lead_same_source = (
+                    db.query(_Lead)
+                    .filter(and_(*criteria))
+                    .order_by(_Lead.created_at.desc())
+                    .first()
                 )
-                if lead_id_existing:
+                
+                if existing_lead_same_source:
                     print(
-                        f"✅ [LEAD APPOINTMENT FLOW] Duplicate prevented via Zoho: existing '{expected_lead_source}' lead "
-                        f"for {phone_number} on same day (lead_id={lead_id_existing})"
+                        f"✅ [LEAD APPOINTMENT FLOW] Duplicate prevented: existing '{expected_lead_source}' lead found "
+                        f"for {wa_id} (phone={phone_number}) on same day (lead_id={existing_lead_same_source.zoho_lead_id})"
                     )
                     try:
                         from utils.flow_log import log_flow_event  # type: ignore
-
                         log_flow_event(
                             db,
                             flow_type="lead_appointment",
                             step="result",
                             status_code=200,
                             wa_id=wa_id,
-                            name=getattr(customer, "name", None) or "",
-                            description=(
-                                f"Duplicate avoided (Zoho search): existing {expected_lead_source} lead {lead_id_existing}"
-                            ),
+                            name=getattr(customer, 'name', None) or '',
+                            description=f"Duplicate avoided: existing {expected_lead_source} lead {existing_lead_same_source.zoho_lead_id}",
                         )
                     except Exception:
                         pass
-                    return {"success": True, "duplicate": True, "lead_id": lead_id_existing}
-            else:
-                print(
-                    f"🔍 [LEAD APPOINTMENT FLOW] No '{expected_lead_source}' lead found in Zoho for {phone_number} on same day. "
-                    f"Proceeding with lead creation..."
+                    return {"success": True, "duplicate": True, "lead_id": existing_lead_same_source.zoho_lead_id}
+                else:
+                    print(
+                        f"🔍 [LEAD APPOINTMENT FLOW] No '{expected_lead_source}' lead found in DB for {wa_id} "
+                        f"(phone={phone_number}) on same day. Checking Zoho..."
+                    )
+            except Exception as _e:
+                print(f"⚠️ [LEAD APPOINTMENT FLOW] DB duplicate check failed: {_e}")
+
+            # Zoho-side duplicate guard: check for leads by phone AND Lead Source (same day)
+            try:
+                existing_zoho = zoho_lead_service.find_existing_lead_by_phone_and_source(
+                    phone_number, 
+                    lead_source=expected_lead_source,
+                    within_same_day=True
                 )
-        except Exception as _e:
-            print(f"⚠️ [LEAD APPOINTMENT FLOW] Zoho-side duplicate check failed: {_e}")
+                if existing_zoho and isinstance(existing_zoho, dict):
+                    lead_id_existing = str(
+                        existing_zoho.get("id") or existing_zoho.get("Id") or ""
+                    )
+                    if lead_id_existing:
+                        print(
+                            f"✅ [LEAD APPOINTMENT FLOW] Duplicate prevented via Zoho: existing '{expected_lead_source}' lead "
+                            f"for {phone_number} on same day (lead_id={lead_id_existing})"
+                        )
+                        try:
+                            from utils.flow_log import log_flow_event  # type: ignore
+
+                            log_flow_event(
+                                db,
+                                flow_type="lead_appointment",
+                                step="result",
+                                status_code=200,
+                                wa_id=wa_id,
+                                name=getattr(customer, "name", None) or "",
+                                description=(
+                                    f"Duplicate avoided (Zoho search): existing {expected_lead_source} lead {lead_id_existing}"
+                                ),
+                            )
+                        except Exception:
+                            pass
+                        return {"success": True, "duplicate": True, "lead_id": lead_id_existing}
+                else:
+                    print(
+                        f"🔍 [LEAD APPOINTMENT FLOW] No '{expected_lead_source}' lead found in Zoho for {phone_number} on same day. "
+                        f"Proceeding with lead creation..."
+                    )
+            except Exception as _e:
+                print(f"⚠️ [LEAD APPOINTMENT FLOW] Zoho-side duplicate check failed: {_e}")
+        else:
+            print(f"✅ [LEAD APPOINTMENT FLOW] Duplicate check skipped (allow_duplicate_same_day=True)")
 
         # Initialize variables for concern tracking
         selected_concern = None
