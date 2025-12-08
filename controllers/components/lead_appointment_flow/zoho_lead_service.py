@@ -76,8 +76,36 @@ class ZohoLeadService:
                 desc_parts.append(f"City: {appointment_details['selected_city']}")
             if appointment_details.get("selected_clinic"):
                 desc_parts.append(f"Clinic: {appointment_details['selected_clinic']}")
-            if appointment_details.get("custom_date"):
-                desc_parts.append(f"Preferred Date: {appointment_details['custom_date']}")
+            # Prioritize selected_week over custom_date for date/week information
+            selected_week_val = appointment_details.get("selected_week")
+            custom_date_val = appointment_details.get("custom_date")
+            
+            if selected_week_val and selected_week_val.strip() and selected_week_val.lower() not in ["not specified", "none", "na", ""]:
+                # Format week range for better readability (e.g., "2024-12-15 to 2024-12-21" -> "Dec 15-21")
+                week_value = selected_week_val.strip()
+                try:
+                    # Try to format the week range if it's in ISO format
+                    if " to " in week_value:
+                        start_str, end_str = week_value.split(" to ", 1)
+                        try:
+                            from datetime import datetime
+                            start_dt = datetime.strptime(start_str.strip(), "%Y-%m-%d")
+                            end_dt = datetime.strptime(end_str.strip(), "%Y-%m-%d")
+                            # Format as "Dec 15-21" or "Dec 15 - Jan 5" if different months
+                            if start_dt.month == end_dt.month:
+                                formatted_week = f"{start_dt.strftime('%b %d')}-{end_dt.strftime('%d')}"
+                            else:
+                                formatted_week = f"{start_dt.strftime('%b %d')} - {end_dt.strftime('%b %d')}"
+                            desc_parts.append(f"Preferred Week: {formatted_week}")
+                        except Exception:
+                            # If parsing fails, use the original value
+                            desc_parts.append(f"Preferred Week: {week_value}")
+                    else:
+                        desc_parts.append(f"Preferred Week: {week_value}")
+                except Exception:
+                    desc_parts.append(f"Preferred Week: {week_value}")
+            elif custom_date_val and custom_date_val.strip() and custom_date_val.lower() not in ["not specified", "none", "na", ""]:
+                desc_parts.append(f"Preferred Date: {custom_date_val}")
             if appointment_details.get("selected_time"):
                 # Format time value - if it's a raw time like "1630", format as "16:30"
                 time_value = appointment_details['selected_time']
