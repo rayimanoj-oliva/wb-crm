@@ -817,22 +817,35 @@ async def create_lead_for_appointment(
         # Initialize variables for concern tracking
         selected_concern = None
         zoho_mapped_concern = None
-        city = "Unknown"
-        clinic = "Unknown"
+        city = None
+        clinic = None
         location = None  # FIX: Initialize location outside try block to avoid scope issues
         appointment_date = "Not specified"
         appointment_time = "Not specified"
+
+        def _clean_unknown(val):
+            try:
+                if val is None:
+                    return None
+                txt = str(val).strip()
+                if not txt:
+                    return None
+                if txt.lower() in {"unknown", "not specified", "na", "n/a", "none", "null", "-"}:
+                    return None
+                return txt
+            except Exception:
+                return val
 
         # Get appointment details from session state
         try:
             from controllers.web_socket import lead_appointment_state, appointment_state
             session_data = lead_appointment_state.get(wa_id, {})
-            city = session_data.get("selected_city", "Unknown")
-            clinic = session_data.get("selected_clinic", "Unknown")
+            city = _clean_unknown(session_data.get("selected_city"))
+            clinic = _clean_unknown(session_data.get("selected_clinic"))
             # Optional: location captured from prefilled deep link (e.g., "Jubilee Hills")
             location = session_data.get("selected_location") or (appointment_state.get(wa_id, {}) if 'appointment_state' in globals() else {}).get("selected_location")
             # Fallback: if clinic not set, use selected_location (set when clinic chosen)
-            if (not clinic or clinic == "Unknown") and location:
+            if (not clinic) and location:
                 clinic = location
             # In lead appointment flow, take selected clinic as the location if not explicitly provided
             if not location and clinic and isinstance(clinic, str) and clinic.strip():
@@ -899,8 +912,8 @@ async def create_lead_for_appointment(
             print(f"🏙️ [LEAD APPOINTMENT FLOW] Appointment details from session: {city}, {clinic}, {appointment_date}, {appointment_time}")
         except Exception as e:
             print(f"⚠️ [LEAD APPOINTMENT FLOW] Could not get appointment details from session: {e}")
-            city = appointment_details.get("selected_city", "Unknown") if appointment_details else "Unknown"
-            clinic = appointment_details.get("selected_clinic", "Unknown") if appointment_details else "Unknown"
+            city = _clean_unknown(appointment_details.get("selected_city")) if appointment_details else None
+            clinic = _clean_unknown(appointment_details.get("selected_clinic")) if appointment_details else None
             
             # Try multiple date fields from appointment_details
             appointment_date = (
