@@ -1080,23 +1080,13 @@ async def handle_no_callback_not_now(
             except Exception:
                 pass
 
-        # Send plain text message
-        message = "No problem! You can reach out anytime to schedule your appointment.\n\n✅ 8 lakh+ clients have trusted Oliva & experienced visible transformation\n\nWe'll be right here whenever you're ready to start your journey. 🌿"
-        await send_message_to_waid(wa_id, message, db, phone_id_hint=phone_id_hint)
-
-        # Broadcast to WebSocket
+        # Send interactive "Not Now" follow-up with button to re-init flow
         try:
-            await manager.broadcast({
-                "from": display_number,
-                "to": wa_id,
-                "type": "text",
-                "message": message,
-                "timestamp": datetime.now().isoformat(),
-                "meta": {"flow": "lead_appointment", "action": "not_right_now_sent"}
-            })
-            print(f"[lead_appointment_flow] DEBUG - Not right now message broadcasted to WebSocket")
+            from .auto_welcome import send_not_now_followup
+            await send_not_now_followup(db, wa_id=wa_id, customer=customer)
+            print(f"[lead_appointment_flow] DEBUG - Sent Not Now follow-up interactive")
         except Exception as e:
-            print(f"[lead_appointment_flow] WARNING - WebSocket broadcast failed: {e}")
+            print(f"[lead_appointment_flow] WARNING - Could not send Not Now follow-up interactive: {e}")
         
         # Create lead in Zoho with NO_CALLBACK status
         try:
