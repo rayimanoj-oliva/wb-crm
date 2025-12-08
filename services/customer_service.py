@@ -468,22 +468,30 @@ def get_conversations_optimized(
     if unassigned_only:
         query = query.filter(Customer.user_id.is_(None))
 
-    # Filter by business number
+    # Filter by business number (customer must have ANY message with the number, not just the latest)
     if business_number:
-        # Normalize business number
         import re
+        from sqlalchemy.sql import exists
+
         digits = re.sub(r'\D', '', business_number)
         last10 = digits[-10:] if len(digits) >= 10 else digits
         variants = [business_number, digits, last10, f"91{last10}", f"+91{last10}"]
         variants = list(dict.fromkeys(variants))
 
-        # Filter customers who have messages with this business number
-        query = query.filter(
-            or_(
-                latest_msg.c.last_message_from.in_(variants),
-                latest_msg.c.last_message_to.in_(variants)
+        # Exists subquery: any message (from/to) matches the business number variants
+        msg_exists = (
+            db.query(Message.id)
+            .filter(
+                Message.customer_id == Customer.id,
+                or_(
+                    Message.from_wa_id.in_(variants),
+                    Message.to_wa_id.in_(variants)
+                )
             )
+            .exists()
         )
+
+        query = query.filter(msg_exists)
 
     # Filter by date
     if date_filter:

@@ -828,6 +828,9 @@ async def create_lead_for_appointment(
             clinic = session_data.get("selected_clinic", "Unknown")
             # Optional: location captured from prefilled deep link (e.g., "Jubilee Hills")
             location = session_data.get("selected_location") or (appointment_state.get(wa_id, {}) if 'appointment_state' in globals() else {}).get("selected_location")
+            # Fallback: if clinic not set, use selected_location (set when clinic chosen)
+            if (not clinic or clinic == "Unknown") and location:
+                clinic = location
             # In lead appointment flow, take selected clinic as the location if not explicitly provided
             if not location and clinic and isinstance(clinic, str) and clinic.strip():
                 location = clinic
