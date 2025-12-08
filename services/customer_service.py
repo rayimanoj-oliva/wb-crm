@@ -468,55 +468,22 @@ def get_conversations_optimized(
     if unassigned_only:
         query = query.filter(Customer.user_id.is_(None))
 
-    # Filter by business number (customer must have ANY message with the number, not just the latest)
+    # Filter by business number
     if business_number:
+        # Normalize business number
         import re
-        from sqlalchemy.sql import exists
+        digits = re.sub(r'\D', '', business_number)
+        last10 = digits[-10:] if len(digits) >= 10 else digits
+        variants = [business_number, digits, last10, f"91{last10}", f"+91{last10}"]
+        variants = list(dict.fromkeys(variants))
 
-        def _build_number_variants(num: str) -> list[str]:
-            """Return a rich set of variants for matching stored WhatsApp numbers."""
-            digits = re.sub(r"\D", "", num or "")
-            last10 = digits[-10:] if len(digits) >= 10 else digits
-            candidates = {
-                num,
-                digits,
-                last10,
-                f"91{last10}" if last10 else None,
-                f"+91{last10}" if last10 else None,
-                f"+{digits}" if digits else None,
-            }
-            # Also include whatsapp: prefixes
-            more = set()
-            for c in list(candidates):
-                if not c:
-                    continue
-                more.add(f"whatsapp:{c}")
-            candidates.update(more)
-            # Remove falsy and dedupe while preserving order
-            seen = set()
-            out = []
-            for c in candidates:
-                if c and c not in seen:
-                    seen.add(c)
-                    out.append(c)
-            return out
-
-        variants = _build_number_variants(business_number)
-
-        # Exists subquery: any message (from/to) matches the business number variants
-        msg_exists = (
-            db.query(Message.id)
-            .filter(
-                Message.customer_id == Customer.id,
-                or_(
-                    Message.from_wa_id.in_(variants),
-                    Message.to_wa_id.in_(variants)
-                )
+        # Filter customers who have messages with this business number
+        query = query.filter(
+            or_(
+                latest_msg.c.last_message_from.in_(variants),
+                latest_msg.c.last_message_to.in_(variants)
             )
-            .exists()
         )
-
-        query = query.filter(msg_exists)
 
     # Filter by date
     if date_filter:
