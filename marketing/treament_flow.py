@@ -216,6 +216,232 @@ async def run_treament_flow(
         except Exception:
             in_active_treatment_flow = False
 
+        # Resolve phone_id hint for replies (treatment numbers only)
+        phone_id_hint = None
+        try:
+            if 'phone_id_meta' in locals() and phone_id_meta:
+                phone_id_hint = str(phone_id_meta)
+            elif 'st_now' in locals() and isinstance(st_now, dict):
+                phone_id_hint = st_now.get("treatment_flow_phone_id") or st_now.get("incoming_phone_id")
+        except Exception:
+            phone_id_hint = None
+
+        # Quick auto-replies for consultation fees and job/vacancy queries
+        # HARD GATE: only if incoming number is one of the treatment numbers (by phone_id or display)
+        is_allowed_treatment = False
+        try:
+            from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
+            allowed_display_last10 = {"7617613030", "8297882978"}
+            if phone_id_meta and str(phone_id_meta) in TREATMENT_FLOW_ALLOWED_PHONE_IDS:
+                is_allowed_treatment = True
+            elif to_wa_id:
+                import re as _re
+                disp_digits = _re.sub(r"\D", "", str(to_wa_id))
+                disp_last10 = disp_digits[-10:] if len(disp_digits) >= 10 else disp_digits
+                if disp_last10 in allowed_display_last10:
+                    is_allowed_treatment = True
+        except Exception:
+            is_allowed_treatment = False
+
+        if is_allowed_treatment:
+            try:
+                consult_keywords = [
+                    "consultation fee", "consultation fees", "consultation charge", "consultation charges",
+                    "consultation cost", "fees", "fee"
+                ]
+                job_keywords = ["job", "jobs", "vacancy", "vacancies", "career", "hiring", "recruitment"]
+
+                # Resolve the correct treatment phone_id and from_wa_id for replies; if missing, fall back to first allowed treatment number (never lead number)
+                treatment_phone_id = None
+                treatment_from_wa = None
+                try:
+                    from marketing.whatsapp_numbers import WHATSAPP_NUMBERS, TREATMENT_FLOW_ALLOWED_PHONE_IDS
+                    # 1) Use incoming phone_id if allowed
+                    if phone_id_meta and str(phone_id_meta) in TREATMENT_FLOW_ALLOWED_PHONE_IDS:
+                        treatment_phone_id = str(phone_id_meta)
+                        cfg_in = WHATSAPP_NUMBERS.get(str(phone_id_meta)) if isinstance(WHATSAPP_NUMBERS, dict) else None
+                        if cfg_in:
+                            import re as _re
+                            treatment_from_wa = _re.sub(r"\D", "", cfg_in.get("name", "")) or None
+                    # 2) Else match display number to allowed treatment numbers
+                    elif to_wa_id:
+                        import re as _re
+                        disp_digits = _re.sub(r"\D", "", str(to_wa_id))
+                        disp_last10 = disp_digits[-10:] if len(disp_digits) >= 10 else disp_digits
+                        for pid, cfg in (WHATSAPP_NUMBERS or {}).items():
+                            if pid not in TREATMENT_FLOW_ALLOWED_PHONE_IDS:
+                                continue
+                            name_digits = _re.sub(r"\D", "", (cfg.get("name") or ""))
+                            name_last10 = name_digits[-10:] if len(name_digits) >= 10 else name_digits
+                            if name_last10 and disp_last10 and name_last10 == disp_last10:
+                                treatment_phone_id = str(pid)
+                                treatment_from_wa = name_digits or None
+                                break
+                    # 3) Fallback to first allowed treatment phone_id (never lead number)
+                    if not treatment_phone_id and TREATMENT_FLOW_ALLOWED_PHONE_IDS:
+                        treatment_phone_id = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
+                        cfg_fb = WHATSAPP_NUMBERS.get(str(treatment_phone_id)) if isinstance(WHATSAPP_NUMBERS, dict) else None
+                        if cfg_fb:
+                            import re as _re
+                            treatment_from_wa = _re.sub(r"\D", "", cfg_fb.get("name", "")) or None
+                except Exception as e_resolve:
+                    print(f"[treatment_flow] WARNING - Could not resolve treatment phone_id for reply: {e_resolve}")
+                    if not treatment_phone_id:
+                        # as a last resort, pick first allowed treatment id
+                        try:
+                            from marketing.whatsapp_numbers import TREATMENT_FLOW_ALLOWED_PHONE_IDS
+                            treatment_phone_id = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
+                            from marketing.whatsapp_numbers import WHATSAPP_NUMBERS
+                            cfg_fb2 = WHATSAPP_NUMBERS.get(str(treatment_phone_id)) if isinstance(WHATSAPP_NUMBERS, dict) else None
+                            if cfg_fb2:
+                                import re as _re
+                                treatment_from_wa = _re.sub(r"\D", "", cfg_fb2.get("name", "")) or None
+                        except Exception:
+                            treatment_phone_id = None
+                            treatment_from_wa = None
+
+                if not treatment_phone_id:
+                    print("[treatment_flow] WARNING - Skipping auto-reply: no treatment phone_id resolved (avoid using lead number)")
+                    return {"status": "skipped_no_treatment_phone"}
+
+                # Normalize from_wa_id to include country code (91) if needed
+                def _normalize_from(sender: str | None) -> str | None:
+                    if not sender:
+                        return None
+                    import re as _re
+                    digits = _re.sub(r"\D", "", sender)
+                    if len(digits) == 10:
+                        return "91" + digits
+                    return digits or sender
+
+                treatment_from_wa = _normalize_from(treatment_from_wa)
+                if not treatment_from_wa:
+                    print("[treatment_flow] WARNING - Skipping auto-reply: no from_wa resolved for treatment number")
+                    return {"status": "skipped_no_from_wa"}
+
+                # Debounce quick replies to avoid duplicates (use appointment_state with short TTL)
+                try:
+                    from controllers.web_socket import appointment_state as _appt_state  # type: ignore
+                    from datetime import datetime, timedelta
+                    st_qr = _appt_state.get(wa_id) or {}
+                    last_qr_ts = st_qr.get("quick_reply_ts")
+                    if last_qr_ts:
+                        ts_obj = datetime.fromisoformat(last_qr_ts) if isinstance(last_qr_ts, str) else None
+                        if ts_obj and (datetime.utcnow() - ts_obj) < timedelta(seconds=8):
+                            return {"status": "skipped_quick_reply_debounced"}
+                except Exception:
+                    pass
+
+                # CRITICAL: Use original wa_id format - WhatsApp API expects the exact format customer used
+                # Only normalize if wa_id is clearly incomplete (less than 10 digits)
+                def _ensure_valid_wa_id(dest: str) -> str:
+                    try:
+                        import re as _re
+                        digits = _re.sub(r"\D", "", dest or "")
+                        # If it's a 10-digit number without country code, add 91
+                        if len(digits) == 10:
+                            return f"91{digits}"
+                        # Otherwise use original format (WhatsApp API handles various formats)
+                        return dest
+                    except Exception:
+                        return dest
+
+                # Use original wa_id format for API call (WhatsApp expects exact format)
+                target_wa_id = _ensure_valid_wa_id(wa_id)
+
+                # CRITICAL: Ensure incoming_phone_id is set in appointment_state BEFORE sending
+                # Set for both original and normalized formats to ensure _resolve_credentials works
+                try:
+                    from controllers.web_socket import appointment_state as _appt_state  # type: ignore
+                    # Set for original wa_id
+                    st_for_send_orig = _appt_state.get(wa_id) or {}
+                    # Set for target wa_id (in case it's different)
+                    st_for_send_target = _appt_state.get(target_wa_id) or {}
+                    if treatment_phone_id:
+                        st_for_send_orig["incoming_phone_id"] = str(treatment_phone_id)
+                        st_for_send_orig["treatment_flow_phone_id"] = str(treatment_phone_id)
+                        st_for_send_target["incoming_phone_id"] = str(treatment_phone_id)
+                        st_for_send_target["treatment_flow_phone_id"] = str(treatment_phone_id)
+                        _appt_state[wa_id] = st_for_send_orig
+                        if target_wa_id != wa_id:
+                            _appt_state[target_wa_id] = st_for_send_target
+                        print(f"[treatment_flow] DEBUG - Set incoming_phone_id={treatment_phone_id} for wa_id={wa_id} (target={target_wa_id}) before sending quick reply")
+                except Exception as e_set:
+                    print(f"[treatment_flow] WARNING - Could not set incoming_phone_id before sending: {e_set}")
+
+                if any(k in normalized_body for k in consult_keywords):
+                    msg = (
+                        "Our consultation fee is INR 900 only. At Oliva, we follow the V-Discover approach — a unique "
+                        "5-step consultation process to thoroughly analyze your skin, hair, and body. As part of your "
+                        "consultation, you will also receive:\n"
+                        "· Full Body Composition Analysis (BCA)\n"
+                        "· Nutritionist consultation\n"
+                        "· Dermatologist consultation\n\n"
+                        "This ensures a comprehensive understanding of your needs and helps us design a treatment plan that's just right for you. "
+                        "Please share your availability to book your appointment!"
+                    )
+                    try:
+                        print(f"[treatment_flow] DEBUG - Sending consultation fee reply:")
+                        print(f"  - Original wa_id: {wa_id}")
+                        print(f"  - Target wa_id: {target_wa_id}")
+                        print(f"  - Treatment phone_id: {treatment_phone_id}")
+                        print(f"  - Treatment from_wa: {treatment_from_wa}")
+                        await send_message_to_waid(
+                            target_wa_id,
+                            msg,
+                            db,
+                            phone_id_hint=treatment_phone_id,
+                            from_wa_id=treatment_from_wa
+                        )
+                        print(f"[treatment_flow] DEBUG - Successfully sent consultation fee reply to wa_id={target_wa_id}")
+                    except Exception as e_send:
+                        print(f"[treatment_flow] ERROR - Failed to send consultation fee reply: {e_send}")
+                        import traceback
+                        traceback.print_exc()
+                        raise
+                    try:
+                        from controllers.web_socket import appointment_state as _appt_state  # type: ignore
+                        from datetime import datetime
+                        st_qr = _appt_state.get(wa_id) or {}
+                        st_qr["quick_reply_ts"] = datetime.utcnow().isoformat()
+                        _appt_state[wa_id] = st_qr
+                    except Exception:
+                        pass
+                    return {"status": "handled_consultation_fee"}
+
+                if any(k in normalized_body for k in job_keywords):
+                    msg = "For job-related enquiries, please contact our HR team at: hr@olivaclinic.com"
+                    try:
+                        print(f"[treatment_flow] DEBUG - Sending job query reply:")
+                        print(f"  - Original wa_id: {wa_id}")
+                        print(f"  - Target wa_id: {target_wa_id}")
+                        print(f"  - Treatment phone_id: {treatment_phone_id}")
+                        print(f"  - Treatment from_wa: {treatment_from_wa}")
+                        await send_message_to_waid(
+                            target_wa_id,
+                            msg,
+                            db,
+                            phone_id_hint=treatment_phone_id,
+                            from_wa_id=treatment_from_wa
+                        )
+                        print(f"[treatment_flow] DEBUG - Successfully sent job query reply to wa_id={target_wa_id}")
+                    except Exception as e_send:
+                        print(f"[treatment_flow] ERROR - Failed to send job query reply: {e_send}")
+                        import traceback
+                        traceback.print_exc()
+                        raise
+                    try:
+                        from controllers.web_socket import appointment_state as _appt_state  # type: ignore
+                        from datetime import datetime
+                        st_qr = _appt_state.get(wa_id) or {}
+                        st_qr["quick_reply_ts"] = datetime.utcnow().isoformat()
+                        _appt_state[wa_id] = st_qr
+                    except Exception:
+                        pass
+                    return {"status": "handled_job_query"}
+            except Exception as e_quick:
+                print(f"[treatment_flow] WARNING - Quick reply failed: {e_quick}")
+
         # Prefill detected if:
         # 1. There's a message body, AND
         # 2. Customer is messaging a treatment flow number, AND

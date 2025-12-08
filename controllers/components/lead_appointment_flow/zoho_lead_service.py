@@ -161,8 +161,12 @@ class ZohoLeadService:
                     additional_concerns_value = [str(_addl).strip()]
                 else:
                     additional_concerns_value = None
-                # Region should reflect the parsed location (e.g., Jubilee Hills) only
-                clinic_branch_region = appointment_details.get("selected_location")
+                # Region should reflect the clinic selected by the customer
+                # Prioritize selected_clinic over selected_location for Clinic_Branch
+                clinic_branch_region = (
+                    appointment_details.get("selected_clinic") or 
+                    appointment_details.get("selected_location")
+                )
                 # Primary and secondary phones
                 corrected_phone = appointment_details.get("corrected_phone")
                 wa_phone = appointment_details.get("wa_phone")
@@ -840,16 +844,45 @@ async def create_lead_for_appointment(
         try:
             from controllers.web_socket import lead_appointment_state, appointment_state
             session_data = lead_appointment_state.get(wa_id, {})
-            city = _clean_unknown(session_data.get("selected_city"))
-            clinic = _clean_unknown(session_data.get("selected_clinic"))
+            appt_state_data = appointment_state.get(wa_id, {}) if 'appointment_state' in globals() else {}
+            
+            # CRITICAL: Get city from multiple sources to ensure it's always captured
+            city = (
+                _clean_unknown(session_data.get("selected_city")) or
+                _clean_unknown(appt_state_data.get("selected_city")) or
+                _clean_unknown(appointment_details.get("selected_city") if appointment_details else None)
+            )
+            
+            # CRITICAL: Get clinic from multiple sources to ensure it's always captured
+            clinic = (
+                _clean_unknown(session_data.get("selected_clinic")) or
+                _clean_unknown(appt_state_data.get("selected_clinic")) or
+                _clean_unknown(appointment_details.get("selected_clinic") if appointment_details else None)
+            )
+            
             # Optional: location captured from prefilled deep link (e.g., "Jubilee Hills")
-            location = session_data.get("selected_location") or (appointment_state.get(wa_id, {}) if 'appointment_state' in globals() else {}).get("selected_location")
+            location = (
+                session_data.get("selected_location") or 
+                appt_state_data.get("selected_location") or
+                (appointment_details.get("selected_location") if appointment_details else None)
+            )
+            
             # Fallback: if clinic not set, use selected_location (set when clinic chosen)
             if (not clinic) and location:
-                clinic = location
+                clinic = _clean_unknown(location)
             # In lead appointment flow, take selected clinic as the location if not explicitly provided
             if not location and clinic and isinstance(clinic, str) and clinic.strip():
                 location = clinic
+            
+            # CRITICAL: Ensure city and clinic are passed even if they come from appointment_details
+            # This ensures they're always available for Zoho
+            if appointment_details:
+                if city and not appointment_details.get("selected_city"):
+                    appointment_details["selected_city"] = city
+                if clinic and not appointment_details.get("selected_clinic"):
+                    appointment_details["selected_clinic"] = clinic
+                if location and not appointment_details.get("selected_location"):
+                    appointment_details["selected_location"] = location
             
             # Try multiple date fields - prioritize selected_week over specific dates
             appointment_date = (
@@ -909,7 +942,20 @@ async def create_lead_for_appointment(
             except Exception as e:
                 print(f"⚠️ [LEAD APPOINTMENT FLOW] Could not get/parse selected concern from state: {e}")
             
-            print(f"🏙️ [LEAD APPOINTMENT FLOW] Appointment details from session: {city}, {clinic}, {appointment_date}, {appointment_time}")
+            print(f"🏙️ [LEAD APPOINTMENT FLOW] Appointment details from session: city={city}, clinic={clinic}, location={location}, appointment_date={appointment_date}, appointment_time={appointment_time}")
+            
+            # CRITICAL: Ensure city and clinic are always passed to appointment_details for Zoho
+            if not appointment_details:
+                appointment_details = {}
+            if city and not appointment_details.get("selected_city"):
+                appointment_details["selected_city"] = city
+                print(f"✅ [LEAD APPOINTMENT FLOW] Added city to appointment_details: {city}")
+            if clinic and not appointment_details.get("selected_clinic"):
+                appointment_details["selected_clinic"] = clinic
+                print(f"✅ [LEAD APPOINTMENT FLOW] Added clinic to appointment_details: {clinic}")
+            if location and not appointment_details.get("selected_location"):
+                appointment_details["selected_location"] = location
+                print(f"✅ [LEAD APPOINTMENT FLOW] Added location to appointment_details: {location}")
         except Exception as e:
             print(f"⚠️ [LEAD APPOINTMENT FLOW] Could not get appointment details from session: {e}")
             city = _clean_unknown(appointment_details.get("selected_city")) if appointment_details else None
@@ -998,13 +1044,20 @@ async def create_lead_for_appointment(
         # This prevents creating multiple leads with the same Lead Source for the same phone number on the same day
 
         # -------- Call Zoho lead service --------
+        # CRITICAL: Ensure city and clinic are always captured from all sources
+        final_city = city or (appointment_details.get("selected_city") if appointment_details else None)
+        final_clinic = clinic or (appointment_details.get("selected_clinic") if appointment_details else None)
+        final_location = location or (appointment_details.get("selected_location") if appointment_details else None)
+        
+        print(f"🏙️ [LEAD APPOINTMENT FLOW] Final values for Zoho: city={final_city}, clinic={final_clinic}, location={final_location}")
+        
         result = zoho_lead_service.create_lead(
             first_name=first_name,
             last_name=last_name,
             email=getattr(customer, 'email', '') or '',
             phone=phone_number,
             mobile=phone_number,
-            city=city,
+            city=final_city or city,
             lead_source=lead_source_val,
             company="Oliva Skin & Hair Clinic",
             description=(
@@ -1012,9 +1065,9 @@ async def create_lead_for_appointment(
             ),
             appointment_details={
                 "flow_type": (flow_type or "lead_appointment_flow"),
-                "selected_city": city,
-                "selected_clinic": clinic,
-                **({"selected_location": location} if location else {}),
+                "selected_city": final_city,
+                "selected_clinic": final_clinic,
+                **({"selected_location": final_location} if final_location else {}),
                 "selected_week": session_data.get("selected_week", "Not specified"),
                 "custom_date": appointment_date,
                 "selected_time": appointment_time,
