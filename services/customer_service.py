@@ -593,3 +593,194 @@ def get_conversations_optimized(
         "skip": skip,
         "limit": limit
     }
+
+
+# ------------------------------------------------------------
+# Conversations by peer (one row per customer_id + peer_number)
+# ------------------------------------------------------------
+def get_conversations_by_peer(
+    db: Session,
+    skip: int = 0,
+    limit: int = 50,
+    search: str = None,
+    business_number: str = None,
+    user_id: str = None,
+    unassigned_only: bool = False,
+    pending_reply_only: bool = False,
+    date_filter: str = None
+):
+    """
+    Returns one row per (customer_id, peer_number) using the latest message per pair.
+    Allows filtering by business_number so the same customer can appear under multiple numbers.
+    """
+    from sqlalchemy import func, and_, or_, desc, case
+    from models.models import Message, FlowLog
+    from datetime import datetime
+    import re
+
+    # Build peer_number as the "other side" of the conversation
+    peer_case = case(
+        (Message.from_wa_id == Customer.wa_id, Message.to_wa_id),
+        else_=Message.from_wa_id
+    ).label("peer_number")
+
+    # Subquery: latest message per (customer_id, peer_number)
+    msg_subq = (
+        db.query(
+            Message.customer_id,
+            peer_case,
+            Message.body.label("body"),
+            Message.timestamp.label("timestamp"),
+            Message.sender_type.label("sender_type"),
+            func.row_number().over(
+                partition_by=(Message.customer_id, peer_case),
+                order_by=(Message.timestamp.desc(), Message.id.desc())
+            ).label("rn")
+        )
+        .join(Customer, Customer.id == Message.customer_id)
+        .subquery()
+    )
+
+    latest_pair_msg = (
+        db.query(
+            msg_subq.c.customer_id,
+            msg_subq.c.peer_number,
+            msg_subq.c.body,
+            msg_subq.c.timestamp,
+            msg_subq.c.sender_type
+        )
+        .filter(msg_subq.c.rn == 1)
+        .subquery()
+    )
+
+    # Subquery: latest flow step per wa_id
+    valid_steps = ["entry", "city_selection", "treatment", "concern_list", "last_step"]
+    flow_subq = (
+        db.query(
+            FlowLog.wa_id,
+            FlowLog.step,
+            FlowLog.description,
+            FlowLog.created_at,
+            func.row_number().over(
+                partition_by=FlowLog.wa_id,
+                order_by=FlowLog.created_at.desc()
+            ).label("rn")
+        )
+        .filter(FlowLog.step.in_(valid_steps))
+        .subquery()
+    )
+
+    flow_latest = (
+        db.query(
+            flow_subq.c.wa_id,
+            flow_subq.c.step,
+            flow_subq.c.description,
+            flow_subq.c.created_at
+        )
+        .filter(flow_subq.c.rn == 1)
+        .subquery()
+    )
+
+    # Main query
+    query = (
+        db.query(
+            Customer,
+            latest_pair_msg.c.peer_number,
+            latest_pair_msg.c.body,
+            latest_pair_msg.c.timestamp,
+            latest_pair_msg.c.sender_type,
+            flow_latest.c.step,
+            flow_latest.c.description,
+            flow_latest.c.created_at
+        )
+        .outerjoin(latest_pair_msg, Customer.id == latest_pair_msg.c.customer_id)
+        .outerjoin(flow_latest, Customer.wa_id == flow_latest.c.wa_id)
+    )
+
+    # Filters
+    if search:
+        like = f"%{search}%"
+        query = query.filter(
+            or_(
+                Customer.name.ilike(like),
+                Customer.email.ilike(like),
+                Customer.wa_id.ilike(like)
+            )
+        )
+
+    if user_id:
+        query = query.filter(Customer.user_id == UUID(user_id))
+
+    if unassigned_only:
+        query = query.filter(Customer.user_id.is_(None))
+
+    if business_number:
+        digits = re.sub(r"\D", "", business_number)
+        last10 = digits[-10:] if len(digits) >= 10 else digits
+        variants = {
+            business_number,
+            digits,
+            last10,
+            f"91{last10}" if last10 else None,
+            f"+91{last10}" if last10 else None,
+            f"+{digits}" if digits else None,
+        }
+        variants = {v for v in variants if v}
+        query = query.filter(latest_pair_msg.c.peer_number.in_(variants))
+
+    if date_filter:
+        try:
+            target = datetime.strptime(date_filter, "%Y-%m-%d")
+            start_dt = datetime.combine(target, datetime.min.time())
+            end_dt = datetime.combine(target, datetime.max.time())
+            query = query.filter(
+                latest_pair_msg.c.timestamp >= start_dt,
+                latest_pair_msg.c.timestamp <= end_dt
+            )
+        except:
+            pass
+
+    if pending_reply_only:
+        query = query.filter(latest_pair_msg.c.sender_type == "customer")
+
+    total = query.count()
+
+    query = query.order_by(
+        desc(func.coalesce(latest_pair_msg.c.timestamp, Customer.last_message_at, Customer.created_at))
+    )
+
+    rows = query.offset(skip).limit(limit).all()
+
+    unread_map = {r.Customer.wa_id: get_unread_count(r.Customer.wa_id) for r in rows}
+
+    items = []
+    for r in rows:
+        c = r.Customer
+        items.append({
+            "id": str(c.id),
+            "wa_id": c.wa_id,
+            "name": c.name,
+            "email": c.email,
+            "phone_1": c.phone_1,
+            "phone_2": c.phone_2,
+            "user_id": str(c.user_id) if c.user_id else None,
+            "customer_status": c.customer_status.value if c.customer_status else None,
+            "created_at": c.created_at.isoformat() if c.created_at else None,
+            "peer_number": r.peer_number,
+            "last_message": {
+                "body": r.body,
+                "timestamp": r.timestamp.isoformat() if r.timestamp else None
+            },
+            "last_step": r.step,
+            "step_description": r.description,
+            "step_reached_at": r.created_at.isoformat() if r.created_at else None,
+            "unread_count": unread_map.get(c.wa_id, 0),
+            "is_pending_reply": True if r.sender_type == "customer" else False
+        })
+
+    return {
+        "items": items,
+        "total": total,
+        "skip": skip,
+        "limit": limit
+    }

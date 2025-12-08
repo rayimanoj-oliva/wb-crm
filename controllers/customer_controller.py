@@ -49,6 +49,34 @@ def list_conversations_optimized(
         date_filter=date_filter
     )
 
+@router.get("/conversations/by-peer")
+def list_conversations_by_peer(
+    skip: int = Query(0, ge=0, description="Number of records to skip"),
+    limit: int = Query(50, ge=1, le=200, description="Max records to return"),
+    search: Optional[str] = Query(None, description="Search by name, phone, or email"),
+    business_number: Optional[str] = Query(None, description="Filter by business number (peer)"),
+    user_id: Optional[str] = Query(None, description="Filter by assigned user ID"),
+    unassigned_only: bool = Query(False, description="Show only unassigned customers"),
+    pending_reply_only: bool = Query(False, description="Show only customers pending agent reply"),
+    date_filter: Optional[str] = Query(None, description="Filter by message date (YYYY-MM-DD)"),
+    db: Session = Depends(get_db)
+):
+    """
+    Returns conversations grouped by (customer_id, peer_number).
+    Use when you need the same customer to appear under multiple business numbers they've chatted with.
+    """
+    return customer_service.get_conversations_by_peer(
+        db,
+        skip=skip,
+        limit=limit,
+        search=search,
+        business_number=business_number,
+        user_id=user_id,
+        unassigned_only=unassigned_only,
+        pending_reply_only=pending_reply_only,
+        date_filter=date_filter
+    )
+
 @router.post("/", response_model=CustomerOut)
 def create_or_get_customer(data: CustomerCreate, db: Session = Depends(get_db)):
     return customer_service.get_or_create_customer(db, data)
