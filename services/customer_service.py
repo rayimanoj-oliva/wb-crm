@@ -348,220 +348,215 @@ def get_conversations_optimized(
     date_filter: str = None
 ):
     """
-    Optimized unified conversation list API.
-    Returns all data needed for the conversations list in a single query.
+    Optimized unified conversation list API including:
+    - Customers with NO messages
+    - Filters that correctly include empty-message customers
     """
-    from sqlalchemy import func, and_, or_, desc, distinct, case, literal
-    from sqlalchemy.orm import aliased
-    from models.models import Message, FlowLog, Lead
+    from sqlalchemy import func, and_, or_, desc
+    from models.models import Message, FlowLog
     from datetime import datetime
+    import re
 
-    # Known business numbers to exclude from customer results
-    business_numbers_set = {'917729992376', '917617613030', '918297882978', '7729992376', '7617613030', '8297882978'}
-
-    # Subquery: Get the latest message for each customer (with row_number to handle ties)
+    # -----------------------------
+    # SUBQUERY: latest message per customer
+    # -----------------------------
     latest_msg_subq = (
         db.query(
             Message.customer_id,
-            Message.body.label("last_message_body"),
-            Message.timestamp.label("last_message_timestamp"),
-            Message.from_wa_id.label("last_message_from"),
-            Message.to_wa_id.label("last_message_to"),
-            Message.sender_type.label("last_message_sender_type"),
+            Message.body.label("body"),
+            Message.timestamp.label("timestamp"),
+            Message.from_wa_id.label("from_"),
+            Message.to_wa_id.label("to_"),
+            Message.sender_type.label("sender_type"),
             func.row_number().over(
                 partition_by=Message.customer_id,
                 order_by=(Message.timestamp.desc(), Message.id.desc())
             ).label("rn")
         )
-        .filter(Message.customer_id.isnot(None))
         .subquery()
     )
 
-    # Filter to get only row number 1 (latest message per customer)
     latest_msg = (
         db.query(
             latest_msg_subq.c.customer_id,
-            latest_msg_subq.c.last_message_body,
-            latest_msg_subq.c.last_message_timestamp,
-            latest_msg_subq.c.last_message_from,
-            latest_msg_subq.c.last_message_to,
-            latest_msg_subq.c.last_message_sender_type
+            latest_msg_subq.c.body,
+            latest_msg_subq.c.timestamp,
+            latest_msg_subq.c.from_,
+            latest_msg_subq.c.to_,
+            latest_msg_subq.c.sender_type
         )
         .filter(latest_msg_subq.c.rn == 1)
         .subquery()
     )
 
-    # Subquery: Get flow steps (latest per wa_id)
+    # -----------------------------
+    # SUBQUERY: latest flow step
+    # -----------------------------
     valid_steps = ["entry", "city_selection", "treatment", "concern_list", "last_step"]
+
     flow_subq = (
         db.query(
             FlowLog.wa_id,
-            FlowLog.step.label("flow_step"),
-            FlowLog.description.label("flow_description"),
-            FlowLog.created_at.label("flow_reached_at"),
+            FlowLog.step,
+            FlowLog.description,
+            FlowLog.created_at,
             func.row_number().over(
                 partition_by=FlowLog.wa_id,
                 order_by=FlowLog.created_at.desc()
-            ).label("flow_rn")
+            ).label("rn")
         )
-        .filter(
-            FlowLog.flow_type == "treatment",
-            FlowLog.step.in_(valid_steps)
-        )
+        .filter(FlowLog.step.in_(valid_steps))
         .subquery()
     )
 
     flow_latest = (
         db.query(
             flow_subq.c.wa_id,
-            flow_subq.c.flow_step,
-            flow_subq.c.flow_description,
-            flow_subq.c.flow_reached_at
+            flow_subq.c.step,
+            flow_subq.c.description,
+            flow_subq.c.created_at
         )
-        .filter(flow_subq.c.flow_rn == 1)
+        .filter(flow_subq.c.rn == 1)
         .subquery()
     )
 
-    # Build main query
+    # -----------------------------
+    # MAIN QUERY
+    # -----------------------------
     query = (
         db.query(
-            Customer.id,
-            Customer.wa_id,
-            Customer.name,
-            Customer.email,
-            Customer.phone_1,
-            Customer.phone_2,
-            Customer.user_id,
-            Customer.customer_status,
-            Customer.last_message_at,
-            Customer.created_at,
-            # Last message info
-            latest_msg.c.last_message_body,
-            latest_msg.c.last_message_timestamp,
-            latest_msg.c.last_message_from,
-            latest_msg.c.last_message_to,
-            latest_msg.c.last_message_sender_type,
-            # Flow step info
-            flow_latest.c.flow_step,
-            flow_latest.c.flow_description,
-            flow_latest.c.flow_reached_at,
+            Customer,
+            latest_msg.c.body,
+            latest_msg.c.timestamp,
+            latest_msg.c.from_,
+            latest_msg.c.to_,
+            latest_msg.c.sender_type,
+            flow_latest.c.step,
+            flow_latest.c.description,
+            flow_latest.c.created_at
         )
         .outerjoin(latest_msg, Customer.id == latest_msg.c.customer_id)
         .outerjoin(flow_latest, Customer.wa_id == flow_latest.c.wa_id)
     )
 
-    # Apply filters
+    # -----------------------------
+    # FILTERS
+    # -----------------------------
+
+    # Search filter
     if search:
-        search_term = f"%{search}%"
+        like = f"%{search}%"
         query = query.filter(
             or_(
-                Customer.name.ilike(search_term),
-                Customer.wa_id.ilike(search_term),
-                Customer.email.ilike(search_term)
+                Customer.name.ilike(like),
+                Customer.email.ilike(like),
+                Customer.wa_id.ilike(like)
             )
         )
 
+    # Assigned agent filter
     if user_id:
-        from uuid import UUID as PyUUID
-        query = query.filter(Customer.user_id == PyUUID(user_id))
+        query = query.filter(Customer.user_id == UUID(user_id))
 
+    # Unassigned
     if unassigned_only:
         query = query.filter(Customer.user_id.is_(None))
 
-    # Filter by business number
+    # Business number filter (UPDATED to keep customers with NO messages)
     if business_number:
-        # Normalize business number
-        import re
-        digits = re.sub(r'\D', '', business_number)
+        digits = re.sub(r"\D", "", business_number)
         last10 = digits[-10:] if len(digits) >= 10 else digits
-        variants = [business_number, digits, last10, f"91{last10}", f"+91{last10}"]
-        variants = list(dict.fromkeys(variants))
+        variants = {business_number, digits, last10, f"91{last10}", f"+91{last10}"}
 
-        # Filter customers who have messages with this business number
         query = query.filter(
             or_(
-                latest_msg.c.last_message_from.in_(variants),
-                latest_msg.c.last_message_to.in_(variants)
+                latest_msg.c.from_.in_(variants),
+                latest_msg.c.to_.in_(variants),
+                latest_msg.c.from_.is_(None)  # <-- keeps customers with NO messages
             )
         )
 
-    # Filter by date
+    # Date filter (UPDATED to include customers with NO messages)
     if date_filter:
         try:
-            target_dt = datetime.strptime(date_filter, '%Y-%m-%d').date()
-            start_datetime = datetime.combine(target_dt, datetime.min.time())
-            end_datetime = datetime.combine(target_dt, datetime.max.time())
+            target = datetime.strptime(date_filter, "%Y-%m-%d")
+            start_dt = datetime.combine(target, datetime.min.time())
+            end_dt = datetime.combine(target, datetime.max.time())
+
             query = query.filter(
-                latest_msg.c.last_message_timestamp >= start_datetime,
-                latest_msg.c.last_message_timestamp <= end_datetime
+                or_(
+                    and_(
+                        latest_msg.c.timestamp >= start_dt,
+                        latest_msg.c.timestamp <= end_dt
+                    ),
+                    latest_msg.c.timestamp.is_(None)  # <-- keeps customers with NO messages
+                )
             )
-        except ValueError:
+        except:
             pass
 
-    # Filter pending agent reply (last message was from customer)
+    # Pending reply filter (UPDATED)
     if pending_reply_only:
         query = query.filter(
-            latest_msg.c.last_message_sender_type == "customer"
+            or_(
+                latest_msg.c.sender_type == "customer",
+                latest_msg.c.sender_type.is_(None)  # <-- keeps customers with NO messages
+            )
         )
 
-    # Get total count before pagination
+    # -----------------------------
+    # ORDER + PAGINATION
+    # -----------------------------
     total = query.count()
 
-    # Order by last message timestamp (most recent first)
     query = query.order_by(
-        desc(func.coalesce(latest_msg.c.last_message_timestamp, Customer.last_message_at, Customer.created_at))
+        desc(func.coalesce(latest_msg.c.timestamp, Customer.last_message_at, Customer.created_at))
     )
 
-    # Apply pagination
-    results = query.offset(skip).limit(limit).all()
+    rows = query.offset(skip).limit(limit).all()
 
-    # Get unread counts from Redis
-    wa_ids = [r.wa_id for r in results if r.wa_id]
-    unread_map = {}
-    for wa_id in wa_ids:
-        unread_map[wa_id] = get_unread_count(wa_id)
+    # -----------------------------
+    # UNREAD COUNTS
+    # -----------------------------
+    unread_map = {r.Customer.wa_id: get_unread_count(r.Customer.wa_id) for r in rows}
 
-    # Build response
+    # -----------------------------
+    # FORMAT RESPONSE
+    # -----------------------------
     items = []
-    for r in results:
-        # Determine business number from last message
-        business_num = None
-        if r.last_message_from and r.last_message_to:
-            # Business number is the one that's not the customer's wa_id
-            if r.last_message_from == r.wa_id:
-                business_num = r.last_message_to
-            else:
-                business_num = r.last_message_from
+    for r in rows:
+        c = r.Customer
 
-        # Determine if pending agent reply
-        is_pending_reply = r.last_message_sender_type == "customer" if r.last_message_sender_type else False
+        # Determine business number
+        business_num = None
+        if r.from_ and r.to_:
+            business_num = r.to_ if r.from_ == c.wa_id else r.from_
 
         items.append({
-            "id": str(r.id),
-            "wa_id": r.wa_id,
-            "name": r.name,
-            "email": r.email,
-            "phone_1": r.phone_1,
-            "phone_2": r.phone_2,
-            "user_id": str(r.user_id) if r.user_id else None,
-            "customer_status": r.customer_status.value if r.customer_status else None,
-            "last_message_at": r.last_message_at.isoformat() if r.last_message_at else None,
-            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "id": str(c.id),
+            "wa_id": c.wa_id,
+            "name": c.name,
+            "email": c.email,
+            "phone_1": c.phone_1,
+            "phone_2": c.phone_2,
+            "user_id": str(c.user_id) if c.user_id else None,
+            "customer_status": c.customer_status.value if c.customer_status else None,
+            "created_at": c.created_at.isoformat() if c.created_at else None,
+
             # Last message
             "last_message": {
-                "body": r.last_message_body,
-                "timestamp": r.last_message_timestamp.isoformat() if r.last_message_timestamp else None
-            } if r.last_message_body else None,
-            # Business number
+                "body": r.body,
+                "timestamp": r.timestamp.isoformat() if r.timestamp else None
+            },
+
             "business_number": business_num,
-            # Flow step
-            "last_step": r.flow_step,
-            "step_description": r.flow_description,
-            "step_reached_at": r.flow_reached_at.isoformat() if r.flow_reached_at else None,
-            # Unread count
-            "unread_count": unread_map.get(r.wa_id, 0),
-            # Pending reply status
-            "is_pending_reply": is_pending_reply
+
+            "last_step": r.step,
+            "step_description": r.description,
+            "step_reached_at": r.created_at.isoformat() if r.created_at else None,
+
+            "unread_count": unread_map.get(c.wa_id, 0),
+            "is_pending_reply": True if r.sender_type == "customer" else False
         })
 
     return {
