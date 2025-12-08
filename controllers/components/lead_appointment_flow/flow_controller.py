@@ -1023,6 +1023,29 @@ async def handle_yes_callback(
                         print(f"[lead_appointment_flow] DEBUG - Allow duplicate same-day lead after Not Now for {wa_id}")
         except Exception as e:
             print(f"[lead_appointment_flow] WARNING - Could not set allow_duplicate_same_day: {e}")
+
+        # Extra guard: if a NO_CALLBACK lead (Not Now) exists today for this wa_id and lead source, allow duplicate
+        try:
+            if not appointment_details.get("allow_duplicate_same_day"):
+                from models.models import Lead as _Lead
+                from datetime import datetime as _dt
+                today_start = _dt.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+                existing_no_callback = (
+                    db.query(_Lead)
+                    .filter(
+                        _Lead.wa_id == wa_id,
+                        _Lead.lead_source == "Facebook",
+                        _Lead.created_at >= today_start,
+                        _Lead.lead_status == "NO_CALLBACK"
+                    )
+                    .order_by(_Lead.created_at.desc())
+                    .first()
+                )
+                if existing_no_callback:
+                    appointment_details["allow_duplicate_same_day"] = True
+                    print(f"[lead_appointment_flow] DEBUG - Allow duplicate due to today's NO_CALLBACK lead for {wa_id}")
+        except Exception as e:
+            print(f"[lead_appointment_flow] WARNING - Could not check NO_CALLBACK lead for duplicate allowance: {e}")
         
         # Trigger Q5 auto dial event
         from .zoho_lead_service import trigger_q5_auto_dial_event
