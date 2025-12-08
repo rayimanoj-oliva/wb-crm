@@ -1008,7 +1008,7 @@ async def handle_yes_callback(
         # If user clicked "Not right now" earlier today, allow duplicate lead creation
         try:
             from controllers.web_socket import appointment_state
-            appt_state = appointment_state.get(wa_id, {}) if 'appointment_state' in globals() else {}
+            appt_state = appointment_state.get(wa_id, {})
             not_now_ts = appt_state.get("not_now_ts")
             if not_now_ts:
                 from datetime import datetime
