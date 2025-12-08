@@ -814,9 +814,16 @@ async def create_lead_for_appointment(
         try:
             _session_lead_source = session_data.get("lead_source")
             _session_language = session_data.get("language")
+            _session_sub_source = session_data.get("sub_source")
         except Exception:
             _session_lead_source = None
             _session_language = None
+            _session_sub_source = None
+
+        # Check appointment_details for sub_source (may be set by callback handlers)
+        _appointment_sub_source = None
+        if appointment_details:
+            _appointment_sub_source = appointment_details.get("sub_source")
 
         # Determine lead source based on flow type
         if flow_type == "treatment_flow":
@@ -833,7 +840,16 @@ async def create_lead_for_appointment(
             else:
                 lead_source_val = "Facebook"
                 print(f"[LEAD APPOINTMENT FLOW] No session lead_source found, defaulting to: {lead_source_val}")
-            sub_source_val = None  # No sub-source for lead appointment flow
+            # Use sub_source from appointment_details (set by callback handlers) or session state
+            if _appointment_sub_source and _appointment_sub_source.strip():
+                sub_source_val = _appointment_sub_source.strip()
+                print(f"[LEAD APPOINTMENT FLOW] Using sub_source from appointment_details: {sub_source_val}")
+            elif _session_sub_source and _session_sub_source.strip():
+                sub_source_val = _session_sub_source.strip()
+                print(f"[LEAD APPOINTMENT FLOW] Using sub_source from session: {sub_source_val}")
+            else:
+                sub_source_val = None  # No sub-source if not set
+                print(f"[LEAD APPOINTMENT FLOW] No sub_source found, defaulting to None")
             language_val = _session_language if _session_language else None
 
         # Note: Duplicate checking (24-hour window) was already done earlier in this function

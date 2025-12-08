@@ -967,11 +967,18 @@ async def handle_yes_callback(
     try:
         print(f"[lead_appointment_flow] DEBUG - User requested callback (Yes)")
         
-        # Get appointment details from session state
+        # Get appointment details from session state and set sub_source
         appointment_details = {}
         try:
             from controllers.web_socket import lead_appointment_state
             appointment_details = lead_appointment_state.get(wa_id, {})
+            # Set sub_source to "Whatsapp Dial" for Yes callback
+            appointment_details["sub_source"] = "Whatsapp Dial"
+            # Update session state with sub_source
+            if wa_id not in lead_appointment_state:
+                lead_appointment_state[wa_id] = {}
+            lead_appointment_state[wa_id]["sub_source"] = "Whatsapp Dial"
+            print(f"[lead_appointment_flow] DEBUG - Set sub_source to 'Whatsapp Dial' for Yes callback")
             print(f"[lead_appointment_flow] DEBUG - Appointment details: {appointment_details}")
         except Exception as e:
             print(f"[lead_appointment_flow] WARNING - Could not get appointment details: {e}")
@@ -1042,6 +1049,13 @@ async def handle_no_callback_not_now(
         try:
             from controllers.web_socket import lead_appointment_state
             appointment_details = lead_appointment_state.get(wa_id, {})
+            # Set sub_source to "Whatsapp No Dial" for Not right now
+            appointment_details["sub_source"] = "Whatsapp No Dial"
+            # Update session state with sub_source
+            if wa_id not in lead_appointment_state:
+                lead_appointment_state[wa_id] = {}
+            lead_appointment_state[wa_id]["sub_source"] = "Whatsapp No Dial"
+            print(f"[lead_appointment_flow] DEBUG - Set sub_source to 'Whatsapp No Dial' for Not right now")
             lead_phone_id = appointment_details.get("lead_phone_id") or appointment_details.get("phone_id")
             if lead_phone_id:
                 cfg = get_number_config(str(lead_phone_id))
