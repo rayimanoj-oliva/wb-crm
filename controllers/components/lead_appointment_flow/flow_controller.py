@@ -1009,13 +1009,18 @@ async def handle_yes_callback(
         try:
             from controllers.web_socket import appointment_state
             appt_state = appointment_state.get(wa_id, {})
-            not_now_ts = appt_state.get("not_now_ts")
-            if not_now_ts:
-                from datetime import datetime
-                ts_obj = datetime.fromisoformat(not_now_ts) if isinstance(not_now_ts, str) else None
-                if ts_obj and ts_obj.date() == datetime.utcnow().date():
-                    appointment_details["allow_duplicate_same_day"] = True
-                    print(f"[lead_appointment_flow] DEBUG - Allow duplicate same-day lead after Not Now for {wa_id}")
+            # Explicit flag set during Not Now flow
+            if appt_state.get("allow_duplicate_same_day"):
+                appointment_details["allow_duplicate_same_day"] = True
+                print(f"[lead_appointment_flow] DEBUG - Allow duplicate (flag) after Not Now for {wa_id}")
+            else:
+                not_now_ts = appt_state.get("not_now_ts")
+                if not_now_ts:
+                    from datetime import datetime
+                    ts_obj = datetime.fromisoformat(not_now_ts) if isinstance(not_now_ts, str) else None
+                    if ts_obj and ts_obj.date() == datetime.utcnow().date():
+                        appointment_details["allow_duplicate_same_day"] = True
+                        print(f"[lead_appointment_flow] DEBUG - Allow duplicate same-day lead after Not Now for {wa_id}")
         except Exception as e:
             print(f"[lead_appointment_flow] WARNING - Could not set allow_duplicate_same_day: {e}")
         
@@ -1130,6 +1135,7 @@ async def handle_no_callback_not_now(
             from datetime import datetime
             st = appointment_state.get(wa_id) or {}
             st["not_now_ts"] = datetime.utcnow().isoformat()
+            st["allow_duplicate_same_day"] = True  # explicit flag to bypass dedup on next Yes
             appointment_state[wa_id] = st
             print(f"[lead_appointment_flow] DEBUG - Stored not_now_ts for {wa_id}")
         except Exception as e:
