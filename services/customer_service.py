@@ -462,19 +462,47 @@ def get_conversations_optimized(
     if unassigned_only:
         query = query.filter(Customer.user_id.is_(None))
 
-    # Business number filter (UPDATED to keep customers with NO messages)
+    # Business number filter (customer must have ANY message with that business number, not just latest)
     if business_number:
-        digits = re.sub(r"\D", "", business_number)
-        last10 = digits[-10:] if len(digits) >= 10 else digits
-        variants = {business_number, digits, last10, f"91{last10}", f"+91{last10}"}
+        def _build_number_variants(num: str) -> list[str]:
+            digits = re.sub(r"\D", "", num or "")
+            last10 = digits[-10:] if len(digits) >= 10 else digits
+            candidates = {
+                num,
+                digits,
+                last10,
+                f"91{last10}" if last10 else None,
+                f"+91{last10}" if last10 else None,
+                f"+{digits}" if digits else None,
+            }
+            # Include whatsapp: prefixes
+            prefixed = {f"whatsapp:{c}" for c in list(candidates) if c}
+            candidates.update(prefixed)
+            # Dedupe and drop falsy
+            out = []
+            seen = set()
+            for c in candidates:
+                if c and c not in seen:
+                    seen.add(c)
+                    out.append(c)
+            return out
 
-        query = query.filter(
-            or_(
-                latest_msg.c.from_.in_(variants),
-                latest_msg.c.to_.in_(variants),
-                latest_msg.c.from_.is_(None)  # <-- keeps customers with NO messages
+        variants = _build_number_variants(business_number)
+
+        # Restrict to customers who have ANY message (from/to) with the business number
+        msg_exists = (
+            db.query(Message.id)
+            .filter(
+                Message.customer_id == Customer.id,
+                or_(
+                    Message.from_wa_id.in_(variants),
+                    Message.to_wa_id.in_(variants)
+                )
             )
+            .exists()
         )
+
+        query = query.filter(msg_exists)
 
     # Date filter (UPDATED to include customers with NO messages)
     if date_filter:
