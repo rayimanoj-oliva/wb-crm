@@ -245,6 +245,7 @@ async def run_treament_flow(
 
         if is_allowed_treatment:
             try:
+                # Split detection into consultation-fee vs treatment-pricing so we can respond with the correct copy
                 consult_keywords = [
     # Consultation related
     "consultation fee", "consultation fees", "consultation charge", "consultation charges",
@@ -252,27 +253,30 @@ async def run_treament_flow(
     "consult fee", "consult fees", "consult cost", "consult charge",
     "consulting fee", "consulting charges", "consulting cost",
 
-    # Generic fee/charge terms
+    # Generic fee/charge terms (could be ambiguous, keep here for consultation default)
     "fee", "fees", "charge", "charges", "cost", "price", "amount",
 
-    # Treatment / service pricing
-    "treatment cost", "treatment charges", "treatment fee",
-    "procedure cost", "procedure charges", "service charge",
-    "service cost", "cost of treatment", "price of treatment",
-
-    # Common customer questions
-    "how much for consultation", "how much for treatment",
+    # Common consultation questions
+    "how much for consultation",
     "what is your fee", "your charges", "price details",
-    "consultation price", "treatment price", "session fee",
+    "consultation price", "session fee",
     "appointment fee", "appointment charges",
 
     # Informal / chat variations
     "fee ah", "fees ah", "charges ah", "cost ah",
     "how much u charge", "how much do you charge",
     "what's your charges", "what's your fees",
-    "treatment amount", "consultation amount",
+    "consultation amount",
 ]
 
+                treatment_price_keywords = [
+    # Treatment / service pricing
+    "treatment cost", "treatment charges", "treatment fee",
+    "procedure cost", "procedure charges", "service charge",
+    "service cost", "cost of treatment", "price of treatment",
+    "treatment price", "treatment amount",
+    "how much for treatment",
+]
 
                 job_keywords = [
     # Base terms
@@ -412,6 +416,45 @@ async def run_treament_flow(
                 except Exception as e_set:
                     print(f"[treatment_flow] WARNING - Could not set incoming_phone_id before sending: {e_set}")
 
+                # Treatment pricing reply (personalized cost explanation)
+                if any(k in normalized_body for k in treatment_price_keywords):
+                    msg = (
+                        "All our treatments are personalized based on the severity of your concern and its root cause. "
+                        "We don’t believe in “one-size-fits-all” solutions. We recommend booking an appointment for an "
+                        "initial consultation with our dermatologist to get the exact cost for your treatment. "
+                        "Please share your availability to book your appointment."
+                    )
+                    try:
+                        print(f"[treatment_flow] DEBUG - Sending treatment price reply:")
+                        print(f"  - Original wa_id: {wa_id}")
+                        print(f"  - Target wa_id: {target_wa_id}")
+                        print(f"  - Treatment phone_id: {treatment_phone_id}")
+                        print(f"  - Treatment from_wa: {treatment_from_wa}")
+                        await send_message_to_waid(
+                            target_wa_id,
+                            msg,
+                            db,
+                            phone_id_hint=treatment_phone_id,
+                            from_wa_id=treatment_from_wa,
+                            schedule_followup=False  # No follow-up for free text treatment price queries
+                        )
+                        print(f"[treatment_flow] DEBUG - Successfully sent treatment price reply to wa_id={target_wa_id}")
+                    except Exception as e_send:
+                        print(f"[treatment_flow] ERROR - Failed to send treatment price reply: {e_send}")
+                        import traceback
+                        traceback.print_exc()
+                        raise
+                    try:
+                        from controllers.web_socket import appointment_state as _appt_state  # type: ignore
+                        from datetime import datetime
+                        st_qr = _appt_state.get(wa_id) or {}
+                        st_qr["quick_reply_ts"] = datetime.utcnow().isoformat()
+                        _appt_state[wa_id] = st_qr
+                    except Exception:
+                        pass
+                    return {"status": "handled_treatment_price"}
+
+                # Consultation fee reply (default consultation wording)
                 if any(k in normalized_body for k in consult_keywords):
                     msg = (
                         "Our consultation fee is INR 900 only. At Oliva, we follow the V-Discover approach — a unique "
