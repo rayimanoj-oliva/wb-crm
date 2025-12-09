@@ -278,6 +278,20 @@ async def run_treament_flow(
     "how much for treatment",
 ]
 
+                # Generic questions we want to deflect to structured options
+                doctor_location_keywords = [
+    # Doctor availability / generic availability
+    "doctor availability", "doctor available", "is doctor available", "doctor today", "available doctor",
+    "dermatologist available", "doctor timings", "doctor time", "doctor schedule",
+    # Location / clinic
+    "location", "locations", "clinic", "clinics", "center", "centre", "branch", "branches",
+    "nearest clinic", "nearest branch", "nearest center", "nearest centre", "where are you", "where are you located",
+    "address", "location please", "clinic address",
+    # Medicines / prescriptions
+    "medicine", "medicines", "medication", "prescription", "drug", "drugs",
+    "ointment", "tablet", "tablets", "capsule", "capsules", "cream",
+]
+
                 job_keywords = [
     # Base terms
     "job", "jobs", "vacancy", "vacancies", "career", "careers",
@@ -416,9 +430,52 @@ async def run_treament_flow(
                 except Exception as e_set:
                     print(f"[treatment_flow] WARNING - Could not set incoming_phone_id before sending: {e_set}")
 
+                # Doctor/location/medicine deflection reply
+                if any(k in normalized_body for k in doctor_location_keywords):
+                    # Debounce to prevent duplicate sends
+                    try:
+                        from controllers.web_socket import appointment_state as _appt_state  # type: ignore
+                        from datetime import datetime, timedelta
+                        st_qr = _appt_state.get(wa_id) or {}
+                        last_qr_ts = st_qr.get("quick_reply_ts")
+                        if last_qr_ts:
+                            ts_obj = datetime.fromisoformat(last_qr_ts) if isinstance(last_qr_ts, str) else None
+                            if ts_obj and (datetime.utcnow() - ts_obj) < timedelta(seconds=8):
+                                return {"status": "skipped_deflection_debounced"}
+                    except Exception:
+                        pass
+                    try:
+                        deflect_msg = (
+                            "Apologies! I’m a virtual assistant with limited responses. "
+                            "Please select one of the options so I can assist you better."
+                        )
+                        await send_message_to_waid(
+                            target_wa_id,
+                            deflect_msg,
+                            db,
+                            phone_id_hint=treatment_phone_id,
+                            from_wa_id=treatment_from_wa,
+                            schedule_followup=False  # Do not schedule follow-ups for deflection
+                        )
+                        print(f"[treatment_flow] DEBUG - Sent deflection reply (doctor/location/medicine) to wa_id={target_wa_id}")
+                    except Exception as e_send:
+                        print(f"[treatment_flow] ERROR - Failed to send deflection reply: {e_send}")
+                        import traceback
+                        traceback.print_exc()
+                        raise
+                    try:
+                        from controllers.web_socket import appointment_state as _appt_state  # type: ignore
+                        from datetime import datetime
+                        st_qr = _appt_state.get(wa_id) or {}
+                        st_qr["quick_reply_ts"] = datetime.utcnow().isoformat()
+                        _appt_state[wa_id] = st_qr
+                    except Exception:
+                        pass
+                    return {"status": "handled_deflection"}
+
                 # Treatment pricing reply (personalized cost explanation)
                 if any(k in normalized_body for k in treatment_price_keywords):
-                    msg = (
+                    msg_text = (
                         "All our treatments are personalized based on the severity of your concern and its root cause. "
                         "We don’t believe in “one-size-fits-all” solutions. We recommend booking an appointment for an "
                         "initial consultation with our dermatologist to get the exact cost for your treatment. "
@@ -430,15 +487,35 @@ async def run_treament_flow(
                         print(f"  - Target wa_id: {target_wa_id}")
                         print(f"  - Treatment phone_id: {treatment_phone_id}")
                         print(f"  - Treatment from_wa: {treatment_from_wa}")
-                        await send_message_to_waid(
-                            target_wa_id,
-                            msg,
-                            db,
-                            phone_id_hint=treatment_phone_id,
-                            from_wa_id=treatment_from_wa,
-                            schedule_followup=False  # No follow-up for free text treatment price queries
-                        )
-                        print(f"[treatment_flow] DEBUG - Successfully sent treatment price reply to wa_id={target_wa_id}")
+                        # Send interactive button with the pricing message
+                        cfg_btn = get_number_config(str(treatment_phone_id)) if treatment_phone_id else None
+                        token_btn = (cfg_btn or {}).get("token")
+                        if token_btn:
+                            headers_btn = {
+                                "Authorization": f"Bearer {token_btn}",
+                                "Content-Type": "application/json",
+                            }
+                            payload_btn = {
+                                "messaging_product": "whatsapp",
+                                "to": target_wa_id,
+                                "type": "interactive",
+                                "interactive": {
+                                    "type": "button",
+                                    "body": {"text": msg_text},
+                                    "action": {
+                                        "buttons": [
+                                            {
+                                                "type": "reply",
+                                                "reply": {"id": "book_appointment", "title": "Book an Appointment"},
+                                            }
+                                        ]
+                                    },
+                                },
+                            }
+                            resp_btn = requests.post(get_messages_url(treatment_phone_id), headers=headers_btn, json=payload_btn)
+                            print(f"[treatment_flow] DEBUG - Sent treatment price button via phone_id={treatment_phone_id}, status={resp_btn.status_code}")
+                        else:
+                            print(f"[treatment_flow] WARNING - Could not send treatment price button: no token for phone_id={treatment_phone_id}")
                     except Exception as e_send:
                         print(f"[treatment_flow] ERROR - Failed to send treatment price reply: {e_send}")
                         import traceback
@@ -452,36 +529,6 @@ async def run_treament_flow(
                         _appt_state[wa_id] = st_qr
                     except Exception:
                         pass
-                    # Send a "Book Appointment" button to let the user restart the treatment flow
-                    try:
-                        token_cfg = get_number_config(str(treatment_phone_id))
-                        access_token_btn = (token_cfg or {}).get("token")
-                        if access_token_btn:
-                            headers_btn = {
-                                "Authorization": f"Bearer {access_token_btn}",
-                                "Content-Type": "application/json",
-                            }
-                            payload_btn = {
-                                "messaging_product": "whatsapp",
-                                "to": target_wa_id,
-                                "type": "interactive",
-                                "interactive": {
-                                    "type": "button",
-                                    "body": {"text": "Would you like to book an appointment?"},
-                                    "action": {
-                                        "buttons": [
-                                            {"type": "reply", "reply": {"id": "book_appointment", "title": "Book Appointment"}}
-                                        ]
-                                    },
-                                },
-                            }
-                            resp_btn = requests.post(get_messages_url(treatment_phone_id), headers=headers_btn, json=payload_btn)
-                            print(f"[treatment_flow] DEBUG - Sent Book Appointment button via phone_id={treatment_phone_id}, status={resp_btn.status_code}")
-                        else:
-                            print(f"[treatment_flow] WARNING - Could not send Book Appointment button: no token for phone_id={treatment_phone_id}")
-                    except Exception as e_btn:
-                        print(f"[treatment_flow] WARNING - Failed to send Book Appointment button: {e_btn}")
-
                     # Clear any completed flags and set state so the flow can restart on button click
                     try:
                         from controllers.web_socket import appointment_state as _appt_state_restart  # type: ignore
