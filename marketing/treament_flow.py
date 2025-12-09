@@ -506,7 +506,7 @@ async def run_treament_flow(
                                         "buttons": [
                                             {
                                                 "type": "reply",
-                                                "reply": {"id": "book_appointment", "title": "Book Your Appointment"},
+                                                "reply": {"id": "confirm_appointment", "title": "Confirm Appointment"},
                                             }
                                         ]
                                     },
@@ -1609,11 +1609,9 @@ async def run_appointment_buttons_flow(
 
         # Book appointment
         if (
-            normalized_id == "book_appointment"
-            or normalized_text in {"book an appointment", "book appointment"}
-            or normalized_payload in {"book an appointment", "book appointment"}
-            or normalized_text == "book your appointment"
-            or normalized_payload == "book your appointment"
+            normalized_id in {"book_appointment", "confirm_appointment"}
+            or normalized_text in {"book an appointment", "book appointment", "book your appointment", "confirm appointment"}
+            or normalized_payload in {"book an appointment", "book appointment", "book your appointment", "confirm appointment"}
         ):
             try:
                 # If in treatment context, create lead immediately and send thank you
