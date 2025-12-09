@@ -514,6 +514,29 @@ async def run_treament_flow(
                             }
                             resp_btn = requests.post(get_messages_url(treatment_phone_id), headers=headers_btn, json=payload_btn)
                             print(f"[treatment_flow] DEBUG - Sent treatment price button via phone_id={treatment_phone_id}, status={resp_btn.status_code}")
+                            if resp_btn.status_code == 200:
+                                try:
+                                    response_data_btn = resp_btn.json()
+                                    msg_id_btn = response_data_btn.get("messages", [{}])[0].get("id", f"outbound_{datetime.now().timestamp()}")
+                                    from services.customer_service import get_or_create_customer
+                                    from schemas.customer_schema import CustomerCreate
+                                    from services.message_service import create_message
+                                    from schemas.message_schema import MessageCreate
+
+                                    customer = get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
+                                    message_rec = MessageCreate(
+                                        message_id=msg_id_btn,
+                                        from_wa_id=to_wa_id,
+                                        to_wa_id=wa_id,
+                                        type="interactive",
+                                        body="Confirm Appointment (treatment price)",
+                                        timestamp=datetime.now(),
+                                        customer_id=customer.id,
+                                    )
+                                    create_message(db, message_rec)
+                                    print(f"[treatment_flow] DEBUG - Saved treatment price interactive message: {msg_id_btn}")
+                                except Exception as e_db:
+                                    print(f"[treatment_flow] WARNING - Could not save treatment price interactive message: {e_db}")
                         else:
                             print(f"[treatment_flow] WARNING - Could not send treatment price button: no token for phone_id={treatment_phone_id}")
                     except Exception as e_send:
