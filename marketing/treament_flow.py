@@ -246,10 +246,53 @@ async def run_treament_flow(
         if is_allowed_treatment:
             try:
                 consult_keywords = [
-                    "consultation fee", "consultation fees", "consultation charge", "consultation charges",
-                    "consultation cost", "fees", "fee"
-                ]
-                job_keywords = ["job", "jobs", "vacancy", "vacancies", "career", "hiring", "recruitment"]
+    # Consultation related
+    "consultation fee", "consultation fees", "consultation charge", "consultation charges",
+    "consultation cost", "consultation", "consultations",
+    "consult fee", "consult fees", "consult cost", "consult charge",
+    "consulting fee", "consulting charges", "consulting cost",
+
+    # Generic fee/charge terms
+    "fee", "fees", "charge", "charges", "cost", "price", "amount",
+
+    # Treatment / service pricing
+    "treatment cost", "treatment charges", "treatment fee",
+    "procedure cost", "procedure charges", "service charge",
+    "service cost", "cost of treatment", "price of treatment",
+
+    # Common customer questions
+    "how much for consultation", "how much for treatment",
+    "what is your fee", "your charges", "price details",
+    "consultation price", "treatment price", "session fee",
+    "appointment fee", "appointment charges",
+
+    # Informal / chat variations
+    "fee ah", "fees ah", "charges ah", "cost ah",
+    "how much u charge", "how much do you charge",
+    "what's your charges", "what's your fees",
+    "treatment amount", "consultation amount",
+]
+
+
+                job_keywords = [
+    # Base terms
+    "job", "jobs", "vacancy", "vacancies", "career", "careers",
+    "hiring", "recruitment", "recruiting", "job opening",
+    "job openings", "job opportunity", "opportunities",
+    
+    # Role inquiry terms
+    "any openings", "any vacancy", "any job", "any hiring",
+    "looking for job", "job application", "apply for job",
+    
+    # HR terms
+    "hr", "human resources", "walk-in", "walkin", "interview",
+    "interviews", "job interview", "schedule interview",
+    
+    # Informal phrases
+    "job aa", "vacancy aa", "hiring ah", "any job available",
+    "any positions", "open positions", "open roles",
+]
+
 
                 # Resolve the correct treatment phone_id and from_wa_id for replies; if missing, fall back to first allowed treatment number (never lead number)
                 treatment_phone_id = None
@@ -391,7 +434,8 @@ async def run_treament_flow(
                             msg,
                             db,
                             phone_id_hint=treatment_phone_id,
-                            from_wa_id=treatment_from_wa
+                            from_wa_id=treatment_from_wa,
+                            schedule_followup=False  # No follow-up for free text consultation fee queries
                         )
                         print(f"[treatment_flow] DEBUG - Successfully sent consultation fee reply to wa_id={target_wa_id}")
                     except Exception as e_send:
@@ -422,7 +466,8 @@ async def run_treament_flow(
                             msg,
                             db,
                             phone_id_hint=treatment_phone_id,
-                            from_wa_id=treatment_from_wa
+                            from_wa_id=treatment_from_wa,
+                            schedule_followup=False  # No follow-up for free text job queries
                         )
                         print(f"[treatment_flow] DEBUG - Successfully sent job query reply to wa_id={target_wa_id}")
                     except Exception as e_send:
