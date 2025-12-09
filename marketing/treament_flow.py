@@ -452,6 +452,56 @@ async def run_treament_flow(
                         _appt_state[wa_id] = st_qr
                     except Exception:
                         pass
+                    # Send a "Book Appointment" button to let the user restart the treatment flow
+                    try:
+                        token_cfg = get_number_config(str(treatment_phone_id))
+                        access_token_btn = (token_cfg or {}).get("token")
+                        if access_token_btn:
+                            headers_btn = {
+                                "Authorization": f"Bearer {access_token_btn}",
+                                "Content-Type": "application/json",
+                            }
+                            payload_btn = {
+                                "messaging_product": "whatsapp",
+                                "to": target_wa_id,
+                                "type": "interactive",
+                                "interactive": {
+                                    "type": "button",
+                                    "body": {"text": "Would you like to book an appointment?"},
+                                    "action": {
+                                        "buttons": [
+                                            {"type": "reply", "reply": {"id": "book_appointment", "title": "Book Appointment"}}
+                                        ]
+                                    },
+                                },
+                            }
+                            resp_btn = requests.post(get_messages_url(treatment_phone_id), headers=headers_btn, json=payload_btn)
+                            print(f"[treatment_flow] DEBUG - Sent Book Appointment button via phone_id={treatment_phone_id}, status={resp_btn.status_code}")
+                        else:
+                            print(f"[treatment_flow] WARNING - Could not send Book Appointment button: no token for phone_id={treatment_phone_id}")
+                    except Exception as e_btn:
+                        print(f"[treatment_flow] WARNING - Failed to send Book Appointment button: {e_btn}")
+
+                    # Clear any completed flags and set state so the flow can restart on button click
+                    try:
+                        from controllers.web_socket import appointment_state as _appt_state_restart  # type: ignore
+                        st_restart = _appt_state_restart.get(wa_id) or {}
+                        # clear flow markers so Book Appointment goes through the fresh path
+                        st_restart.pop("flow_completed", None)
+                        st_restart.pop("treatment_expect_interactive", None)
+                        st_restart.pop("treatment_welcome_sent", None)
+                        st_restart.pop("treatment_welcome_sending_ts", None)
+                        # keep phone mapping so credentials resolve correctly
+                        st_restart["incoming_phone_id"] = str(treatment_phone_id)
+                        st_restart["treatment_flow_phone_id"] = str(treatment_phone_id)
+                        # mark as not in active treatment flow to force restart
+                        st_restart.pop("flow_context", None)
+                        st_restart.pop("from_treatment_flow", None)
+                        _appt_state_restart[wa_id] = st_restart
+                        print(f"[treatment_flow] DEBUG - Prepared state for flow restart after Book Appointment button: wa_id={wa_id}")
+                    except Exception:
+                        pass
+
                     # Explicitly clear any pending follow-up timers without scheduling new ones
                     try:
                         from services.followup_service import mark_customer_replied as _mark_replied
