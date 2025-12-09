@@ -506,7 +506,7 @@ async def run_treament_flow(
                                         "buttons": [
                                             {
                                                 "type": "reply",
-                                                "reply": {"id": "book_appointment", "title": "Book an Appointment"},
+                                                "reply": {"id": "book_appointment", "title": "Book Your Appointment"},
                                             }
                                         ]
                                     },
@@ -1612,6 +1612,8 @@ async def run_appointment_buttons_flow(
             normalized_id == "book_appointment"
             or normalized_text in {"book an appointment", "book appointment"}
             or normalized_payload in {"book an appointment", "book appointment"}
+            or normalized_text == "book your appointment"
+            or normalized_payload == "book your appointment"
         ):
             try:
                 # If in treatment context, create lead immediately and send thank you
@@ -1619,6 +1621,41 @@ async def run_appointment_buttons_flow(
                 st = appointment_state.get(wa_id) or {}
                 flow_ctx = st.get("flow_context")
                 if flow_ctx == "treatment":
+                    # Send welcome message again from the same treatment number before proceeding
+                    try:
+                        from marketing.whatsapp_numbers import WHATSAPP_NUMBERS, TREATMENT_FLOW_ALLOWED_PHONE_IDS  # type: ignore
+                        phone_id_for_welcome = (
+                            st.get("treatment_flow_phone_id")
+                            or st.get("incoming_phone_id")
+                        )
+                        if not phone_id_for_welcome and TREATMENT_FLOW_ALLOWED_PHONE_IDS:
+                            phone_id_for_welcome = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
+                        from_wa_for_welcome = None
+                        if phone_id_for_welcome:
+                            cfg_w = WHATSAPP_NUMBERS.get(str(phone_id_for_welcome)) if isinstance(WHATSAPP_NUMBERS, dict) else None
+                            if cfg_w:
+                                import re as _re
+                                from_wa_for_welcome = _re.sub(r"\D", "", cfg_w.get("name", "")) or None
+                        welcome_message = "Hi! Thanks for reaching out to Oliva Clinics. I'm your virtual assistant here to help you instantly."
+                        await send_message_to_waid(
+                            wa_id,
+                            welcome_message,
+                            db,
+                            phone_id_hint=str(phone_id_for_welcome) if phone_id_for_welcome else None,
+                            from_wa_id=from_wa_for_welcome,
+                            schedule_followup=False,
+                        )
+                        # Mark treatment context to ensure subsequent steps stay on this number
+                        st["flow_context"] = "treatment"
+                        st["from_treatment_flow"] = True
+                        if phone_id_for_welcome:
+                            st["treatment_flow_phone_id"] = str(phone_id_for_welcome)
+                            st["incoming_phone_id"] = str(phone_id_for_welcome)
+                        appointment_state[wa_id] = st
+                        print(f"[treatment_flow] DEBUG - Sent welcome on book_appointment tap using phone_id={phone_id_for_welcome}")
+                    except Exception as e_welcome:
+                        print(f"[treatment_flow] WARNING - Could not send welcome on book_appointment tap: {e_welcome}")
+
                     # Initialize is_duplicate flag to track if lead was a duplicate
                     is_duplicate = False
                     lead_res = None
