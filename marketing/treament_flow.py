@@ -274,7 +274,7 @@ async def run_treament_flow(
     "treatment cost", "treatment charges", "treatment fee",
     "procedure cost", "procedure charges", "service charge",
     "service cost", "cost of treatment", "price of treatment",
-    "treatment price", "treatment amount",
+    "treatment price", "treatment amount","treatment","treatments"
     "how much for treatment",
 ]
 
@@ -452,6 +452,16 @@ async def run_treament_flow(
                         _appt_state[wa_id] = st_qr
                     except Exception:
                         pass
+                    # Explicitly clear any pending follow-up timers without scheduling new ones
+                    try:
+                        from services.followup_service import mark_customer_replied as _mark_replied
+                        from services.customer_service import get_customer_record_by_wa_id as _get_cust
+                        _cust = _get_cust(db, wa_id)
+                        if _cust:
+                            _mark_replied(db, customer_id=_cust.id, reset_followup_timer=False)
+                            print(f"[treatment_flow] DEBUG - Cleared follow-up timer after treatment price auto-reply: wa_id={wa_id}")
+                    except Exception:
+                        pass
                     return {"status": "handled_treatment_price"}
 
                 # Consultation fee reply (default consultation wording)
@@ -494,6 +504,16 @@ async def run_treament_flow(
                         _appt_state[wa_id] = st_qr
                     except Exception:
                         pass
+                    # Explicitly clear any pending follow-up timers without scheduling new ones
+                    try:
+                        from services.followup_service import mark_customer_replied as _mark_replied
+                        from services.customer_service import get_customer_record_by_wa_id as _get_cust
+                        _cust = _get_cust(db, wa_id)
+                        if _cust:
+                            _mark_replied(db, customer_id=_cust.id, reset_followup_timer=False)
+                            print(f"[treatment_flow] DEBUG - Cleared follow-up timer after consultation fee auto-reply: wa_id={wa_id}")
+                    except Exception:
+                        pass
                     return {"status": "handled_consultation_fee"}
 
                 if any(k in normalized_body for k in job_keywords):
@@ -524,6 +544,16 @@ async def run_treament_flow(
                         st_qr = _appt_state.get(wa_id) or {}
                         st_qr["quick_reply_ts"] = datetime.utcnow().isoformat()
                         _appt_state[wa_id] = st_qr
+                    except Exception:
+                        pass
+                    # Explicitly clear any pending follow-up timers without scheduling new ones
+                    try:
+                        from services.followup_service import mark_customer_replied as _mark_replied
+                        from services.customer_service import get_customer_record_by_wa_id as _get_cust
+                        _cust = _get_cust(db, wa_id)
+                        if _cust:
+                            _mark_replied(db, customer_id=_cust.id, reset_followup_timer=False)
+                            print(f"[treatment_flow] DEBUG - Cleared follow-up timer after job query auto-reply: wa_id={wa_id}")
                     except Exception:
                         pass
                     return {"status": "handled_job_query"}
