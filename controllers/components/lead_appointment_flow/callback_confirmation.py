@@ -265,7 +265,7 @@ async def handle_callback_confirmation(
             
             await send_message_to_waid(
                 wa_id, 
-                "✅ Thank you! We've saved your appointment details. You can reach out to us anytime if you need any assistance. 😊", 
+                # "✅ Thank you! We've saved your appointment details. You can reach out to us anytime if you need any assistance. 😊", 
                 db
             )
             

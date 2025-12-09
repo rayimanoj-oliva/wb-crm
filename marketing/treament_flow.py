@@ -1651,6 +1651,13 @@ async def run_appointment_buttons_flow(
                             st["incoming_phone_id"] = str(phone_id_for_welcome)
                         appointment_state[wa_id] = st
                         print(f"[treatment_flow] DEBUG - Sent welcome on book_appointment tap using phone_id={phone_id_for_welcome}")
+                        # Immediately prompt city selection to restart flow
+                        try:
+                            from marketing.city_selection import send_city_selection
+                            await send_city_selection(db, wa_id=wa_id, phone_id_hint=str(phone_id_for_welcome) if phone_id_for_welcome else None)
+                            print(f"[treatment_flow] DEBUG - Sent city selection after welcome on book_appointment tap (wa_id={wa_id})")
+                        except Exception as e_city:
+                            print(f"[treatment_flow] WARNING - Could not send city selection after book_appointment tap: {e_city}")
                     except Exception as e_welcome:
                         print(f"[treatment_flow] WARNING - Could not send welcome on book_appointment tap: {e_welcome}")
 
@@ -1771,7 +1778,7 @@ async def run_appointment_buttons_flow(
                         phone_id_hint = list(TREATMENT_FLOW_ALLOWED_PHONE_IDS)[0]
                     await send_message_to_waid(
                         wa_id,
-                        "✅ Thank you! Our team will contact you shortly to confirm your appointment.",
+                        # "✅ Thank you! Our team will contact you shortly to confirm your appointment.",
                         db,
                         phone_id_hint=str(phone_id_hint),
                     )
