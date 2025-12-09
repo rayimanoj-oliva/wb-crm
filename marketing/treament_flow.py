@@ -301,6 +301,9 @@ async def run_treament_flow(
     # Role inquiry terms
     "any openings", "any vacancy", "any job", "any hiring",
     "looking for job", "job application", "apply for job",
+    "vacancy in the clinic", "vacancy in clinic", "vacancy at clinic",
+    "vacancy for ot", "ot vacancy", "ot staff", "ot nurse", "ot assistant",
+    "clinic vacancy", "hospital vacancy",
     
     # HR terms
     "hr", "human resources", "walk-in", "walkin", "interview",
@@ -309,6 +312,7 @@ async def run_treament_flow(
     # Informal phrases
     "job aa", "vacancy aa", "hiring ah", "any job available",
     "any positions", "open positions", "open roles",
+    "any vacancy in ot", "any vacancy in clinic",
 ]
 
 
