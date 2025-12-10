@@ -478,6 +478,14 @@ async def run_treament_flow(
                         if _cust:
                             _mark_replied(db, customer_id=_cust.id, reset_followup_timer=False)
                             print(f"[treatment_flow] DEBUG - Cleared follow-up timer after job reply: wa_id={wa_id}")
+                            try:
+                                _cust.next_followup_time = None
+                                _cust.last_message_type = None
+                                db.add(_cust)
+                                db.commit()
+                                print(f"[treatment_flow] DEBUG - Persisted follow-up stop after job reply: wa_id={wa_id}")
+                            except Exception as _persist_e:
+                                print(f"[treatment_flow] WARNING - Could not persist follow-up stop after job reply: {_persist_e}")
                     except Exception:
                         pass
                     # Record send time to debounce future duplicates
@@ -1729,11 +1737,23 @@ async def run_appointment_buttons_flow(
                         customer = get_customer_record_by_wa_id(db, wa_id)
                         customer_name = getattr(customer, "name", None) or ""
                         selected_concern = (st or {}).get("selected_concern")
+                        # Pull city/clinic/location from current appointment_state
+                        try:
+                            from controllers.web_socket import appointment_state as _appt_city  # type: ignore
+                            st_city = _appt_city.get(wa_id) or {}
+                            selected_city = (st_city.get("selected_city") or "").strip() or None
+                            selected_clinic = (st_city.get("selected_clinic") or "").strip() or None
+                            selected_location = (st_city.get("selected_location") or "").strip() or None
+                        except Exception:
+                            selected_city = selected_clinic = selected_location = None
                         appointment_details = {
                             "flow_type": "treatment_flow",
                             "treatment_selected": True,
                             "no_scheduling_required": True,
                             "selected_concern": selected_concern,
+                            **({"selected_city": selected_city} if selected_city else {}),
+                            **({"selected_clinic": selected_clinic} if selected_clinic else {}),
+                            **({"selected_location": selected_location} if selected_location else {}),
                         }
                         lead_res = await create_lead_for_appointment(
                             db=db,
@@ -1916,6 +1936,20 @@ async def run_appointment_buttons_flow(
                         "callback_requested": True,
                         "no_scheduling_required": True
                     }
+                    # Pull city/clinic/location from current appointment_state
+                    try:
+                        st_city_cb = appointment_state.get(wa_id) or {}
+                        selected_city_cb = (st_city_cb.get("selected_city") or "").strip() or None
+                        selected_clinic_cb = (st_city_cb.get("selected_clinic") or "").strip() or None
+                        selected_location_cb = (st_city_cb.get("selected_location") or "").strip() or None
+                        if selected_city_cb:
+                            appointment_details["selected_city"] = selected_city_cb
+                        if selected_clinic_cb:
+                            appointment_details["selected_clinic"] = selected_clinic_cb
+                        if selected_location_cb:
+                            appointment_details["selected_location"] = selected_location_cb
+                    except Exception:
+                        pass
                     
                     lead_result = await create_lead_for_appointment(
                         db=db,
