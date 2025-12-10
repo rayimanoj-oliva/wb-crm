@@ -434,6 +434,63 @@ async def run_treament_flow(
                 except Exception as e_set:
                     print(f"[treatment_flow] WARNING - Could not set incoming_phone_id before sending: {e_set}")
 
+                # Job/vacancy queries: answer directly before any deflection (so "clinic" in the text doesn't trigger deflection)
+                if any(k in normalized_body for k in job_keywords):
+                    # Debounce to avoid double-sends from rapid duplicate webhooks
+                    try:
+                        from controllers.web_socket import appointment_state as _appt_state  # type: ignore
+                        from datetime import datetime, timedelta
+                        st_qr = _appt_state.get(wa_id) or {}
+                        last_qr_ts = st_qr.get("job_reply_ts")
+                        if last_qr_ts:
+                            ts_obj = datetime.fromisoformat(last_qr_ts) if isinstance(last_qr_ts, str) else None
+                            if ts_obj and (datetime.utcnow() - ts_obj) < timedelta(seconds=8):
+                                return {"status": "skipped_job_reply_debounced"}
+                    except Exception:
+                        pass
+
+                    msg = "For job-related enquiries, please contact our HR team at: hr@olivaclinic.com"
+                    try:
+                        print(f"[treatment_flow] DEBUG - Sending job query reply (pre-deflection path):")
+                        print(f"  - Original wa_id: {wa_id}")
+                        print(f"  - Target wa_id: {target_wa_id}")
+                        print(f"  - Treatment phone_id: {treatment_phone_id}")
+                        print(f"  - Treatment from_wa: {treatment_from_wa}")
+                        await send_message_to_waid(
+                            target_wa_id,
+                            msg,
+                            db,
+                            phone_id_hint=treatment_phone_id,
+                            from_wa_id=treatment_from_wa,
+                            schedule_followup=False  # No follow-up for job queries
+                        )
+                        print(f"[treatment_flow] DEBUG - Job query reply sent (pre-deflection) wa_id={target_wa_id}")
+                    except Exception as e_send:
+                        print(f"[treatment_flow] ERROR - Failed to send job query reply (pre-deflection): {e_send}")
+                        import traceback
+                        traceback.print_exc()
+                        raise
+                    # Clear any pending follow-ups for this user, similar to other non-flow messages
+                    try:
+                        from services.followup_service import mark_customer_replied as _mark_replied
+                        from services.customer_service import get_customer_record_by_wa_id as _get_cust
+                        _cust = _get_cust(db, wa_id)
+                        if _cust:
+                            _mark_replied(db, customer_id=_cust.id, reset_followup_timer=False)
+                            print(f"[treatment_flow] DEBUG - Cleared follow-up timer after job reply: wa_id={wa_id}")
+                    except Exception:
+                        pass
+                    # Record send time to debounce future duplicates
+                    try:
+                        from controllers.web_socket import appointment_state as _appt_state  # type: ignore
+                        from datetime import datetime
+                        st_qr = _appt_state.get(wa_id) or {}
+                        st_qr["job_reply_ts"] = datetime.utcnow().isoformat()
+                        _appt_state[wa_id] = st_qr
+                    except Exception:
+                        pass
+                    return {"status": "handled_job_query"}
+
                 # Doctor/location/medicine deflection reply
                 if any(k in normalized_body for k in doctor_location_keywords):
                     # Debounce to prevent duplicate sends
@@ -654,47 +711,6 @@ async def run_treament_flow(
                         pass
                     return {"status": "handled_consultation_fee"}
 
-                if any(k in normalized_body for k in job_keywords):
-                    msg = "For job-related enquiries, please contact our HR team at: hr@olivaclinic.com"
-                    try:
-                        print(f"[treatment_flow] DEBUG - Sending job query reply:")
-                        print(f"  - Original wa_id: {wa_id}")
-                        print(f"  - Target wa_id: {target_wa_id}")
-                        print(f"  - Treatment phone_id: {treatment_phone_id}")
-                        print(f"  - Treatment from_wa: {treatment_from_wa}")
-                        await send_message_to_waid(
-                            target_wa_id,
-                            msg,
-                            db,
-                            phone_id_hint=treatment_phone_id,
-                            from_wa_id=treatment_from_wa,
-                            schedule_followup=False  # No follow-up for free text job queries
-                        )
-                        print(f"[treatment_flow] DEBUG - Successfully sent job query reply to wa_id={target_wa_id}")
-                    except Exception as e_send:
-                        print(f"[treatment_flow] ERROR - Failed to send job query reply: {e_send}")
-                        import traceback
-                        traceback.print_exc()
-                        raise
-                    try:
-                        from controllers.web_socket import appointment_state as _appt_state  # type: ignore
-                        from datetime import datetime
-                        st_qr = _appt_state.get(wa_id) or {}
-                        st_qr["quick_reply_ts"] = datetime.utcnow().isoformat()
-                        _appt_state[wa_id] = st_qr
-                    except Exception:
-                        pass
-                    # Explicitly clear any pending follow-up timers without scheduling new ones
-                    try:
-                        from services.followup_service import mark_customer_replied as _mark_replied
-                        from services.customer_service import get_customer_record_by_wa_id as _get_cust
-                        _cust = _get_cust(db, wa_id)
-                        if _cust:
-                            _mark_replied(db, customer_id=_cust.id, reset_followup_timer=False)
-                            print(f"[treatment_flow] DEBUG - Cleared follow-up timer after job query auto-reply: wa_id={wa_id}")
-                    except Exception:
-                        pass
-                    return {"status": "handled_job_query"}
             except Exception as e_quick:
                 print(f"[treatment_flow] WARNING - Quick reply failed: {e_quick}")
 
