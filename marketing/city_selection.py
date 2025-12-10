@@ -473,6 +473,17 @@ async def handle_city_selection(
         lead_appointment_state[wa_id]["last_city_reply_id"] = (reply_id or "").strip().lower()
         lead_appointment_state[wa_id]["selected_city"] = selected_city
         print(f"[lead_appointment_flow] DEBUG - Stored city selection: {selected_city}")
+        # Also mirror selected_city into appointment_state for treatment flow paths
+        try:
+            if 'appointment_state' not in globals():
+                from controllers.web_socket import appointment_state  # type: ignore
+            _appt_state = appointment_state  # type: ignore
+            st_city = _appt_state.get(wa_id) or {}
+            st_city["selected_city"] = selected_city
+            _appt_state[wa_id] = st_city
+            print(f"[lead_appointment_flow] DEBUG - Mirrored city into appointment_state: {selected_city}")
+        except Exception as e_city_mirror:
+            print(f"[lead_appointment_flow] WARNING - Could not mirror city into appointment_state: {e_city_mirror}")
     except Exception as e:
         print(f"[lead_appointment_flow] WARNING - Could not store city selection: {e}")
     
