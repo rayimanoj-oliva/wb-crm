@@ -461,6 +461,20 @@ async def run_treament_flow(
                             from_wa_id=treatment_from_wa,
                             schedule_followup=False  # Do not schedule follow-ups for deflection
                         )
+                        # Also clear any already-scheduled follow-ups so no check-in messages go out after deflection
+                        try:
+                            from services import customer_service
+                            from schemas.customer_schema import CustomerCreate
+                            from services.followup_service import mark_customer_replied as _mark_replied
+
+                            cust = customer_service.get_or_create_customer(
+                                db, CustomerCreate(wa_id=target_wa_id, name="")
+                            )
+                            if cust and getattr(cust, "id", None):
+                                _mark_replied(db, customer_id=cust.id, reset_followup_timer=False)
+                                print(f"[treatment_flow] DEBUG - Cleared pending follow-ups after deflection for wa_id={target_wa_id}")
+                        except Exception as clear_e:
+                            print(f"[treatment_flow] WARNING - Could not clear follow-ups after deflection: {clear_e}")
                         print(f"[treatment_flow] DEBUG - Sent deflection reply (doctor/location/medicine) to wa_id={target_wa_id}")
                     except Exception as e_send:
                         print(f"[treatment_flow] ERROR - Failed to send deflection reply: {e_send}")

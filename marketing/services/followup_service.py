@@ -7,7 +7,7 @@ import sys
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, func
 
-from models.models import Customer
+from models.models import Customer, Message
 
 import os
 import requests
@@ -62,6 +62,36 @@ def _resolve_marketing_credentials(db: Session, *, wa_id: Optional[str] = None) 
     """
     phone_id_pref: Optional[str] = None
     display_from = os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376")
+
+    # Helper: derive phone_id from recent message history (last outbound number used)
+    def _infer_phone_id_from_history() -> Optional[str]:
+        try:
+            # Look at recent messages to this wa_id and map from_wa_id digits to configured numbers
+            msgs = (
+                db.query(Message)
+                .filter(Message.to_wa_id == wa_id)
+                .order_by(Message.timestamp.desc())
+                .limit(5)
+                .all()
+            )
+            import re as _re
+            for m in msgs:
+                digits = _re.sub(r"\D", "", m.from_wa_id or "")
+                last10 = digits[-10:] if len(digits) >= 10 else digits
+                for pid, cfg in WHATSAPP_NUMBERS.items():
+                    name_digits = _re.sub(r"\D", "", (cfg.get("name") or ""))
+                    name_last10 = name_digits[-10:] if len(name_digits) >= 10 else name_digits
+                    if last10 and name_last10 and last10 == name_last10:
+                        return str(pid)
+        except Exception:
+            return None
+        return None
+
+    # 0) Try to infer from message history (covers cases where in-memory state was lost)
+    if wa_id and not phone_id_pref:
+        hist_pid = _infer_phone_id_from_history()
+        if hist_pid:
+            phone_id_pref = hist_pid
 
     # 1) Stored phone id from state
     if wa_id:
