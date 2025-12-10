@@ -59,10 +59,38 @@ class ZohoLeadService:
         converted: bool = False
     ) -> Dict[str, Any]:
         """Prepare lead data according to Zoho CRM API structure"""
-        
+        # Helper to drop placeholder values the API should not see
+        def _clean_unknown(val):
+            try:
+                if val is None:
+                    return None
+                txt = str(val).strip()
+                if not txt:
+                    return None
+                if txt.lower() in {"unknown", "not specified", "na", "n/a", "none", "null", "-"}:
+                    return None
+                return txt
+            except Exception:
+                return val
+
         # Use mobile if provided, otherwise use phone
         contact_number = mobile if mobile else phone
-        
+        # Ensure we always send a city/clinic when user selected one (sometimes they land only in appointment_details)
+        # Derive city from appointment details if the direct parameter is missing/empty
+        city_from_details = None
+        clinic_from_details = None
+        try:
+            if appointment_details:
+                city_from_details = _clean_unknown(
+                    appointment_details.get("selected_city") or appointment_details.get("city")
+                )
+                clinic_from_details = _clean_unknown(
+                    appointment_details.get("selected_clinic") or appointment_details.get("selected_location")
+                )
+        except Exception:
+            pass
+        city = _clean_unknown(city) or city_from_details
+
         # Prepare description with appointment details
         desc_parts = [description] if description else []
         
@@ -203,7 +231,8 @@ class ZohoLeadService:
                     "Mobile": contact_number,  # Always WA number
                     **({"Phone_1": phone_1} if phone_1 else {}),
                     **({"Phone_2": phone_2} if phone_2 else {}),
-                    "City": city,
+            # Always push city/clinic when user selected them; fall back to appointment_details copies
+            "City": city or city_from_details or clinic_from_details,
                     "Lead_Source": lead_source,
                     "Company": company,
                     "Description": full_description,
@@ -212,7 +241,7 @@ class ZohoLeadService:
                     # Business fields expected by Zoho
                     **({"Concerns": concerns_value} if concerns_value else {}),
                     **({"Additional_Concerns": additional_concerns_value} if additional_concerns_value else {}),
-                    **({"Clinic_Branch": clinic_branch_region} if clinic_branch_region else {}),
+            **({"Clinic_Branch": clinic_branch_region or clinic_from_details} if (clinic_branch_region or clinic_from_details) else {}),
                     # Custom fields / standard fields expected in Zoho
                     "Sub_Source": sub_source,
                     "Unsubscribed_Mode": unsubscribed_mode,
