@@ -425,6 +425,7 @@ def get_campaigns_list_optimized(db: Session, skip: int = 0, limit: int = 50, se
             "success_pct": round((stats["success"] / denom) * 100, 1) if denom > 0 else 0,
             "failure_pct": round((stats["failure"] / denom) * 100, 1) if denom > 0 else 0,
             "pending_pct": round((stats["pending"] / denom) * 100, 1) if denom > 0 else 0,
+            "status": c.status or "idle",
             "created_at": c.created_at.isoformat() if c.created_at else None,
             "updated_at": c.updated_at.isoformat() if c.updated_at else None,
             "created_by": str(c.created_by) if c.created_by else None,
