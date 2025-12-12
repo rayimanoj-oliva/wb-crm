@@ -329,6 +329,18 @@ def callback(ch, method, properties, body):
                 ch.basic_ack(delivery_tag=method.delivery_tag)
                 return
 
+            # Check if campaign is stopped - skip processing
+            if campaign.status == "stopped":
+                logger.info(f"⏹️ Campaign {campaign_id[:8]} is stopped, skipping message")
+                # Update recipient back to PENDING
+                if target_type == "recipient":
+                    target = db.query(CampaignRecipient).filter_by(id=target_id_uuid).first()
+                    if target and target.status == "QUEUED":
+                        target.status = "PENDING"
+                        db.commit()
+                ch.basic_ack(delivery_tag=method.delivery_tag)
+                return
+
             # Load target
             if target_type == "recipient":
                 target = db.query(CampaignRecipient).filter_by(id=target_id_uuid).first()

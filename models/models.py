@@ -567,6 +567,8 @@ class Campaign(Base):
     type = Column(campaign_type_enum, nullable=False, index=True)
 
     last_job_id = Column(UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True)
+    # Campaign status: idle, running, stopped
+    status = Column(String(20), default="idle", index=True)
 
     jobs = relationship(
         "Job",

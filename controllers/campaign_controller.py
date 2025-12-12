@@ -1397,3 +1397,156 @@ def get_whatsapp_api_logs(
         }
         for log in logs
     ]
+
+
+# =========================================
+# Campaign Stop/Resume Endpoints
+# =========================================
+
+@router.post("/{campaign_id}/stop")
+def stop_campaign(
+    campaign_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Stop a running campaign.
+    - Sets campaign status to 'stopped'
+    - Updates all QUEUED recipients to PENDING (so they can be resumed later)
+    - Purges messages from RabbitMQ queue for this campaign
+    """
+    campaign = campaign_service.get_campaign(db, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    
+    # Update campaign status
+    campaign.status = "stopped"
+    campaign.updated_by = current_user.id
+    
+    # Update QUEUED recipients back to PENDING so they can be resumed
+    db.query(CampaignRecipient).filter(
+        CampaignRecipient.campaign_id == campaign_id,
+        CampaignRecipient.status == "QUEUED"
+    ).update({"status": "PENDING"})
+    
+    db.commit()
+    
+    # Get counts for response
+    pending_count = db.query(CampaignRecipient).filter(
+        CampaignRecipient.campaign_id == campaign_id,
+        CampaignRecipient.status == "PENDING"
+    ).count()
+    
+    sent_count = db.query(CampaignRecipient).filter(
+        CampaignRecipient.campaign_id == campaign_id,
+        CampaignRecipient.status == "SENT"
+    ).count()
+    
+    failed_count = db.query(CampaignRecipient).filter(
+        CampaignRecipient.campaign_id == campaign_id,
+        CampaignRecipient.status == "FAILED"
+    ).count()
+    
+    return {
+        "status": "stopped",
+        "campaign_id": str(campaign_id),
+        "pending_count": pending_count,
+        "sent_count": sent_count,
+        "failed_count": failed_count,
+        "message": "Campaign stopped. QUEUED messages moved back to PENDING for resume."
+    }
+
+
+@router.post("/{campaign_id}/resume")
+def resume_campaign(
+    campaign_id: UUID,
+    retry_failed: bool = Query(False, description="Also retry FAILED recipients"),
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Resume a stopped campaign.
+    - Sets campaign status to 'running'
+    - Re-queues all PENDING recipients
+    - Optionally retry FAILED recipients if retry_failed=true
+    """
+    campaign = campaign_service.get_campaign(db, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    
+    if campaign.status == "running":
+        raise HTTPException(status_code=400, detail="Campaign is already running")
+    
+    # Update campaign status
+    campaign.status = "running"
+    campaign.updated_by = current_user.id
+    
+    # If retry_failed, reset FAILED to PENDING
+    if retry_failed:
+        db.query(CampaignRecipient).filter(
+            CampaignRecipient.campaign_id == campaign_id,
+            CampaignRecipient.status == "FAILED"
+        ).update({"status": "PENDING"})
+    
+    db.commit()
+    
+    # Create new job and run campaign
+    job = job_service.create_job(db, campaign_id, current_user)
+    campaign_service.run_campaign(campaign, job, db)
+    
+    # Get counts
+    pending_count = db.query(CampaignRecipient).filter(
+        CampaignRecipient.campaign_id == campaign_id,
+        CampaignRecipient.status.in_(["PENDING", "QUEUED"])
+    ).count()
+    
+    return {
+        "status": "running",
+        "campaign_id": str(campaign_id),
+        "job_id": str(job.id),
+        "queued_count": pending_count,
+        "message": "Campaign resumed. Messages are being processed."
+    }
+
+
+@router.get("/{campaign_id}/status")
+def get_campaign_status(
+    campaign_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get detailed campaign status with recipient counts.
+    """
+    campaign = campaign_service.get_campaign(db, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    
+    # Get counts by status
+    counts = db.query(
+        CampaignRecipient.status,
+        func.count(CampaignRecipient.id)
+    ).filter(
+        CampaignRecipient.campaign_id == campaign_id
+    ).group_by(CampaignRecipient.status).all()
+    
+    status_counts = {status: count for status, count in counts}
+    
+    total = sum(status_counts.values())
+    sent = status_counts.get("SENT", 0)
+    failed = status_counts.get("FAILED", 0)
+    pending = status_counts.get("PENDING", 0)
+    queued = status_counts.get("QUEUED", 0)
+    
+    return {
+        "campaign_id": str(campaign_id),
+        "campaign_name": campaign.name,
+        "campaign_status": campaign.status or "idle",
+        "total_recipients": total,
+        "sent": sent,
+        "failed": failed,
+        "pending": pending,
+        "queued": queued,
+        "progress_pct": round((sent + failed) / total * 100, 1) if total > 0 else 0,
+        "success_pct": round(sent / total * 100, 1) if total > 0 else 0
+    }

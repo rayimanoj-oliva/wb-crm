@@ -666,6 +666,9 @@ def run_campaign(
     import time as time_module
 
     start_time = time_module.time()
+    # Set campaign status to running
+    campaign.status = "running"
+    db.commit()
 
     recipients = db.query(CampaignRecipient).filter_by(campaign_id=campaign.id).all()
     messages_to_queue = []
