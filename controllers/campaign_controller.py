@@ -227,6 +227,109 @@ def create_template_campaign(
     return campaign
 
 
+
+
+class PersonalizedRecipientPayload(BaseModel):
+    wa_id: str
+    name: Optional[str] = None
+    body_params: Optional[List[str]] = None
+    header_text_params: Optional[List[str]] = None
+    header_media_id: Optional[str] = None
+    # Optional template button support (e.g. URL button with dynamic parameter)
+    # These map directly to WhatsApp "button" component fields
+    button_params: Optional[List[str]] = None
+    button_index: Optional[str] = "1"
+    button_sub_type: Optional[str] = "url"
+
+
+class TemplateSaveRequest(BaseModel):
+    template_name: str
+    language: str = "en_US"
+    customer_wa_ids: Optional[List[str]] = []
+    personalized_recipients: Optional[List[PersonalizedRecipientPayload]] = None
+    campaign_name: str
+    campaign_description: Optional[str] = None
+    campaign_cost_type: Optional[str] = None
+    body_expected: Optional[int] = 0
+    header_text_expected: Optional[int] = 0
+    enforce_count: bool = True
+    header_media_id: Optional[str] = None
+    body_params: Optional[List[str]] = None
+    header_text_params: Optional[List[str]] = None
+
+
+@router.post("/template/save", response_model=CampaignOut)
+def save_template_campaign(
+    payload: TemplateSaveRequest = Body(...),
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    """Save a template campaign with recipients from Excel or selected clients."""
+    from services import customer_service as cs
+    
+    template_meta = get_template_metadata(db, payload.template_name)
+    template_body = template_meta["template"].template_body or {}
+    
+    # Build content
+    content = {
+        "name": payload.template_name,
+        "language": payload.language,
+        "components": template_body.get("components", []),
+    }
+    
+    # Collect customer IDs
+    customer_ids = []
+    
+    # Handle personalized recipients (from Excel upload)
+    if payload.personalized_recipients:
+        for pr in payload.personalized_recipients:
+            cust = cs.get_or_create_customer(db, CustomerCreate(wa_id=pr.wa_id, name=pr.name or ""))
+            customer_ids.append(cust.id)
+            
+            # Store recipient with params
+            recipient = CampaignRecipient(
+                campaign_id=None,  # Will be set after campaign creation
+                phone_number=pr.wa_id,
+                name=pr.name or "",
+                status="pending",
+                params={
+                    "body_params": pr.body_params or [],
+                    "header_text_params": pr.header_text_params or [],
+                    "header_media_id": pr.header_media_id,
+                    "button_params": pr.button_params or [],
+                    "button_index": pr.button_index or "1",
+                    "button_sub_type": pr.button_sub_type or "url",
+                }
+            )
+            db.add(recipient)
+    
+    # Handle customer_wa_ids (from CRM selection)
+    elif payload.customer_wa_ids:
+        for wa_id in payload.customer_wa_ids:
+            cust = cs.get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=""))
+            customer_ids.append(cust.id)
+    
+    # Create campaign
+    campaign_payload = CampaignCreate(
+        name=payload.campaign_name,
+        description=payload.campaign_description,
+        customer_ids=customer_ids,
+        content=content,
+        type="template",
+        campaign_cost_type=payload.campaign_cost_type,
+    )
+    campaign = campaign_service.create_campaign(db, campaign_payload, user_id=current_user.id)
+    
+    # Update recipients with campaign_id
+    if payload.personalized_recipients:
+        db.query(CampaignRecipient).filter(
+            CampaignRecipient.campaign_id == None,
+            CampaignRecipient.phone_number.in_([pr.wa_id for pr in payload.personalized_recipients])
+        ).update({"campaign_id": campaign.id}, synchronize_session=False)
+        db.commit()
+    
+    return campaign
+
 @router.get("/template/{template_name}/excel-columns", response_model=TemplateExcelColumnsResponse)
 def get_template_excel_columns(template_name: str, db: Session = Depends(get_db)):
     meta = get_template_metadata(db, template_name)
@@ -569,18 +672,6 @@ def run_template_campaign_quick(
             detail=f"Failed to create or run campaign: {str(e)}"
         )
 
-
-class PersonalizedRecipientPayload(BaseModel):
-    wa_id: str
-    name: Optional[str] = None
-    body_params: Optional[List[str]] = None
-    header_text_params: Optional[List[str]] = None
-    header_media_id: Optional[str] = None
-    # Optional template button support (e.g. URL button with dynamic parameter)
-    # These map directly to WhatsApp "button" component fields
-    button_params: Optional[List[str]] = None
-    button_index: Optional[str] = "1"
-    button_sub_type: Optional[str] = "url"
 
 
 class RunSavedTemplateRequest(BaseModel):

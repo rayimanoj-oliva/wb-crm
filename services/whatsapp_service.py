@@ -64,12 +64,15 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
             filtered.append(new_component)
         return filtered
 
-    # Start with base components if available, otherwise empty list
-    components = copy.deepcopy(base_components) if base_components else []
-
+    # Get params from recipient first
     body_params = recipient_params.get("body_params")
     header_text_params = recipient_params.get("header_text_params")
     header_media_id = recipient_params.get("header_media_id")
+    
+    # IMPORTANT: Do NOT start with base_components as they contain raw template definition
+    # (text, format, example fields) which are not valid for WhatsApp API.
+    # Instead, start with empty list and only add properly formatted API components.
+    components = []
     # Optional button parameters (for template URL buttons, etc.)
     button_params = recipient_params.get("button_params")
     button_index = recipient_params.get("button_index", "1")
