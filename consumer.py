@@ -26,9 +26,14 @@ from sqlalchemy.orm import Session
 from controllers.whatsapp_controller import WHATSAPP_API_URL
 from database.db import SessionLocal
 from models.models import (
-    JobStatus, Campaign, Job, Customer, CampaignRecipient, CampaignLog, WhatsAppAPILog
+    JobStatus, Campaign, Job, Customer, CampaignRecipient, CampaignLog, WhatsAppAPILog, Message
 )
 from services import whatsapp_service
+from services import message_service
+from services import customer_service
+from schemas.message_schema import MessageCreate
+from schemas.customer_schema import CustomerCreate
+import os
 
 # Configure logging
 logging.basicConfig(
@@ -555,6 +560,65 @@ def callback(ch, method, properties, body):
                 response_data=response_data,
                 processing_time_ms=processing_time_ms
             )
+
+            # Save campaign message to Message table for conversation view (only on success)
+            if status == "success" and campaign.type == "template" and wa_id:
+                try:
+                    # Get or create customer
+                    customer = customer_service.get_or_create_customer(
+                        db, CustomerCreate(wa_id=wa_id, name=target.name if hasattr(target, 'name') else "")
+                    )
+                    
+                    # Get business number (from_wa_id) - default to env or common number
+                    from_wa_id = os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376")
+                    
+                    # Format template message body for display
+                    template_name = campaign.content.get("name", "Template") if isinstance(campaign.content, dict) else "Template"
+                    template_body = f"📋 Template: {template_name}"
+                    
+                    # Try to extract body text from template components for better display
+                    if isinstance(campaign.content, dict):
+                        components = campaign.content.get("components", [])
+                        for comp in components:
+                            if comp.get("type", "").upper() == "BODY":
+                                body_text = comp.get("text", "")
+                                if body_text:
+                                    # Replace placeholders with actual values if available
+                                    if target_type == "recipient" and hasattr(target, 'params') and target.params:
+                                        params = target.params if isinstance(target.params, dict) else {}
+                                        body_params = params.get("body_params", [])
+                                        if body_params:
+                                            # Simple placeholder replacement
+                                            formatted_body = body_text
+                                            for i, param in enumerate(body_params):
+                                                placeholder = f"{{{i+1}}}"
+                                                formatted_body = formatted_body.replace(placeholder, str(param), 1)
+                                            if formatted_body != body_text:
+                                                template_body = formatted_body
+                                                break
+                                    # If no params, show template name with body preview
+                                    if len(body_text) > 100:
+                                        body_text = body_text[:100] + "..."
+                                    template_body = f"📋 {template_name}\n\n{body_text}"
+                                    break
+                    
+                    # Create message entry
+                    message_data = MessageCreate(
+                        message_id=whatsapp_message_id or f"campaign_{campaign_id_uuid}_{wa_id}_{int(time.time())}",
+                        from_wa_id=from_wa_id,
+                        to_wa_id=wa_id,
+                        type="template",
+                        body=template_body,
+                        timestamp=datetime.utcnow(),
+                        customer_id=customer.id,
+                        agent_id=None,  # Campaign messages are system-sent
+                        sender_type="agent",  # Show as agent message (right side)
+                    )
+                    message_service.create_message(db, message_data)
+                    logger.info(f"💬 Saved campaign template message to conversation for {wa_id}")
+                except Exception as msg_err:
+                    # Don't fail the campaign if message save fails
+                    logger.error(f"Failed to save campaign message to conversation: {msg_err}")
 
             db.commit()
             logger.info(f"[{status.upper()}] {target_type}:{wa_id} - {processing_time_ms}ms")
