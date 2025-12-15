@@ -104,12 +104,37 @@ class ZohoLeadService:
                 desc_parts.append(f"City: {appointment_details['selected_city']}")
             if appointment_details.get("selected_clinic"):
                 desc_parts.append(f"Clinic: {appointment_details['selected_clinic']}")
-            if appointment_details.get("selected_concern"):
-                desc_parts.append(f"Concern: {appointment_details['selected_concern']}")
+            # Concern/treatment: capture even if provided under alternate keys
+            concern_for_desc = (
+                appointment_details.get("selected_concern")
+                or appointment_details.get("treatment")
+                or appointment_details.get("selected_treatment")
+                or getattr(customer, "concern", None)
+                or getattr(customer, "primary_concern", None)
+            )
+            if concern_for_desc:
+                desc_parts.append(f"Concern: {concern_for_desc}")
             # Prioritize selected_week over custom_date for date/week information
             selected_week_val = appointment_details.get("selected_week")
             custom_date_val = appointment_details.get("custom_date")
+            time_value = appointment_details.get("selected_time")
             
+            preferred_time_text = None
+            # Format time value - if it's a raw time like "1630", format as "16:30"
+            if time_value:
+                try:
+                    # Check if it's a raw time format (4 digits like "1630" or "1030")
+                    if isinstance(time_value, str) and time_value.replace(":", "").isdigit():
+                        time_clean = time_value.replace(":", "").strip()
+                        if len(time_clean) == 4 and time_clean.isdigit():
+                            preferred_time_text = f"{time_clean[:2]}:{time_clean[2:]}"
+                        else:
+                            preferred_time_text = str(time_value)
+                    else:
+                        preferred_time_text = str(time_value)
+                except Exception:
+                    preferred_time_text = str(time_value)
+
             if selected_week_val and selected_week_val.strip() and selected_week_val.lower() not in ["not specified", "none", "na", ""]:
                 # Format week range for better readability (e.g., "2024-12-15 to 2024-12-21" -> "Dec 15-21")
                 week_value = selected_week_val.strip()
@@ -133,26 +158,24 @@ class ZohoLeadService:
                     else:
                         desc_parts.append(f"Preferred Week: {week_value}")
                 except Exception:
-                    desc_parts.append(f"Preferred Week: {week_value}")
+                    week_display = week_value
+                    desc_parts.append(
+                        f"Preferred Week & Time: {week_display}"
+                        f"{f' | Time: {preferred_time_text}' if preferred_time_text else ''}"
+                    )
+                else:
+                    # If week formatting succeeded, append with time if available
+                    desc_parts.append(
+                        f"Preferred Week: {formatted_week}"
+                        f"{f' | Time: {preferred_time_text}' if preferred_time_text else ''}"
+                    )
             elif custom_date_val and custom_date_val.strip() and custom_date_val.lower() not in ["not specified", "none", "na", ""]:
-                desc_parts.append(f"Preferred Date: {custom_date_val}")
-            if appointment_details.get("selected_time"):
-                # Format time value - if it's a raw time like "1630", format as "16:30"
-                time_value = appointment_details['selected_time']
-                try:
-                    # Check if it's a raw time format (4 digits like "1630" or "1030")
-                    if isinstance(time_value, str) and time_value.replace(":", "").isdigit():
-                        time_clean = time_value.replace(":", "").strip()
-                        if len(time_clean) == 4 and time_clean.isdigit():
-                            # Format as HH:MM
-                            formatted_time = f"{time_clean[:2]}:{time_clean[2:]}"
-                            desc_parts.append(f"Preferred Time: {formatted_time}")
-                        else:
-                            desc_parts.append(f"Preferred Time: {time_value}")
-                    else:
-                        desc_parts.append(f"Preferred Time: {time_value}")
-                except Exception:
-                    desc_parts.append(f"Preferred Time: {time_value}")
+                desc_parts.append(
+                    f"Preferred Date: {custom_date_val}"
+                    f"{f' | Time: {preferred_time_text}' if preferred_time_text else ''}"
+                )
+            elif preferred_time_text:
+                desc_parts.append(f"Preferred Time: {preferred_time_text}")
             # Language only for lead appointment flow
             if flow_type == "lead_appointment_flow":
                 try:
@@ -179,10 +202,14 @@ class ZohoLeadService:
                 concerns_value = (
                     appointment_details.get("zoho_mapped_concern")
                     or appointment_details.get("selected_concern")
+                    or appointment_details.get("treatment")
+                    or appointment_details.get("selected_treatment")
                 )
                 # Fill Zoho's Additional_Concerns with the user's originally selected treatment/concern
                 # Zoho expects this to be a JSON array; coerce to [str] when a single value is present
                 _addl = appointment_details.get("selected_concern")
+                if not _addl:
+                    _addl = appointment_details.get("treatment") or appointment_details.get("selected_treatment")
                 if isinstance(_addl, list):
                     additional_concerns_value = [str(x) for x in _addl if isinstance(x, (str, int, float)) and str(x).strip()]
                     if not additional_concerns_value:
@@ -883,6 +910,7 @@ async def create_lead_for_appointment(
                 _clean_unknown(appt_state_data.get("selected_city")) or
                 _clean_unknown(appointment_details.get("selected_city") if appointment_details else None)
             )
+            print(f"🏙️ [LEAD APPOINTMENT FLOW] City sources -> session:{session_data.get('selected_city')} appt_state:{appt_state_data.get('selected_city')} appt_details:{(appointment_details or {}).get('selected_city')}")
             
             # CRITICAL: Get clinic from multiple sources to ensure it's always captured
             clinic = (
@@ -890,6 +918,7 @@ async def create_lead_for_appointment(
                 _clean_unknown(appt_state_data.get("selected_clinic")) or
                 _clean_unknown(appointment_details.get("selected_clinic") if appointment_details else None)
             )
+            print(f"🏥 [LEAD APPOINTMENT FLOW] Clinic sources -> session:{session_data.get('selected_clinic')} appt_state:{appt_state_data.get('selected_clinic')} appt_details:{(appointment_details or {}).get('selected_clinic')}")
 
             # Hard fallback to customer profile when session data is missing (helps follow-up/returning users)
             if not city:
@@ -900,6 +929,8 @@ async def create_lead_for_appointment(
                     or getattr(customer, "branch", None)
                     or getattr(customer, "preferred_clinic", None)
                 )
+            print(f"🏙️ [LEAD APPOINTMENT FLOW] City after profile fallback: {city}")
+            print(f"🏥 [LEAD APPOINTMENT FLOW] Clinic after profile fallback: {clinic}")
             
             # Optional: location captured from prefilled deep link (e.g., "Jubilee Hills")
             location = (
@@ -950,6 +981,14 @@ async def create_lead_for_appointment(
                 if not selected_concern:
                     from controllers.web_socket import lead_appointment_state  # type: ignore
                     selected_concern = (lead_appointment_state.get(wa_id) or {}).get("selected_concern")
+                # Fallback to customer profile if no session/state concern
+                if not selected_concern:
+                    selected_concern = (
+                        getattr(customer, "concern", None)
+                        or getattr(customer, "primary_concern", None)
+                        or getattr(customer, "sub_concern", None)
+                        or getattr(customer, "treatment", None)
+                    )
                 
                 # If found, normalize to canonical label then look up Zoho mapping
                 if selected_concern:
@@ -1021,7 +1060,22 @@ async def create_lead_for_appointment(
         # Try to get selected concern from appointment_details if not found in state
         if not selected_concern and appointment_details:
             selected_concern = appointment_details.get("selected_concern")
+            if not selected_concern:
+                selected_concern = (
+                    appointment_details.get("treatment")
+                    or appointment_details.get("selected_treatment")
+                    or appointment_details.get("primary_concern")
+                    or appointment_details.get("concern")
+                )
             if selected_concern:
+                print(
+                    f"🎯 [LEAD APPOINTMENT FLOW] Concern sources -> "
+                    f"session_state:{(lead_appointment_state.get(wa_id) if 'lead_appointment_state' in globals() else {}).get('selected_concern') if 'lead_appointment_state' in globals() else None} "
+                    f"appt_state:{(appointment_state.get(wa_id) if 'appointment_state' in globals() else {}).get('selected_concern') if 'appointment_state' in globals() else None} "
+                    f"appt_details:{(appointment_details or {}).get('selected_concern')} "
+                    f"fallback_profile:{getattr(customer, 'concern', None) or getattr(customer, 'primary_concern', None) or getattr(customer, 'sub_concern', None) or getattr(customer, 'treatment', None)} "
+                    f"final_selected:{selected_concern}"
+                )
                 print(f"🎯 [LEAD APPOINTMENT FLOW] Got concern from appointment_details: {selected_concern}")
                 try:
                     from services.zoho_mapping_service import get_zoho_name
