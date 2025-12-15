@@ -746,11 +746,14 @@ async def create_lead_for_appointment(
         except Exception:
             _temp_session_lead_source = None
 
-        # Determine expected Lead Source
+        # Determine expected Lead Source and desired Sub Source / Lead Status
         if flow_type == "treatment_flow":
             expected_lead_source = "Business Listing"
+            desired_sub_source = "WhatsApp Dial"
         else:
             expected_lead_source = _temp_session_lead_source if _temp_session_lead_source and _temp_session_lead_source.strip() else "Facebook"
+            desired_sub_source = (appointment_details or {}).get("sub_source") if isinstance(appointment_details, dict) else None
+        desired_lead_status = lead_status
 
         # Duplication check: one lead per day per Lead Source (unless explicitly allowed)
         allow_dup = bool(appointment_details.get("allow_duplicate_same_day")) if isinstance(appointment_details, dict) else False
@@ -806,38 +809,65 @@ async def create_lead_for_appointment(
                 )
                 
                 if existing_lead_same_source:
-                    # Log concern snapshot even when we short-circuit on duplicates (helps debugging missing concerns)
-                    profile_concern = (
-                        getattr(customer, "concern", None)
-                        or getattr(customer, "primary_concern", None)
-                        or getattr(customer, "sub_concern", None)
-                        or getattr(customer, "treatment", None)
-                    )
-                    print(
-                        f"🎯 [LEAD APPOINTMENT FLOW] Concern snapshot before duplicate skip -> "
-                        f"session:{(lead_appointment_state.get(wa_id) if 'lead_appointment_state' in globals() else {}).get('selected_concern') if 'lead_appointment_state' in globals() else None} "
-                        f"appt_state:{(appointment_state.get(wa_id) if 'appointment_state' in globals() else {}).get('selected_concern') if 'appointment_state' in globals() else None} "
-                        f"appt_details:{(appointment_details or {}).get('selected_concern') if appointment_details else None} "
-                        f"profile:{profile_concern}"
-                    )
-                    print(
-                        f"✅ [LEAD APPOINTMENT FLOW] Duplicate prevented: existing '{expected_lead_source}' lead found "
-                        f"for {wa_id} (phone={phone_number}) on same day (lead_id={existing_lead_same_source.zoho_lead_id})"
-                    )
+                    # OPTIONAL: allow a new lead when Sub Source / Lead Status differ meaningfully
                     try:
-                        from utils.flow_log import log_flow_event  # type: ignore
-                        log_flow_event(
-                            db,
-                            flow_type="lead_appointment",
-                            step="result",
-                            status_code=200,
-                            wa_id=wa_id,
-                            name=getattr(customer, 'name', None) or '',
-                            description=f"Duplicate avoided: existing {expected_lead_source} lead {existing_lead_same_source.zoho_lead_id}",
-                        )
+                        existing_status = getattr(existing_lead_same_source, "lead_status", None)
+                        existing_sub_source = getattr(existing_lead_same_source, "sub_source", None)
                     except Exception:
-                        pass
-                    return {"success": True, "duplicate": True, "lead_id": existing_lead_same_source.zoho_lead_id}
+                        existing_status = None
+                        existing_sub_source = None
+
+                    allow_new_due_to_status = (
+                        desired_lead_status
+                        and existing_status
+                        and str(desired_lead_status).upper() != str(existing_status).upper()
+                    )
+                    allow_new_due_to_sub_source = (
+                        desired_sub_source
+                        and existing_sub_source
+                        and str(desired_sub_source).strip().lower() != str(existing_sub_source).strip().lower()
+                    )
+
+                    if allow_new_due_to_status or allow_new_due_to_sub_source:
+                        print(
+                            f"🔁 [LEAD APPOINTMENT FLOW] Existing lead found but "
+                            f"Lead Status/Sub Source differ (existing_status={existing_status}, existing_sub_source={existing_sub_source}, "
+                            f"desired_status={desired_lead_status}, desired_sub_source={desired_sub_source}). "
+                            f"Proceeding to create a new lead."
+                        )
+                    else:
+                        # Log concern snapshot even when we short-circuit on duplicates (helps debugging missing concerns)
+                        profile_concern = (
+                            getattr(customer, "concern", None)
+                            or getattr(customer, "primary_concern", None)
+                            or getattr(customer, "sub_concern", None)
+                            or getattr(customer, "treatment", None)
+                        )
+                        print(
+                            f"🎯 [LEAD APPOINTMENT FLOW] Concern snapshot before duplicate skip -> "
+                            f"session:{(lead_appointment_state.get(wa_id) if 'lead_appointment_state' in globals() else {}).get('selected_concern') if 'lead_appointment_state' in globals() else None} "
+                            f"appt_state:{(appointment_state.get(wa_id) if 'appointment_state' in globals() else {}).get('selected_concern') if 'appointment_state' in globals() else None} "
+                            f"appt_details:{(appointment_details or {}).get('selected_concern') if appointment_details else None} "
+                            f"profile:{profile_concern}"
+                        )
+                        print(
+                            f"✅ [LEAD APPOINTMENT FLOW] Duplicate prevented: existing '{expected_lead_source}' lead found "
+                            f"for {wa_id} (phone={phone_number}) on same day (lead_id={existing_lead_same_source.zoho_lead_id})"
+                        )
+                        try:
+                            from utils.flow_log import log_flow_event  # type: ignore
+                            log_flow_event(
+                                db,
+                                flow_type="lead_appointment",
+                                step="result",
+                                status_code=200,
+                                wa_id=wa_id,
+                                name=getattr(customer, 'name', None) or '',
+                                description=f"Duplicate avoided: existing {expected_lead_source} lead {existing_lead_same_source.zoho_lead_id}",
+                            )
+                        except Exception:
+                            pass
+                        return {"success": True, "duplicate": True, "lead_id": existing_lead_same_source.zoho_lead_id}
                 else:
                     print(
                         f"🔍 [LEAD APPOINTMENT FLOW] No '{expected_lead_source}' lead found in DB for {wa_id} "
