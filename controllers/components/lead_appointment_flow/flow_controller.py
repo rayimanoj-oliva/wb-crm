@@ -455,6 +455,18 @@ async def handle_text_message(
                 lead_appointment_state[wa_id]["selected_concern"] = matched_concern
                 lead_appointment_state[wa_id]["zoho_mapped_concern"] = matched_concern
                 print(f"[lead_appointment_flow] DEBUG - Mapped concern from starting point: {matched_concern}")
+
+                # Also mirror concern into appointment_state so it survives Not Now → Book Appointment flows
+                try:
+                    from controllers.web_socket import appointment_state  # type: ignore
+                    appt_st = appointment_state.get(wa_id) or {}
+                    # Only set if not already present, to avoid overwriting treatment-flow concerns
+                    if not appt_st.get("selected_concern"):
+                        appt_st["selected_concern"] = matched_concern
+                        appointment_state[wa_id] = appt_st
+                        print(f"[lead_appointment_flow] DEBUG - Mirrored starting concern into appointment_state: {matched_concern}")
+                except Exception as mirror_e:
+                    print(f"[lead_appointment_flow] WARNING - Could not mirror starting concern into appointment_state: {mirror_e}")
                 
                 # Log last step reached: concern_list (concern is set from ad message at entry)
                 try:
@@ -1145,7 +1157,7 @@ async def handle_no_callback_not_now(
             st = appointment_state.get(wa_id) or {}
             if not selected_concern_fallback:
                 selected_concern_fallback = st.get("selected_concern")
-            # Fallback city/clinic/location/time from appointment_state for termination leads
+            # Fallback city/clinic/location/week/time from appointment_state for termination leads
             if st.get("selected_city") and not appointment_details.get("selected_city"):
                 appointment_details["selected_city"] = st.get("selected_city")
             if st.get("selected_clinic") and not appointment_details.get("selected_clinic"):
@@ -1154,6 +1166,8 @@ async def handle_no_callback_not_now(
                 appointment_details["selected_location"] = st.get("selected_location")
             if st.get("selected_time") and not appointment_details.get("selected_time"):
                 appointment_details["selected_time"] = st.get("selected_time")
+            if st.get("selected_week") and not appointment_details.get("selected_week"):
+                appointment_details["selected_week"] = st.get("selected_week")
 
             # Only derive phone_id_hint from appointment_state if we don't already have one
             if not phone_id_hint:

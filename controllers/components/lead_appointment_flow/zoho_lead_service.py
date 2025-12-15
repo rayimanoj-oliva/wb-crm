@@ -1024,21 +1024,55 @@ async def create_lead_for_appointment(
                 if location and not appointment_details.get("selected_location"):
                     appointment_details["selected_location"] = location
             
+            # Collect preferred week/date from ALL sources (session, appointment_state, appointment_details)
+            selected_week_any = (
+                session_data.get("selected_week")
+                or appt_state_data.get("selected_week")
+                or (appointment_details.get("selected_week") if appointment_details else None)
+            )
+            custom_date_any = (
+                session_data.get("custom_date")
+                or appt_state_data.get("custom_date")
+                or (appointment_details.get("custom_date") if appointment_details else None)
+            )
+            appointment_date_any = (
+                session_data.get("appointment_date")
+                or appt_state_data.get("appointment_date")
+                or (appointment_details.get("appointment_date") if appointment_details else None)
+            )
+
             # Try multiple date fields - prioritize selected_week over specific dates
             appointment_date = (
-                session_data.get("selected_week") or  # New: preferred week selection
-                session_data.get("custom_date") or 
-                session_data.get("selected_date") or 
-                session_data.get("appointment_date") or 
-                "Not specified"
+                selected_week_any  # Preferred week selection (if any)
+                or custom_date_any
+                or appointment_date_any
+                or session_data.get("selected_date")
+                or "Not specified"
             )
             
+            # Collect preferred time from ALL sources
+            selected_time_any = (
+                session_data.get("selected_time")
+                or appt_state_data.get("selected_time")
+                or (appointment_details.get("selected_time") if appointment_details else None)
+            )
+            custom_time_any = (
+                session_data.get("custom_time")
+                or appt_state_data.get("custom_time")
+                or (appointment_details.get("custom_time") if appointment_details else None)
+            )
+            appointment_time_any = (
+                session_data.get("appointment_time")
+                or appt_state_data.get("appointment_time")
+                or (appointment_details.get("appointment_time") if appointment_details else None)
+            )
+
             # Try multiple time fields
             appointment_time = (
-                session_data.get("selected_time") or 
-                session_data.get("custom_time") or 
-                session_data.get("appointment_time") or 
-                "Not specified"
+                selected_time_any
+                or custom_time_any
+                or appointment_time_any
+                or "Not specified"
             )
             
             # Get selected concern from appointment state and map to Zoho name
@@ -1219,12 +1253,26 @@ async def create_lead_for_appointment(
                 f"🧾 [LEAD APPOINTMENT FLOW] Zoho payload preview -> "
                 f"concern={selected_concern} | mapped_concern={zoho_mapped_concern} | "
                 f"city={final_city} | clinic={final_clinic} | location={final_location} | "
-                f"week={session_data.get('selected_week')} | date={appointment_date} | time={appointment_time} | "
+                f"week={appointment_details.get('selected_week') if appointment_details else None} | date={appointment_date} | time={appointment_time} | "
                 f"language={language_val} | lead_source={lead_source_val} | sub_source={sub_source_val}"
             )
         except Exception as e:
             print(f"⚠️ [LEAD APPOINTMENT FLOW] Could not print payload preview: {e}")
         
+        # High-level log for every lead creation attempt in lead appointment flow
+        try:
+            print(
+                f"📊 [LEAD APPOINTMENT FLOW] Creating Zoho lead → "
+                f"status={lead_status}, wa_id={wa_id}, "
+                f"city={final_city}, clinic={final_clinic}, "
+                f"week={appointment_details.get('selected_week') if appointment_details else None}, "
+                f"time={appointment_time}, "
+                f"concern={selected_concern}, mapped_concern={zoho_mapped_concern}, "
+                f"lead_source={lead_source_val}, sub_source={sub_source_val}"
+            )
+        except Exception as _log_e:
+            print(f"⚠️ [LEAD APPOINTMENT FLOW] Could not log high-level lead creation summary: {_log_e}")
+
         result = zoho_lead_service.create_lead(
             first_name=first_name,
             last_name=last_name,
