@@ -1109,6 +1109,7 @@ async def handle_no_callback_not_now(
         appointment_details = {}
         display_number = os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376")
         phone_id_hint = None
+        selected_concern_fallback = None
 
         try:
             from controllers.web_socket import lead_appointment_state
@@ -1120,6 +1121,11 @@ async def handle_no_callback_not_now(
                 lead_appointment_state[wa_id] = {}
             lead_appointment_state[wa_id]["sub_source"] = "Whatsapp No Dial"
             print(f"[lead_appointment_flow] DEBUG - Set sub_source to 'Whatsapp No Dial' for Not right now")
+            # Capture concern from session if present
+            selected_concern_fallback = (
+                appointment_details.get("selected_concern")
+                or lead_appointment_state[wa_id].get("selected_concern")
+            )
             lead_phone_id = appointment_details.get("lead_phone_id") or appointment_details.get("phone_id")
             if lead_phone_id:
                 cfg = get_number_config(str(lead_phone_id))
@@ -1135,6 +1141,8 @@ async def handle_no_callback_not_now(
             try:
                 from controllers.web_socket import appointment_state
                 st = appointment_state.get(wa_id) or {}
+                if not selected_concern_fallback:
+                    selected_concern_fallback = st.get("selected_concern")
                 lead_phone_id = st.get("lead_phone_id")
                 if lead_phone_id:
                     cfg = get_number_config(str(lead_phone_id))
@@ -1143,6 +1151,17 @@ async def handle_no_callback_not_now(
                         phone_id_hint = str(lead_phone_id)
             except Exception:
                 pass
+
+        # Ensure concern is present before termination lead creation
+        try:
+            if selected_concern_fallback and not appointment_details.get("selected_concern"):
+                appointment_details["selected_concern"] = selected_concern_fallback
+            if appointment_details.get("selected_concern") and not appointment_details.get("zoho_mapped_concern"):
+                from services.zoho_mapping_service import get_zoho_name
+                appointment_details["zoho_mapped_concern"] = get_zoho_name(db, appointment_details["selected_concern"])
+                print(f"[lead_appointment_flow] DEBUG - Applied concern fallback for termination: {appointment_details['selected_concern']} -> {appointment_details.get('zoho_mapped_concern')}")
+        except Exception as e:
+            print(f"[lead_appointment_flow] WARNING - Could not apply concern fallback for termination: {e}")
 
         # Send interactive "Not Now" follow-up with button to re-init flow
         try:
