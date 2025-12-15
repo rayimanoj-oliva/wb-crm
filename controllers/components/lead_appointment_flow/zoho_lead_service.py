@@ -198,6 +198,7 @@ class ZohoLeadService:
         phone_2 = None
         try:
             if appointment_details:
+                # Primary concern mapping
                 concerns_value = (
                     appointment_details.get("zoho_mapped_concern")
                     or appointment_details.get("selected_concern")
@@ -210,24 +211,40 @@ class ZohoLeadService:
                 if not _addl:
                     _addl = appointment_details.get("treatment") or appointment_details.get("selected_treatment")
                 if isinstance(_addl, list):
-                    additional_concerns_value = [str(x) for x in _addl if isinstance(x, (str, int, float)) and str(x).strip()]
+                    additional_concerns_value = [
+                        str(x)
+                        for x in _addl
+                        if isinstance(x, (str, int, float)) and str(x).strip()
+                    ]
                     if not additional_concerns_value:
                         additional_concerns_value = None
                 elif isinstance(_addl, (str, int, float)) and str(_addl).strip():
                     additional_concerns_value = [str(_addl).strip()]
                 else:
                     additional_concerns_value = None
+
                 # Region should reflect the clinic selected by the customer
                 # Prioritize selected_clinic over selected_location for Clinic_Branch
                 clinic_branch_region = (
+                    appointment_details.get("selected_clinic")
+                    or appointment_details.get("selected_location")
+                )
 
+                # Primary and secondary phones
+                corrected_phone = appointment_details.get("corrected_phone")
+                wa_phone = appointment_details.get("wa_phone")
+                # If user provided a corrected phone, make it Phone_1 but keep WA as primary Phone/Mobile
+                if isinstance(corrected_phone, str) and corrected_phone.strip():
+                    phone_1 = corrected_phone.strip()  # user-provided number
+                    phone_2 = contact_number          # WA ID goes to Phone_2
                     print(f"🔍 [ZOHO LEAD PREP] Set phone_1 (user provided): {phone_1}")
                     print(f"🔍 [ZOHO LEAD PREP] Set phone_2 (WA ID): {phone_2}")
                 else:
-                    # Default: WA number is primary
+                    # Default: WA number is primary; Phone_1 can mirror wa_phone if present
                     if isinstance(wa_phone, str) and wa_phone.strip():
                         phone_1 = wa_phone.strip()
                         print(f"🔍 [ZOHO LEAD PREP] Set phone_1 (WA default): {phone_1}")
+
                 # Treat placeholder/unknown values as absent to avoid sending "Unknown"
                 if isinstance(clinic_branch_region, str) and clinic_branch_region.strip().lower() in {
                     "unknown", "not specified", "na", "n/a", "-", "none", "null", ""
