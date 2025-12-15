@@ -1077,21 +1077,38 @@ async def create_lead_for_appointment(
             
             # Get selected concern from appointment state and map to Zoho name
             try:
-                # Try to get from appointment_state (treatment flow) or lead_appointment_state
+                # Try to get from appointment_state (treatment/referrer flow) or lead_appointment_state
                 concern_data = appointment_state.get(wa_id, {})
                 selected_concern = concern_data.get("selected_concern")
                 if not selected_concern:
                     from controllers.web_socket import lead_appointment_state  # type: ignore
                     selected_concern = (lead_appointment_state.get(wa_id) or {}).get("selected_concern")
-                # Fallback to customer profile if no session/state concern
+
+                # Fallbacks: customer profile and referrer treatment fields
                 if not selected_concern:
                     selected_concern = (
                         getattr(customer, "concern", None)
                         or getattr(customer, "primary_concern", None)
                         or getattr(customer, "sub_concern", None)
                         or getattr(customer, "treatment", None)
+                        or concern_data.get("treatment_type")
+                        or concern_data.get("treatment")
                     )
                 
+                # Filter out clearly invalid "concerns" that are actually time slots or week labels
+                if selected_concern:
+                    try:
+                        _sc_lower = str(selected_concern).lower()
+                        # Time slot labels like "Morning (9–11 AM)", "Afternoon (12-4 PM)", "Evening (5-7 PM)"
+                        if any(kw in _sc_lower for kw in ["morning (", "afternoon (", "evening ("]):
+                            selected_concern = None
+                        # Week/date-style labels like "jan 5–11", "dec 22–28"
+                        months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+                        if selected_concern and any(m in _sc_lower for m in months) and any(ch.isdigit() for ch in _sc_lower):
+                            selected_concern = None
+                    except Exception:
+                        pass
+
                 # If found, normalize to canonical label then look up Zoho mapping
                 if selected_concern:
                     try:
