@@ -230,12 +230,26 @@ async def handle_clinic_location(
     # Extract clinic name from ID
     clinic_name = "Unknown Clinic"
     try:
-        # Parse clinic ID to get readable name
-        parts = (reply_id or "").split("_")
-        if len(parts) >= 3:
-            clinic_name = " ".join(parts[2:]).title()
+        # First try explicit mappings for full, user-friendly clinic names
+        normalized_id = (reply_id or "").strip().lower()
+        CLINIC_NAME_MAP = {
+            # Hyderabad clinics – use full, user-friendly names
+            "clinic_hyderabad_jubilee": "Jubilee Hills",
+            "clinic_hyderabad_jubilee_hills": "Jubilee Hills",
+            "clinic_hyderabad_banjara": "Banjara Hills",
+            "clinic_hyderabad_banjara_hills": "Banjara Hills",
+            # Add more explicit mappings here as needed for other clinics
+        }
+        mapped = CLINIC_NAME_MAP.get(normalized_id)
+        if mapped:
+            clinic_name = mapped
         else:
-            clinic_name = reply_id.replace("clinic_", "").replace("_", " ").title()
+            # Fallback: parse clinic ID to get readable name
+            parts = (reply_id or "").split("_")
+            if len(parts) >= 3:
+                clinic_name = " ".join(parts[2:]).title()
+            else:
+                clinic_name = reply_id.replace("clinic_", "").replace("_", " ").title()
     except Exception:
         clinic_name = reply_id or "Unknown Clinic"
     
