@@ -838,6 +838,26 @@ async def create_lead_for_appointment(
                             f"appt_details:{(appointment_details or {}).get('selected_concern') if appointment_details else None} "
                             f"profile:{profile_concern}"
                         )
+                        # Also log a preview of the fields that WOULD have been sent to Zoho
+                        try:
+                            appt = appointment_details or {}
+                            preview_city = appt.get("selected_city")
+                            preview_clinic = appt.get("selected_clinic") or appt.get("selected_location")
+                            preview_week = appt.get("selected_week")
+                            preview_time = appt.get("selected_time")
+                            preview_concern = appt.get("selected_concern")
+                            preview_mapped_concern = appt.get("zoho_mapped_concern")
+                            preview_language = appt.get("language")
+                            print(
+                                f"🧾 [LEAD DUPLICATE PREVIEW] Would push → "
+                                f"city={preview_city}, clinic={preview_clinic}, "
+                                f"week={preview_week}, time={preview_time}, "
+                                f"concern={preview_concern}, mapped_concern={preview_mapped_concern}, "
+                                f"lead_source={expected_lead_source}, sub_source={desired_sub_source}, "
+                                f"language={preview_language}"
+                            )
+                        except Exception as _log_e:
+                            print(f"⚠️ [LEAD DUPLICATE PREVIEW] Could not log payload preview: {_log_e}")
                         print(
                             f"✅ [LEAD APPOINTMENT FLOW] Duplicate prevented: existing '{expected_lead_source}' lead found "
                             f"for {wa_id} (phone={phone_number}) on same day (lead_id={existing_lead_same_source.zoho_lead_id})"
