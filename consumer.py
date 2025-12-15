@@ -572,35 +572,9 @@ def callback(ch, method, properties, body):
                     # Get business number (from_wa_id) - default to env or common number
                     from_wa_id = os.getenv("WHATSAPP_DISPLAY_NUMBER", "917729992376")
                     
-                    # Format template message body for display
+                    # Format template message body for display - show only template name
                     template_name = campaign.content.get("name", "Template") if isinstance(campaign.content, dict) else "Template"
-                    template_body = f"📋 Template: {template_name}"
-                    
-                    # Try to extract body text from template components for better display
-                    if isinstance(campaign.content, dict):
-                        components = campaign.content.get("components", [])
-                        for comp in components:
-                            if comp.get("type", "").upper() == "BODY":
-                                body_text = comp.get("text", "")
-                                if body_text:
-                                    # Replace placeholders with actual values if available
-                                    if target_type == "recipient" and hasattr(target, 'params') and target.params:
-                                        params = target.params if isinstance(target.params, dict) else {}
-                                        body_params = params.get("body_params", [])
-                                        if body_params:
-                                            # Simple placeholder replacement
-                                            formatted_body = body_text
-                                            for i, param in enumerate(body_params):
-                                                placeholder = f"{{{i+1}}}"
-                                                formatted_body = formatted_body.replace(placeholder, str(param), 1)
-                                            if formatted_body != body_text:
-                                                template_body = formatted_body
-                                                break
-                                    # If no params, show template name with body preview
-                                    if len(body_text) > 100:
-                                        body_text = body_text[:100] + "..."
-                                    template_body = f"📋 {template_name}\n\n{body_text}"
-                                    break
+                    template_body = f"📋 {template_name}"
                     
                     # Create message entry
                     message_data = MessageCreate(

@@ -104,6 +104,8 @@ class ZohoLeadService:
                 desc_parts.append(f"City: {appointment_details['selected_city']}")
             if appointment_details.get("selected_clinic"):
                 desc_parts.append(f"Clinic: {appointment_details['selected_clinic']}")
+            if appointment_details.get("selected_concern"):
+                desc_parts.append(f"Concern: {appointment_details['selected_concern']}")
             # Prioritize selected_week over custom_date for date/week information
             selected_week_val = appointment_details.get("selected_week")
             custom_date_val = appointment_details.get("custom_date")
@@ -888,6 +890,16 @@ async def create_lead_for_appointment(
                 _clean_unknown(appt_state_data.get("selected_clinic")) or
                 _clean_unknown(appointment_details.get("selected_clinic") if appointment_details else None)
             )
+
+            # Hard fallback to customer profile when session data is missing (helps follow-up/returning users)
+            if not city:
+                city = _clean_unknown(getattr(customer, "city", None))
+            if not clinic:
+                clinic = _clean_unknown(
+                    getattr(customer, "clinic", None)
+                    or getattr(customer, "branch", None)
+                    or getattr(customer, "preferred_clinic", None)
+                )
             
             # Optional: location captured from prefilled deep link (e.g., "Jubilee Hills")
             location = (
