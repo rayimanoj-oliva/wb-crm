@@ -237,12 +237,24 @@ async def handle_welcome_response(
         # User wants to book - initialize flow state and proceed to city selection
         try:
             from controllers.web_socket import lead_appointment_state
+            from controllers.web_socket import appointment_state
+            from services.zoho_mapping_service import get_zoho_name
             if wa_id not in lead_appointment_state:
                 lead_appointment_state[wa_id] = {}
             lead_appointment_state[wa_id]["flow_context"] = "lead_appointment"
             # Set default Zoho fields for lead appointment flow
             lead_appointment_state[wa_id]["lead_source"] = "Facebook"
             lead_appointment_state[wa_id]["language"] = "English"
+            # Try to carry forward previously selected concern from appointment_state (treatment flow/referrer)
+            try:
+                st = appointment_state.get(wa_id) or {}
+                prev_concern = st.get("selected_concern") or st.get("treatment_type") or st.get("treatment")
+                if prev_concern:
+                    lead_appointment_state[wa_id]["selected_concern"] = prev_concern
+                    lead_appointment_state[wa_id]["zoho_mapped_concern"] = get_zoho_name(db, prev_concern)
+                    print(f"[lead_appointment_flow] DEBUG - Carried forward concern into lead flow: {prev_concern}")
+            except Exception as ce:
+                print(f"[lead_appointment_flow] WARNING - Could not carry forward concern into lead flow: {ce}")
             print(f"[lead_appointment_flow] DEBUG - Initialized lead appointment state for {wa_id}")
         except Exception as e:
             print(f"[lead_appointment_flow] WARNING - Could not initialize lead appointment state: {e}")
@@ -259,6 +271,8 @@ async def handle_welcome_response(
         # User wants to book after "Not Now" - initialize flow state and proceed to city selection
         try:
             from controllers.web_socket import lead_appointment_state
+            from controllers.web_socket import appointment_state
+            from services.zoho_mapping_service import get_zoho_name
             if wa_id not in lead_appointment_state:
                 lead_appointment_state[wa_id] = {}
             lead_appointment_state[wa_id]["flow_context"] = "lead_appointment"
@@ -267,6 +281,16 @@ async def handle_welcome_response(
             # Set default Zoho fields for lead appointment flow
             lead_appointment_state[wa_id]["lead_source"] = "Facebook"
             lead_appointment_state[wa_id]["language"] = "English"
+            # Carry forward concern from previous appointment_state (e.g., from initial ad/referrer)
+            try:
+                st = appointment_state.get(wa_id) or {}
+                prev_concern = st.get("selected_concern") or st.get("treatment_type") or st.get("treatment")
+                if prev_concern:
+                    lead_appointment_state[wa_id]["selected_concern"] = prev_concern
+                    lead_appointment_state[wa_id]["zoho_mapped_concern"] = get_zoho_name(db, prev_concern)
+                    print(f"[lead_appointment_flow] DEBUG - Carried forward concern into lead flow after Not Now: {prev_concern}")
+            except Exception as ce:
+                print(f"[lead_appointment_flow] WARNING - Could not carry forward concern after Not Now: {ce}")
             print(f"[lead_appointment_flow] DEBUG - Initialized lead appointment state for {wa_id}, cleared 'Not Now' follow-up sequence")
         except Exception as e:
             print(f"[lead_appointment_flow] WARNING - Could not initialize lead appointment state: {e}")
