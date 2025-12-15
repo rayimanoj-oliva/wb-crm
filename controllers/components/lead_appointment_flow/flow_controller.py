@@ -1136,28 +1136,32 @@ async def handle_no_callback_not_now(
         except Exception as e:
             print(f"[lead_appointment_flow] WARNING - Could not get appointment details: {e}")
 
-        # Also try appointment_state
-        if not phone_id_hint:
-            try:
-                from controllers.web_socket import appointment_state
-                st = appointment_state.get(wa_id) or {}
-                if not selected_concern_fallback:
-                    selected_concern_fallback = st.get("selected_concern")
-                # Fallback city/clinic/location from appointment_state for termination leads
-                if st.get("selected_city") and not appointment_details.get("selected_city"):
-                    appointment_details["selected_city"] = st.get("selected_city")
-                if st.get("selected_clinic") and not appointment_details.get("selected_clinic"):
-                    appointment_details["selected_clinic"] = st.get("selected_clinic")
-                if st.get("selected_location") and not appointment_details.get("selected_location"):
-                    appointment_details["selected_location"] = st.get("selected_location")
+        # Also try appointment_state – ALWAYS merge important fields into appointment_details
+        try:
+            from controllers.web_socket import appointment_state
+            st = appointment_state.get(wa_id) or {}
+            if not selected_concern_fallback:
+                selected_concern_fallback = st.get("selected_concern")
+            # Fallback city/clinic/location/time from appointment_state for termination leads
+            if st.get("selected_city") and not appointment_details.get("selected_city"):
+                appointment_details["selected_city"] = st.get("selected_city")
+            if st.get("selected_clinic") and not appointment_details.get("selected_clinic"):
+                appointment_details["selected_clinic"] = st.get("selected_clinic")
+            if st.get("selected_location") and not appointment_details.get("selected_location"):
+                appointment_details["selected_location"] = st.get("selected_location")
+            if st.get("selected_time") and not appointment_details.get("selected_time"):
+                appointment_details["selected_time"] = st.get("selected_time")
+
+            # Only derive phone_id_hint from appointment_state if we don't already have one
+            if not phone_id_hint:
                 lead_phone_id = st.get("lead_phone_id")
                 if lead_phone_id:
                     cfg = get_number_config(str(lead_phone_id))
                     if cfg:
                         display_number = re.sub(r"\D", "", cfg.get("name", "")) or display_number
                         phone_id_hint = str(lead_phone_id)
-            except Exception:
-                pass
+        except Exception:
+            pass
 
         # Ensure concern is present before termination lead creation
         try:
