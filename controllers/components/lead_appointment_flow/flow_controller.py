@@ -1143,6 +1143,13 @@ async def handle_no_callback_not_now(
                 st = appointment_state.get(wa_id) or {}
                 if not selected_concern_fallback:
                     selected_concern_fallback = st.get("selected_concern")
+                # Fallback city/clinic/location from appointment_state for termination leads
+                if st.get("selected_city") and not appointment_details.get("selected_city"):
+                    appointment_details["selected_city"] = st.get("selected_city")
+                if st.get("selected_clinic") and not appointment_details.get("selected_clinic"):
+                    appointment_details["selected_clinic"] = st.get("selected_clinic")
+                if st.get("selected_location") and not appointment_details.get("selected_location"):
+                    appointment_details["selected_location"] = st.get("selected_location")
                 lead_phone_id = st.get("lead_phone_id")
                 if lead_phone_id:
                     cfg = get_number_config(str(lead_phone_id))

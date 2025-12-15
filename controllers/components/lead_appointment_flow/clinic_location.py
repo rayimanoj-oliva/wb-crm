@@ -251,6 +251,8 @@ async def handle_clinic_location(
         # Also persist in appointment_state as a fallback source
         st = appointment_state.get(wa_id) or {}
         st["selected_location"] = clinic_name
+        # Mirror selected clinic for clarity
+        st["selected_clinic"] = clinic_name
         appointment_state[wa_id] = st
         print(f"[lead_appointment_flow] DEBUG - Stored clinic selection: {clinic_name}")
     except Exception as e:
