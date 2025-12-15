@@ -220,19 +220,7 @@ class ZohoLeadService:
                 # Region should reflect the clinic selected by the customer
                 # Prioritize selected_clinic over selected_location for Clinic_Branch
                 clinic_branch_region = (
-                    appointment_details.get("selected_clinic") or 
-                    appointment_details.get("selected_location")
-                )
-                # Primary and secondary phones
-                corrected_phone = appointment_details.get("corrected_phone")
-                wa_phone = appointment_details.get("wa_phone")
-                print(f"🔍 [ZOHO LEAD PREP] corrected_phone: {corrected_phone}")
-                print(f"🔍 [ZOHO LEAD PREP] wa_phone: {wa_phone}")
-                # If user provided a corrected phone (after saying No), make it Phone_1 but keep WA as primary Phone/Mobile
-                if isinstance(corrected_phone, str) and corrected_phone.strip():
-                    phone_1 = corrected_phone.strip()  # User provided number goes to Phone_1
-                    # Phone_2 should be the actual WA ID (contact_number), not wa_phone from customer table
-                    phone_2 = contact_number  # WA ID goes to Phone_2
+
                     print(f"🔍 [ZOHO LEAD PREP] Set phone_1 (user provided): {phone_1}")
                     print(f"🔍 [ZOHO LEAD PREP] Set phone_2 (WA ID): {phone_2}")
                 else:

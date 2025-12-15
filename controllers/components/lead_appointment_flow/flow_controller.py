@@ -637,16 +637,19 @@ async def handle_interactive_response(
                     if wa_id not in lead_appointment_state:
                         lead_appointment_state[wa_id] = {}
                     
-                    # Extract week range from reply_id (format: week_YYYY-MM-DD_YYYY-MM-DD)
-                    parts = reply_id.split("_")
-                    if len(parts) >= 3:
-                        start_iso = f"{parts[1]}-{parts[2]}-{parts[3]}"
-                        end_iso = f"{parts[4]}-{parts[5]}-{parts[6]}"
+                    # Extract week range from reply_id (actual format: week_YYYY-MM-DD_YYYY-MM-DD)
+                    # Example: week_2025-12-29_2026-01-04
+                    parts = reply_id.split("_", 2)
+                    if len(parts) == 3:
+                        start_iso = parts[1]      # '2025-12-29'
+                        end_iso = parts[2]        # '2026-01-04'
                         lead_appointment_state[wa_id]["selected_week"] = f"{start_iso} to {end_iso}"
                         print(f"[lead_appointment_flow] DEBUG - Stored selected week: {start_iso} to {end_iso}")
                     else:
-                        lead_appointment_state[wa_id]["selected_week"] = "Selected week"
-                        print(f"[lead_appointment_flow] DEBUG - Stored generic week selection")
+                        # Fallback: store raw reply_id without the 'week_' prefix
+                        week_raw = reply_id[len("week_"):] if reply_id.startswith("week_") else reply_id
+                        lead_appointment_state[wa_id]["selected_week"] = week_raw or "Selected week"
+                        print(f"[lead_appointment_flow] DEBUG - Stored generic week selection: {week_raw}")
                 except Exception as e:
                     print(f"[lead_appointment_flow] WARNING - Could not store week selection: {e}")
                 
