@@ -105,12 +105,11 @@ class ZohoLeadService:
             if appointment_details.get("selected_clinic"):
                 desc_parts.append(f"Clinic: {appointment_details['selected_clinic']}")
             # Concern/treatment: capture even if provided under alternate keys
+            # NOTE: This helper MUST NOT reference outer-scope variables like `customer`
             concern_for_desc = (
                 appointment_details.get("selected_concern")
                 or appointment_details.get("treatment")
                 or appointment_details.get("selected_treatment")
-                or getattr(customer, "concern", None)
-                or getattr(customer, "primary_concern", None)
             )
             if concern_for_desc:
                 desc_parts.append(f"Concern: {concern_for_desc}")
