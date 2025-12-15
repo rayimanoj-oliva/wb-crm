@@ -1159,6 +1159,17 @@ async def create_lead_for_appointment(
         final_location = location or (appointment_details.get("selected_location") if appointment_details else None)
         
         print(f"🏙️ [LEAD APPOINTMENT FLOW] Final values for Zoho: city={final_city}, clinic={final_clinic}, location={final_location}")
+        # Trace exactly what we are about to send to Zoho (helps verify primary concern/city/clinic/time/week)
+        try:
+            print(
+                f"🧾 [LEAD APPOINTMENT FLOW] Zoho payload preview -> "
+                f"concern={selected_concern} | mapped_concern={zoho_mapped_concern} | "
+                f"city={final_city} | clinic={final_clinic} | location={final_location} | "
+                f"week={session_data.get('selected_week')} | date={appointment_date} | time={appointment_time} | "
+                f"language={language_val} | lead_source={lead_source_val} | sub_source={sub_source_val}"
+            )
+        except Exception as e:
+            print(f"⚠️ [LEAD APPOINTMENT FLOW] Could not print payload preview: {e}")
         
         result = zoho_lead_service.create_lead(
             first_name=first_name,
