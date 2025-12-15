@@ -807,6 +807,20 @@ async def create_lead_for_appointment(
                 )
                 
                 if existing_lead_same_source:
+                    # Log concern snapshot even when we short-circuit on duplicates (helps debugging missing concerns)
+                    profile_concern = (
+                        getattr(customer, "concern", None)
+                        or getattr(customer, "primary_concern", None)
+                        or getattr(customer, "sub_concern", None)
+                        or getattr(customer, "treatment", None)
+                    )
+                    print(
+                        f"🎯 [LEAD APPOINTMENT FLOW] Concern snapshot before duplicate skip -> "
+                        f"session:{(lead_appointment_state.get(wa_id) if 'lead_appointment_state' in globals() else {}).get('selected_concern') if 'lead_appointment_state' in globals() else None} "
+                        f"appt_state:{(appointment_state.get(wa_id) if 'appointment_state' in globals() else {}).get('selected_concern') if 'appointment_state' in globals() else None} "
+                        f"appt_details:{(appointment_details or {}).get('selected_concern') if appointment_details else None} "
+                        f"profile:{profile_concern}"
+                    )
                     print(
                         f"✅ [LEAD APPOINTMENT FLOW] Duplicate prevented: existing '{expected_lead_source}' lead found "
                         f"for {wa_id} (phone={phone_number}) on same day (lead_id={existing_lead_same_source.zoho_lead_id})"
