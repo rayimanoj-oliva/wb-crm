@@ -1005,20 +1005,39 @@ async def handle_yes_callback(
         print(f"[lead_appointment_flow] DEBUG - User requested callback (Yes)")
         
         # Get appointment details from session state and set sub_source
-        appointment_details = {}
+        appointment_details: Dict[str, Any] = {}
         try:
-            from controllers.web_socket import lead_appointment_state
-            appointment_details = lead_appointment_state.get(wa_id, {})
+            from controllers.web_socket import lead_appointment_state, appointment_state
+
+            # Start with lead_appointment_state snapshot
+            appointment_details = (lead_appointment_state.get(wa_id) or {}).copy()
+
+            # Merge in any fields from appointment_state we might have lost
+            appt_state = appointment_state.get(wa_id) or {}
+            for key in [
+                "selected_city",
+                "selected_clinic",
+                "selected_location",
+                "selected_week",
+                "selected_time",
+                "selected_concern",
+                "zoho_mapped_concern",
+            ]:
+                if appt_state.get(key) and not appointment_details.get(key):
+                    appointment_details[key] = appt_state.get(key)
+
             # Set sub_source to "Whatsapp Dial" for Yes callback
             appointment_details["sub_source"] = "Whatsapp Dial"
-            # Update session state with sub_source
+
+            # Update session state with sub_source (for logging/follow-ups)
             if wa_id not in lead_appointment_state:
                 lead_appointment_state[wa_id] = {}
             lead_appointment_state[wa_id]["sub_source"] = "Whatsapp Dial"
+
             print(f"[lead_appointment_flow] DEBUG - Set sub_source to 'Whatsapp Dial' for Yes callback")
             print(f"[lead_appointment_flow] DEBUG - Appointment details: {appointment_details}")
         except Exception as e:
-            print(f"[lead_appointment_flow] WARNING - Could not get appointment details: {e}")
+            print(f"[lead_appointment_flow] WARNING - Could not get/merge appointment details: {e}")
 
         # If user clicked "Not right now" earlier today, allow duplicate lead creation
         try:

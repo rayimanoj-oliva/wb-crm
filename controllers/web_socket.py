@@ -2093,14 +2093,9 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
                                 appointment_state[wa_id] = {}
                             appointment_state[wa_id]["selected_concern"] = selected_concern
                             print(f"[treatment_flow] DEBUG - Stored selected concern: {selected_concern} (reply_id={reply_id}, title={title})")
-                            # Also mirror into lead_appointment_state as fallback source
-                            try:
-                                if wa_id not in lead_appointment_state:
-                                    lead_appointment_state[wa_id] = {}
-                                lead_appointment_state[wa_id]["selected_concern"] = selected_concern
-                                print(f"[lead_appointment_flow] DEBUG - Mirrored selected concern to lead_appointment_state: {selected_concern}")
-                            except Exception as e:
-                                print(f"[lead_appointment_flow] WARNING - Could not mirror selected concern: {e}")
+                            # NOTE: Do NOT mirror into lead_appointment_state from treatment flow.
+                            # Lead appointment flow should derive its concern from its own entry points
+                            # (ad starting message, carried-forward treatment, or explicit lead selections)
                         except Exception as e:
                             print(f"[treatment_flow] WARNING - Could not store selected concern: {e}")
                     
