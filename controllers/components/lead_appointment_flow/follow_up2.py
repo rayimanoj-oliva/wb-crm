@@ -145,6 +145,8 @@ async def schedule_follow_up2_after_follow_up1(wa_id: str, fu1_sent_at: datetime
                     except Exception:
                         pass
 
+                    # Set sub_source for follow-up leads
+                    appointment_details["sub_source"] = "Whatsapp No Dial"
                     await handle_termination_event(
                         db=db,
                         wa_id=wa_id,
@@ -174,6 +176,8 @@ async def schedule_follow_up2_after_follow_up1(wa_id: str, fu1_sent_at: datetime
                     except Exception:
                         pass
 
+                    # Set sub_source for follow-up leads
+                    appointment_details["sub_source"] = "Whatsapp No Dial"
                     await handle_termination_event(
                         db=db,
                         wa_id=wa_id,
