@@ -253,6 +253,13 @@ class ZohoLeadService:
         except Exception:
             pass
         
+        # NOTE:
+        # - "City" should strictly represent the city (e.g., "Hyderabad")
+        #   and must NOT fall back to clinic/branch names.
+        #   Therefore we only use `city` / `city_from_details` here,
+        #   and never `clinic_from_details`.
+        # - "Clinic_Branch" will carry the branch/location name.
+
         lead_data = {
             "data": [
                 {
@@ -264,8 +271,8 @@ class ZohoLeadService:
                     "Mobile": contact_number,  # Always WA number
                     **({"Phone_1": phone_1} if phone_1 else {}),
                     **({"Phone_2": phone_2} if phone_2 else {}),
-            # Always push city/clinic when user selected them; fall back to appointment_details copies
-            "City": city or city_from_details or clinic_from_details,
+                    # Always push ONLY city here (do not fall back to clinic/branch)
+                    "City": city or city_from_details,
                     "Lead_Source": lead_source,
                     "Company": company,
                     "Description": full_description,
@@ -1178,14 +1185,34 @@ async def create_lead_for_appointment(
         
         # Try to get selected concern from appointment_details if not found in state
         if not selected_concern and appointment_details:
-            selected_concern = appointment_details.get("selected_concern")
-            if not selected_concern:
-                selected_concern = (
+            candidate_concern = appointment_details.get("selected_concern")
+            if not candidate_concern:
+                candidate_concern = (
                     appointment_details.get("treatment")
                     or appointment_details.get("selected_treatment")
                     or appointment_details.get("primary_concern")
                     or appointment_details.get("concern")
                 )
+
+            # Guard: if the "concern" looks like a time/slot label, discard it
+            def _looks_like_time_label(val: Any) -> bool:
+                try:
+                    txt = str(val).lower()
+                except Exception:
+                    return False
+                if any(kw in txt for kw in ["morning (", "afternoon (", "evening ("]):
+                    return True
+                if ":" in txt and any(am in txt for am in ["am", "pm"]):
+                    return True
+                # Patterns like "10:00", "16:30"
+                import re as _re
+                if _re.search(r"\b\d{1,2}:\d{2}\b", txt):
+                    return True
+                return False
+
+            if candidate_concern and not _looks_like_time_label(candidate_concern):
+                selected_concern = candidate_concern
+
             if selected_concern:
                 print(
                     f"🎯 [LEAD APPOINTMENT FLOW] Concern sources -> "
