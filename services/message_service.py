@@ -40,11 +40,21 @@ def create_message(db: Session, message_data: MessageCreate) -> Message:
         agent_id=message_data.agent_id,
         sender_type=sender_type,
     )
+
     if customer:
+        # Track when we last saw a message for ordering in conversation list
         customer.last_message_at = new_message.timestamp
 
+        # If this message is from the customer, increment their unread counter.
+        # The counter will be reset when the agent opens the chat via get_messages().
+        try:
+            if sender_type == "customer":
+                # Use the canonical customer wa_id as the key for unread tracking
+                increment_unread(customer.wa_id)
+        except Exception:
+            # Never block message creation if Redis is unavailable
+            pass
 
-    
     db.add(new_message)
     db.commit()
     db.refresh(new_message)

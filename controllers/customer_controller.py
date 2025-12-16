@@ -24,6 +24,7 @@ def list_conversations_optimized(
     unassigned_only: bool = Query(False, description="Show only unassigned customers"),
     pending_reply_only: bool = Query(False, description="Show only customers pending agent reply"),
     date_filter: Optional[str] = Query(None, description="Filter by message date (YYYY-MM-DD)"),
+    unread_only: bool = Query(False, description="Show only customers with unread messages"),
     db: Session = Depends(get_db)
 ):
     """
@@ -46,7 +47,8 @@ def list_conversations_optimized(
         user_id=user_id,
         unassigned_only=unassigned_only,
         pending_reply_only=pending_reply_only,
-        date_filter=date_filter
+        date_filter=date_filter,
+        unread_only=unread_only,
     )
 
 @router.get("/conversations/by-peer")
@@ -59,6 +61,7 @@ def list_conversations_by_peer(
     unassigned_only: bool = Query(False, description="Show only unassigned customers"),
     pending_reply_only: bool = Query(False, description="Show only customers pending agent reply"),
     date_filter: Optional[str] = Query(None, description="Filter by message date (YYYY-MM-DD)"),
+    unread_only: bool = Query(False, description="Show only conversations with unread messages"),
     db: Session = Depends(get_db)
 ):
     """
@@ -74,7 +77,8 @@ def list_conversations_by_peer(
         user_id=user_id,
         unassigned_only=unassigned_only,
         pending_reply_only=pending_reply_only,
-        date_filter=date_filter
+        date_filter=date_filter,
+        unread_only=unread_only,
     )
 
 @router.post("/", response_model=CustomerOut)

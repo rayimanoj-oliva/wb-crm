@@ -345,7 +345,8 @@ def get_conversations_optimized(
     user_id: str = None,
     unassigned_only: bool = False,
     pending_reply_only: bool = False,
-    date_filter: str = None
+    date_filter: str = None,
+    unread_only: bool = False,
 ):
     """
     Optimized unified conversation list API including:
@@ -533,20 +534,36 @@ def get_conversations_optimized(
         )
 
     # -----------------------------
-    # ORDER + PAGINATION
+    # ORDER + PAGINATION + UNREAD FILTER
     # -----------------------------
-    total = query.count()
-
     query = query.order_by(
         desc(func.coalesce(latest_msg.c.timestamp, Customer.last_message_at, Customer.created_at))
     )
 
-    rows = query.offset(skip).limit(limit).all()
+    if not unread_only:
+        # Default behaviour: paginate in the database and then attach unread counts
+        total = query.count()
+        rows = query.offset(skip).limit(limit).all()
+        unread_map = {r.Customer.wa_id: get_unread_count(r.Customer.wa_id) for r in rows}
+    else:
+        # When filtering by unread we need to base the count on the unread counter,
+        # which is stored in Redis and not in Postgres. We therefore:
+        # - Load all matching conversations
+        # - Keep only those where unread_count > 0
+        # - Apply pagination in Python
+        all_rows = query.all()
 
-    # -----------------------------
-    # UNREAD COUNTS
-    # -----------------------------
-    unread_map = {r.Customer.wa_id: get_unread_count(r.Customer.wa_id) for r in rows}
+        unread_map: dict[str, int] = {}
+        filtered_rows = []
+        for r in all_rows:
+            wa_id = r.Customer.wa_id
+            count = get_unread_count(wa_id)
+            if count > 0:
+                unread_map[wa_id] = count
+                filtered_rows.append(r)
+
+        total = len(filtered_rows)
+        rows = filtered_rows[skip : skip + limit]
 
     # -----------------------------
     # FORMAT RESPONSE
@@ -607,7 +624,8 @@ def get_conversations_by_peer(
     user_id: str = None,
     unassigned_only: bool = False,
     pending_reply_only: bool = False,
-    date_filter: str = None
+    date_filter: str = None,
+    unread_only: bool = False,
 ):
     """
     Returns one row per (customer_id, peer_number) using the latest message per pair.
@@ -743,15 +761,29 @@ def get_conversations_by_peer(
     if pending_reply_only:
         query = query.filter(latest_pair_msg.c.sender_type == "customer")
 
-    total = query.count()
-
     query = query.order_by(
         desc(func.coalesce(latest_pair_msg.c.timestamp, Customer.last_message_at, Customer.created_at))
     )
 
-    rows = query.offset(skip).limit(limit).all()
+    if not unread_only:
+        total = query.count()
+        rows = query.offset(skip).limit(limit).all()
+        unread_map = {r.Customer.wa_id: get_unread_count(r.Customer.wa_id) for r in rows}
+    else:
+        # For unread-only view, compute total based on Redis-backed unread counters.
+        all_rows = query.all()
 
-    unread_map = {r.Customer.wa_id: get_unread_count(r.Customer.wa_id) for r in rows}
+        unread_map: dict[str, int] = {}
+        filtered_rows = []
+        for r in all_rows:
+            wa_id = r.Customer.wa_id
+            count = get_unread_count(wa_id)
+            if count > 0:
+                unread_map[wa_id] = count
+                filtered_rows.append(r)
+
+        total = len(filtered_rows)
+        rows = filtered_rows[skip : skip + limit]
 
     items = []
     for r in rows:
