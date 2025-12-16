@@ -813,3 +813,20 @@ class WhatsAppAPILog(Base):
 
     def __repr__(self):
         return f"<WhatsAppAPILog(id={self.id}, phone={self.phone_number}, status={self.response_status_code})>"
+
+class ZohoPayloadLog(Base):
+    """Log table for Zoho API payloads and responses"""
+    __tablename__ = 'zoho_payload_logs'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    wa_id = Column(String(50), index=True)
+    lead_id = Column(String(100))
+    zoho_lead_id = Column(String(100))
+    payload = Column(JSONB)
+    response = Column(JSONB)
+    status = Column(String(50))  # 'success', 'error', 'duplicate'
+    error_message = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    
+    def __repr__(self):
+        return f"<ZohoPayloadLog(id={self.id}, wa_id={self.wa_id}, status={self.status})>"

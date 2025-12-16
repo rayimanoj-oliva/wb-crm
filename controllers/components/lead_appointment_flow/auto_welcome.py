@@ -234,22 +234,60 @@ async def handle_welcome_response(
     normalized_reply = (reply_id or "").strip().lower()
     
     if normalized_reply == "yes_book_appointment":
-        # User wants to book - initialize flow state and proceed to city selection
+        # User wants to book - initialize FRESH flow state and proceed to city selection
         try:
             from controllers.web_socket import lead_appointment_state
             from controllers.web_socket import appointment_state
             from services.zoho_mapping_service import get_zoho_name
-            if wa_id not in lead_appointment_state:
-                lead_appointment_state[wa_id] = {}
+            
+            # CRITICAL FIX: Clear OLD state to ensure fresh booking flow
+            # Preserve only essential fields like concern that was set from ad message
+            old_concern = None
+            old_mapped_concern = None
+            old_lead_source = None
+            old_language = None
+            old_phone_id = None
+            old_display_number = None
+            if wa_id in lead_appointment_state:
+                old_state = lead_appointment_state[wa_id]
+                old_concern = old_state.get("selected_concern")
+                old_mapped_concern = old_state.get("zoho_mapped_concern")
+                old_lead_source = old_state.get("lead_source")
+                old_language = old_state.get("language")
+                old_phone_id = old_state.get("lead_phone_id")
+                old_display_number = old_state.get("lead_display_number")
+                print(f"[lead_appointment_flow] DEBUG - Clearing old state, preserving concern: {old_concern}")
+            
+            # Create fresh state
+            lead_appointment_state[wa_id] = {}
             lead_appointment_state[wa_id]["flow_context"] = "lead_appointment"
+            
+            # Restore preserved fields
+            if old_concern:
+                lead_appointment_state[wa_id]["selected_concern"] = old_concern
+            if old_mapped_concern:
+                lead_appointment_state[wa_id]["zoho_mapped_concern"] = old_mapped_concern
+            if old_phone_id:
+                lead_appointment_state[wa_id]["lead_phone_id"] = old_phone_id
+            if old_display_number:
+                lead_appointment_state[wa_id]["lead_display_number"] = old_display_number
             # Set default Zoho fields for lead appointment flow
             lead_appointment_state[wa_id]["lead_source"] = "Facebook"
             lead_appointment_state[wa_id]["language"] = "English"
+            # CRITICAL FIX: Merge ALL values from appointment_state before proceeding
+            try:
+                st = appointment_state.get(wa_id) or {}
+                for key in ["selected_city", "selected_clinic", "selected_location", "selected_time", "selected_week"]:
+                    if st.get(key) and not lead_appointment_state[wa_id].get(key):
+                        lead_appointment_state[wa_id][key] = st.get(key)
+                        print(f"[lead_appointment_flow] DEBUG - Merged {key} from appointment_state: {st.get(key)}")
+            except Exception as merge_e:
+                print(f"[lead_appointment_flow] WARNING - Could not merge state: {merge_e}")
             # Try to carry forward previously selected concern from appointment_state (treatment flow/referrer)
             try:
                 st = appointment_state.get(wa_id) or {}
                 prev_concern = st.get("selected_concern") or st.get("treatment_type") or st.get("treatment")
-                if prev_concern:
+                if prev_concern and not lead_appointment_state[wa_id].get("selected_concern"):
                     lead_appointment_state[wa_id]["selected_concern"] = prev_concern
                     lead_appointment_state[wa_id]["zoho_mapped_concern"] = get_zoho_name(db, prev_concern)
                     print(f"[lead_appointment_flow] DEBUG - Carried forward concern into lead flow: {prev_concern}")
@@ -268,24 +306,56 @@ async def handle_welcome_response(
         return await send_not_now_followup(db, wa_id=wa_id, customer=customer)
     
     elif normalized_reply == "book_appointment":
-        # User wants to book after "Not Now" - initialize flow state and proceed to city selection
+        # User wants to book after "Not Now" - initialize FRESH flow state and proceed to city selection
         try:
             from controllers.web_socket import lead_appointment_state
             from controllers.web_socket import appointment_state
             from services.zoho_mapping_service import get_zoho_name
-            if wa_id not in lead_appointment_state:
-                lead_appointment_state[wa_id] = {}
+            
+            # CRITICAL FIX: Clear OLD state to ensure fresh booking flow
+            # Preserve only essential fields like concern that was set from ad message
+            old_concern = None
+            old_mapped_concern = None
+            old_phone_id = None
+            old_display_number = None
+            if wa_id in lead_appointment_state:
+                old_state = lead_appointment_state[wa_id]
+                old_concern = old_state.get("selected_concern")
+                old_mapped_concern = old_state.get("zoho_mapped_concern")
+                old_phone_id = old_state.get("lead_phone_id")
+                old_display_number = old_state.get("lead_display_number")
+                print(f"[lead_appointment_flow] DEBUG - Clearing old state for book_appointment, preserving concern: {old_concern}")
+            
+            # Create fresh state
+            lead_appointment_state[wa_id] = {}
             lead_appointment_state[wa_id]["flow_context"] = "lead_appointment"
-            # Clear "Not Now" follow-up sequence flag since user wants to book now
-            lead_appointment_state[wa_id].pop("not_now_followup_sequence", None)
+            
+            # Restore preserved fields
+            if old_concern:
+                lead_appointment_state[wa_id]["selected_concern"] = old_concern
+            if old_mapped_concern:
+                lead_appointment_state[wa_id]["zoho_mapped_concern"] = old_mapped_concern
+            if old_phone_id:
+                lead_appointment_state[wa_id]["lead_phone_id"] = old_phone_id
+            if old_display_number:
+                lead_appointment_state[wa_id]["lead_display_number"] = old_display_number
             # Set default Zoho fields for lead appointment flow
             lead_appointment_state[wa_id]["lead_source"] = "Facebook"
             lead_appointment_state[wa_id]["language"] = "English"
+            # CRITICAL FIX: Merge ALL values from appointment_state before proceeding
+            try:
+                st = appointment_state.get(wa_id) or {}
+                for key in ["selected_city", "selected_clinic", "selected_location", "selected_time", "selected_week"]:
+                    if st.get(key) and not lead_appointment_state[wa_id].get(key):
+                        lead_appointment_state[wa_id][key] = st.get(key)
+                        print(f"[lead_appointment_flow] DEBUG - Merged {key} from appointment_state: {st.get(key)}")
+            except Exception as merge_e:
+                print(f"[lead_appointment_flow] WARNING - Could not merge state: {merge_e}")
             # Carry forward concern from previous appointment_state (e.g., from initial ad/referrer)
             try:
                 st = appointment_state.get(wa_id) or {}
                 prev_concern = st.get("selected_concern") or st.get("treatment_type") or st.get("treatment")
-                if prev_concern:
+                if prev_concern and not lead_appointment_state[wa_id].get("selected_concern"):
                     lead_appointment_state[wa_id]["selected_concern"] = prev_concern
                     lead_appointment_state[wa_id]["zoho_mapped_concern"] = get_zoho_name(db, prev_concern)
                     print(f"[lead_appointment_flow] DEBUG - Carried forward concern into lead flow after Not Now: {prev_concern}")

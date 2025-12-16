@@ -1007,6 +1007,35 @@ async def create_lead_for_appointment(
             print(f"🏙️ [LEAD APPOINTMENT FLOW] City after profile fallback: {city}")
             print(f"🏥 [LEAD APPOINTMENT FLOW] Clinic after profile fallback: {clinic}")
             
+            # CRITICAL FIX: Extract city from clinic_id if city is still missing
+            # clinic_id format is like "clinic_ahmedabad_cgroad" -> extract "Ahmedabad"
+            if not city:
+                clinic_id = (
+                    session_data.get("clinic_id") or
+                    appt_state_data.get("clinic_id") or
+                    (appointment_details.get("clinic_id") if appointment_details else None)
+                )
+                if clinic_id and isinstance(clinic_id, str) and clinic_id.startswith("clinic_"):
+                    parts = clinic_id.split("_")
+                    if len(parts) >= 2:
+                        city_from_clinic_id = parts[1].title()  # e.g., "ahmedabad" -> "Ahmedabad"
+                        # Map common variations
+                        city_mapping = {
+                            "Bangalore": "Bangalore",
+                            "Bengaluru": "Bangalore",
+                            "Hyderabad": "Hyderabad",
+                            "Chennai": "Chennai",
+                            "Kolkata": "Kolkata",
+                            "Pune": "Pune",
+                            "Kochi": "Kochi",
+                            "Ahmedabad": "Ahmedabad",
+                            "Ludhiana": "Ludhiana",
+                            "Vizag": "Vizag",
+                            "Vijayawada": "Vijayawada",
+                        }
+                        city = city_mapping.get(city_from_clinic_id, city_from_clinic_id)
+                        print(f"🏙️ [LEAD APPOINTMENT FLOW] City extracted from clinic_id ({clinic_id}): {city}")
+            
             # Optional: location captured from prefilled deep link (e.g., "Jubilee Hills")
             location = (
                 session_data.get("selected_location") or 
@@ -1317,6 +1346,34 @@ async def create_lead_for_appointment(
         except Exception as _log_e:
             print(f"⚠️ [LEAD APPOINTMENT FLOW] Could not log high-level lead creation summary: {_log_e}")
 
+        # Build payload for logging
+        zoho_payload = {
+            "first_name": first_name,
+            "last_name": last_name,
+            "email": getattr(customer, 'email', '') or '',
+            "phone": phone_number,
+            "mobile": phone_number,
+            "city": final_city or city,
+            "lead_source": lead_source_val,
+            "company": "Oliva Skin & Hair Clinic",
+            "sub_source": sub_source_val,
+            "appointment_details": {
+                "flow_type": (flow_type or "lead_appointment_flow"),
+                "selected_city": final_city,
+                "selected_clinic": final_clinic,
+                "selected_location": final_location,
+                "selected_week": session_data.get("selected_week", "Not specified"),
+                "custom_date": appointment_date,
+                "selected_time": appointment_time,
+                "selected_concern": selected_concern,
+                "zoho_mapped_concern": zoho_mapped_concern,
+                "lead_source": lead_source_val,
+                "language": language_val,
+                "wa_phone": appointment_details.get("wa_phone") if appointment_details else None,
+                "corrected_phone": appointment_details.get("corrected_phone") if appointment_details else None,
+            }
+        }
+        
         result = zoho_lead_service.create_lead(
             first_name=first_name,
             last_name=last_name,
@@ -1355,6 +1412,24 @@ async def create_lead_for_appointment(
             },
             sub_source=sub_source_val,
         )
+        
+        # Log payload to database
+        try:
+            from models.models import ZohoPayloadLog
+            payload_log = ZohoPayloadLog(
+                wa_id=wa_id,
+                lead_id=str(result.get("lead_id", "")),
+                zoho_lead_id=str(result.get("lead_id", "")),
+                payload=zoho_payload,
+                response=result,
+                status="success" if result.get("success") else ("duplicate" if result.get("duplicate") else "error"),
+                error_message=result.get("error") if not result.get("success") else None
+            )
+            db.add(payload_log)
+            db.commit()
+            print(f"📝 [ZOHO PAYLOAD LOG] Saved payload log for wa_id={wa_id}, status={payload_log.status}")
+        except Exception as log_err:
+            print(f"⚠️ [ZOHO PAYLOAD LOG] Failed to save payload log: {log_err}")
 
         if result["success"]:
             print(f"🎉 [LEAD APPOINTMENT FLOW] SUCCESS! Lead created successfully!")

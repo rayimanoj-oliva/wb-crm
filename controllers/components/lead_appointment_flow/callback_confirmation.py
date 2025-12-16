@@ -197,11 +197,32 @@ async def handle_callback_confirmation(
     # Get appointment details from session
     appointment_details = {}
     try:
-        from controllers.web_socket import lead_appointment_state
-        appointment_details = lead_appointment_state.get(wa_id, {})
-        print(f"[lead_appointment_flow] DEBUG - Appointment details: {appointment_details}")
+        from controllers.web_socket import lead_appointment_state, appointment_state
+        appointment_details = lead_appointment_state.get(wa_id, {}).copy()  # Copy to avoid mutation
+        print(f"[lead_appointment_flow] DEBUG - Lead appointment state: {appointment_details}")
+        
+        # CRITICAL FIX: Also merge concern from appointment_state if missing
+        appt_st = appointment_state.get(wa_id) or {}
+        print(f"[lead_appointment_flow] DEBUG - Appointment state: {appt_st}")
+        
+        # Merge concern from appointment_state if not in lead_appointment_state
+        if not appointment_details.get("selected_concern"):
+            concern_fallback = appt_st.get("selected_concern") or appt_st.get("treatment_type") or appt_st.get("treatment")
+            if concern_fallback:
+                appointment_details["selected_concern"] = concern_fallback
+                print(f"[lead_appointment_flow] DEBUG - Merged concern from appointment_state: {concern_fallback}")
+        
+        # Merge zoho_mapped_concern if missing
+        if not appointment_details.get("zoho_mapped_concern") and appointment_details.get("selected_concern"):
+            from services.zoho_mapping_service import get_zoho_name
+            appointment_details["zoho_mapped_concern"] = get_zoho_name(db, appointment_details["selected_concern"])
+            print(f"[lead_appointment_flow] DEBUG - Mapped concern: {appointment_details.get('zoho_mapped_concern')}")
+        
+        print(f"[lead_appointment_flow] DEBUG - Final appointment details: {appointment_details}")
     except Exception as e:
         print(f"[lead_appointment_flow] WARNING - Could not get appointment details: {e}")
+        import traceback
+        traceback.print_exc()
     
     if normalized_reply == "yes_callback":
         # User wants callback - trigger Q5 auto-dial event

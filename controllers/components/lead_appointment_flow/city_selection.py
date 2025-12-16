@@ -305,7 +305,11 @@ async def handle_city_selection(
 
         lead_appointment_state[wa_id]["last_city_reply_id"] = (reply_id or "").strip().lower()
         lead_appointment_state[wa_id]["selected_city"] = selected_city
-        print(f"[lead_appointment_flow] DEBUG - Stored city selection: {selected_city}")
+        # CRITICAL FIX: Also store city in appointment_state for Zoho lead creation fallback
+        st = appointment_state.get(wa_id) or {}
+        st["selected_city"] = selected_city
+        appointment_state[wa_id] = st
+        print(f"[lead_appointment_flow] DEBUG - Stored city selection: {selected_city} (in both lead_appointment_state and appointment_state)")
     except Exception as e:
         print(f"[lead_appointment_flow] WARNING - Could not store city selection: {e}")
     

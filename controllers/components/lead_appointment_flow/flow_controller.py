@@ -418,14 +418,30 @@ async def handle_text_message(
         # Initialize lead appointment flow state immediately when starting point message is detected
         try:
             from controllers.web_socket import lead_appointment_state
-            if wa_id not in lead_appointment_state:
-                lead_appointment_state[wa_id] = {}
+            # CRITICAL FIX: Always create FRESH state on new ad message
+            # This ensures old city/clinic data from previous sessions doesn't persist
+            old_phone_id = None
+            old_display_number = None
+            if wa_id in lead_appointment_state:
+                old_state = lead_appointment_state[wa_id]
+                old_phone_id = old_state.get("lead_phone_id")
+                old_display_number = old_state.get("lead_display_number")
+                print(f"[lead_appointment_flow] DEBUG - Clearing old state on new ad message for {wa_id}")
+            
+            # Create fresh state
+            lead_appointment_state[wa_id] = {}
             lead_appointment_state[wa_id]["flow_context"] = "lead_appointment"
             # Set default Zoho fields for lead appointment flow
             lead_appointment_state[wa_id]["lead_source"] = "Facebook"
             lead_appointment_state[wa_id]["language"] = "English"
+            # Restore phone IDs if available
+            if old_phone_id:
+                lead_appointment_state[wa_id]["lead_phone_id"] = old_phone_id
+            if old_display_number:
+                lead_appointment_state[wa_id]["lead_display_number"] = old_display_number
             
             # Map starting point message to concern for Zoho
+            # FIXED: Use proper concern names that exist in zoho_mappings table
             concern_mapping = {
                 "hi! i saw your ad for oliva's hair regrowth treatments and want to know more": "Hair Loss / PRP",
                 "hi! i saw your ad for oliva's precision+ laser hair reduction and want to know more": "LHR",
@@ -440,6 +456,7 @@ async def handle_text_message(
                 matched_concern = concern_mapping.get(normalized_text)
             elif has_link_pattern:
                 # Try to extract concern from message pattern
+                # FIXED: Use proper concern names that exist in zoho_mappings table
                 if "hair regrowth" in normalized_text:
                     matched_concern = "Hair Loss / PRP"
                 elif "precision+" in normalized_text or "laser hair reduction" in normalized_text:
