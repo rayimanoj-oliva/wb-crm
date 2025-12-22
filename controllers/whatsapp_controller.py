@@ -161,7 +161,7 @@ async def send_whatsapp_message(
     template_media_id: Optional[str] = Form(None),
     # Optional template button support (e.g. URL button with dynamic parameter)
     template_button_params: Optional[str] = Form(None),  # CSV or single value, e.g. "3WBCRqn"
-    template_button_index: Optional[str] = Form("1"),
+    template_button_index: Optional[str] = Form("0"),  # WhatsApp buttons are 0-indexed
     template_button_sub_type: Optional[str] = Form("url"),
     # Flow-specific (for type == "flow")
     flow_id: Optional[str] = Form(None),
@@ -346,7 +346,7 @@ async def send_whatsapp_message(
                     button_component = {
                         "type": "button",
                         "sub_type": str(template_button_sub_type or "url"),
-                        "index": str(template_button_index or "1"),
+                        "index": str(template_button_index or "0"),  # WhatsApp buttons are 0-indexed
                         "parameters": [
                             {"type": "text", "text": v} for v in btn_param_list
                         ]

@@ -79,7 +79,7 @@ class TemplateCampaignCreateRequest(BaseModel):
     description: Optional[str] = None
     image_id: Optional[str] = None
     button_sub_type: Optional[str] = "url"
-    button_index: Optional[str] = "1"
+    button_index: Optional[str] = "0"  # WhatsApp buttons are 0-indexed
     campaign_cost_type: Optional[str] = None
 
 

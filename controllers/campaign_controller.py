@@ -238,7 +238,7 @@ class PersonalizedRecipientPayload(BaseModel):
     # Optional template button support (e.g. URL button with dynamic parameter)
     # These map directly to WhatsApp "button" component fields
     button_params: Optional[List[str]] = None
-    button_index: Optional[str] = "1"
+    button_index: Optional[str] = "0"  # WhatsApp buttons are 0-indexed
     button_sub_type: Optional[str] = "url"
 
 
@@ -297,7 +297,7 @@ def save_template_campaign(
                     "header_text_params": pr.header_text_params or [],
                     "header_media_id": pr.header_media_id,
                     "button_params": pr.button_params or [],
-                    "button_index": pr.button_index or "1",
+                    "button_index": pr.button_index or "0",  # WhatsApp buttons are 0-indexed
                     "button_sub_type": pr.button_sub_type or "url",
                 }
             )

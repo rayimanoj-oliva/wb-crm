@@ -7,9 +7,10 @@ from uuid import UUID
 
 from auth import get_current_user
 from database.db import get_db
-from models.models import JobStatus, Job, CampaignRecipient
+from models.models import JobStatus, Job, CampaignRecipient, WhatsAppAPILog, Campaign
 from schemas.job_schemas import JobOut
 from services import job_service
+import json
 
 router = APIRouter(tags=["Jobs"])
 
@@ -139,3 +140,61 @@ def get_overall_job_stats(db: Session = Depends(get_db)):
         "failure_percentage": round((failure / total) * 100, 2),
         "pending_percentage": round((pending / total) * 100, 2)
     }
+
+@router.get("/{job_id}/debug-payload")
+def debug_job_payload(job_id: UUID, db: Session = Depends(get_db)):
+    """Debug endpoint to inspect what payloads were sent for a job"""
+    try:
+        job = job_service.get_job(db, job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        
+        # Get campaign
+        campaign = db.query(Campaign).filter(Campaign.id == job.campaign_id).first()
+        if not campaign:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        
+        # Get API logs for this job
+        api_logs = db.query(WhatsAppAPILog).filter(
+            WhatsAppAPILog.job_id == job_id
+        ).order_by(WhatsAppAPILog.request_time.desc()).limit(10).all()
+        
+        # Get recipients for this campaign
+        recipients = db.query(CampaignRecipient).filter(
+            CampaignRecipient.campaign_id == job.campaign_id
+        ).limit(5).all()
+        
+        result = {
+            "job_id": str(job_id),
+            "campaign_id": str(job.campaign_id),
+            "campaign_name": campaign.name,
+            "campaign_type": campaign.type,
+            "campaign_content": campaign.content,
+            "recipients_sample": [
+                {
+                    "id": str(r.id),
+                    "phone_number": r.phone_number,
+                    "name": r.name,
+                    "status": r.status,
+                    "params": r.params
+                }
+                for r in recipients
+            ],
+            "api_logs": [
+                {
+                    "id": str(log.id),
+                    "phone_number": log.phone_number,
+                    "request_time": log.request_time.isoformat() if log.request_time else None,
+                    "response_status": log.response_status_code,
+                    "error_code": log.error_code,
+                    "error_message": log.error_message,
+                    "request_payload": log.request_payload,
+                    "response_body": log.response_body
+                }
+                for log in api_logs
+            ]
+        }
+        
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))

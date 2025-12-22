@@ -144,6 +144,7 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
     #   requires a parameter according to WhatsApp
     template_button_index: Optional[str] = None
     button_requires_param: bool = False
+    detected_url: str = ""
     for comp in base_components:
         if comp.get("type", "").upper() == "BUTTONS":
             buttons = comp.get("buttons", [])
@@ -151,12 +152,19 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
                 if button.get("type", "").upper() == "URL":
                     template_button_index = str(button.get("index", "0"))
                     url = button.get("url", "") or ""
+                    detected_url = url
                     # If URL has a placeholder, WhatsApp expects a parameter
                     if "{{" in url and "}}" in url:
                         button_requires_param = True
+                        logger.debug(f"Template URL button requires parameter: {url}")
                     break
             if template_button_index is not None:
                 break
+    
+    logger.debug(
+        f"Button metadata: index={template_button_index}, requires_param={button_requires_param}, "
+        f"url={detected_url[:100] if detected_url else 'N/A'}"
+    )
     
     # Optional button parameters (for template URL buttons, etc.)
     # Handle both "button_params" (plural) and "button_param_1" (singular from Excel template)
@@ -208,9 +216,18 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
     else:
         button_params = None
     
-    # Use recipient's button_index if provided, otherwise use template's button_index, fallback to "0"
-    button_index = recipient_params.get("button_index") or template_button_index or "0"
+    # Prioritize template's button_index (source of truth) over stored value, fallback to "0"
+    # Template button_index is extracted from the actual template definition, so it's most accurate
+    button_index = template_button_index or recipient_params.get("button_index") or "0"
     button_sub_type = recipient_params.get("button_sub_type", "url")
+    
+    # Log which button_index source was used for debugging
+    if template_button_index:
+        logger.debug(f"Using template button_index: {template_button_index}")
+    elif recipient_params.get("button_index"):
+        logger.debug(f"Using stored button_index: {recipient_params.get('button_index')}")
+    else:
+        logger.debug(f"Using default button_index: 0")
 
     # Use logger instead of print for debugging
     logger.debug(f"Building template payload for recipient: {recipient.get('phone_number')}")
@@ -276,9 +293,13 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
     #   "index": "0",
     #   "parameters": [{ "type": "text", "text": "..." }]
     # }
+    
+    # CRITICAL: If button_requires_param is True, we MUST create a button component
+    # with at least one parameter, otherwise WhatsApp will reject with (#131008)
+    cleaned_params: List[str] = []
+    
     if button_params is not None and len(button_params) > 0:
         # Normalise values and drop entries that are effectively empty
-        cleaned_params: List[str] = []
         for v in button_params:
             if v is None:
                 continue
@@ -287,45 +308,62 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
                 continue
             cleaned_params.append(param_str)
 
-        # If the button in the template requires a parameter, we MUST have at least one
-        if button_requires_param and not cleaned_params:
-            # Do NOT send an invalid payload to WhatsApp – raise so the caller can log
-            raise ValueError(
-                f"URL button requires a parameter but none provided for recipient {recipient.get('phone_number')}"
-            )
-
         # If the template URL has a single placeholder but we received multiple logical
         # values (e.g. client_id and voucher), join them into a single runtime value
-        # that your landing page can split again (e.g. \"5218|PBPB07822\"). This keeps
+        # that your landing page can split again (e.g. "5218|PBPB07822"). This keeps
         # the WhatsApp payload valid while still allowing dynamic pieces.
         if button_requires_param and len(cleaned_params) > 1:
             joined = "|".join(cleaned_params)
             cleaned_params = [joined]
-
-        # If we have any valid params, build the button component
-        if cleaned_params:
-            button_index_str = str(button_index).strip() if button_index is not None else "0"
-            button_sub_type_str = str(button_sub_type or "url").strip()
-
-            button_component = {
-                "type": "button",
-                "sub_type": button_sub_type_str,
-                "index": button_index_str,
-                "parameters": [{"type": "text", "text": p} for p in cleaned_params]
-            }
-            components = replace_component(components, "button", button_component)
-            logger.debug(
-                f"Created button component with index={button_index_str}, "
-                f"sub_type={button_sub_type_str}, params={cleaned_params}"
+            logger.debug(f"Joined {len(button_params)} button params into single value: {joined}")
+    
+    # If the button in the template requires a parameter, we MUST have at least one
+    if button_requires_param:
+        if not cleaned_params:
+            # No usable params found - this is a critical error
+            logger.error(
+                f"❌ URL button requires a parameter but none provided for recipient {recipient.get('phone_number')}. "
+                f"Recipient params keys: {list(recipient_params.keys())}, "
+                f"button_params_raw: {button_params_raw}, "
+                f"button_params: {button_params}"
             )
-        else:
-            logger.warning(f"No usable button params found for {recipient.get('phone_number')}: {button_params}")
-    else:
-        # If template requires a button parameter but we have none, fail early
-        if button_requires_param:
             raise ValueError(
-                f"URL button requires a parameter but none provided for recipient {recipient.get('phone_number')}"
+                f"URL button requires a parameter but none provided for recipient {recipient.get('phone_number')}. "
+                f"Please ensure 'button_params' column in Excel has a value (e.g. '5218|PBPB07822')."
             )
+        
+        # ALWAYS create button component when required (even if we only have one param)
+        button_index_str = str(button_index).strip() if button_index is not None else "0"
+        button_sub_type_str = str(button_sub_type or "url").strip()
+
+        button_component = {
+            "type": "button",
+            "sub_type": button_sub_type_str,
+            "index": button_index_str,
+            "parameters": [{"type": "text", "text": p} for p in cleaned_params]
+        }
+        components = replace_component(components, "button", button_component)
+        logger.debug(
+            f"✅ Created button component with index={button_index_str}, "
+            f"sub_type={button_sub_type_str}, params={cleaned_params}"
+        )
+    elif cleaned_params:
+        # Button doesn't require param but we have params - create component anyway
+        button_index_str = str(button_index).strip() if button_index is not None else "0"
+        button_sub_type_str = str(button_sub_type or "url").strip()
+
+        button_component = {
+            "type": "button",
+            "sub_type": button_sub_type_str,
+            "index": button_index_str,
+            "parameters": [{"type": "text", "text": p} for p in cleaned_params]
+        }
+        components = replace_component(components, "button", button_component)
+        logger.debug(
+            f"Created optional button component with index={button_index_str}, "
+            f"sub_type={button_sub_type_str}, params={cleaned_params}"
+        )
+    else:
         logger.debug(f"No button params for {recipient.get('phone_number')}; skipping button component")
 
     # Fallback to placeholder replacement if no structured params provided but recipient_params exist
@@ -360,6 +398,7 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
     
     # Validate components structure
     validated_components = []
+    has_button_component = False
     for comp in components:
         if not isinstance(comp, dict):
             logger.warning(f"Invalid component type: {type(comp)}, skipping")
@@ -368,6 +407,10 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
             logger.warning(f"Component missing 'type' field: {comp}, skipping")
             continue
         
+        # Track if we have a button component
+        if comp.get('type', '').lower() == 'button':
+            has_button_component = True
+        
         # Ensure parameters is a list
         if 'parameters' in comp:
             if not isinstance(comp['parameters'], list):
@@ -375,6 +418,40 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
                 comp['parameters'] = [comp['parameters']] if comp['parameters'] else []
         
         validated_components.append(comp)
+    
+    # CRITICAL: If button requires param but component is missing, this is a fatal error
+    if button_requires_param and not has_button_component:
+        logger.error(
+            f"❌ FATAL: Template requires button parameter but button component is missing in payload! "
+            f"Recipient: {recipient.get('phone_number')}, "
+            f"Components: {[c.get('type') for c in validated_components]}"
+        )
+        raise ValueError(
+            f"Template requires button parameter but button component was not created for recipient {recipient.get('phone_number')}. "
+            f"This should not happen - please check button_params in recipient data."
+        )
+    
+    # CRITICAL: If button component exists and requires param, ensure it has at least one parameter
+    if button_requires_param and has_button_component:
+        for comp in validated_components:
+            if comp.get('type', '').lower() == 'button':
+                button_params_in_comp = comp.get('parameters', [])
+                if not button_params_in_comp or len(button_params_in_comp) == 0:
+                    logger.error(
+                        f"❌ FATAL: Button component exists but has no parameters! "
+                        f"Recipient: {recipient.get('phone_number')}, "
+                        f"Component: {comp}"
+                    )
+                    raise ValueError(
+                        f"Button component requires at least one parameter but none found for recipient {recipient.get('phone_number')}. "
+                        f"Please ensure button_params has a value in Excel."
+                    )
+                logger.debug(
+                    f"✅ Button component validated: index={comp.get('index')}, "
+                    f"params_count={len(button_params_in_comp)}, "
+                    f"params={[p.get('text', '')[:20] for p in button_params_in_comp]}"
+                )
+                break
     
     payload = {
         "messaging_product": "whatsapp",

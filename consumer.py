@@ -400,9 +400,27 @@ def callback(ch, method, properties, body):
                             "name": target.name,
                             "params": recipient_params
                         }
+                        
+                        # DEBUG: Log recipient params before building payload
+                        logger.info(f"🔍 Building payload for recipient {target.phone_number}:")
+                        logger.info(f"   Recipient params keys: {list(recipient_params.keys())}")
+                        logger.info(f"   button_params value: {recipient_params.get('button_params')}")
+                        logger.info(f"   button_index value: {recipient_params.get('button_index')}")
+                        logger.info(f"   body_var_* keys: {[k for k in recipient_params.keys() if k.startswith('body_var_')]}")
+                        logger.info(f"   button_param_* keys: {[k for k in recipient_params.keys() if k.startswith('button_param_')]}")
+                        
                         payload = whatsapp_service.build_template_payload_for_recipient(
                             recipient_dict, campaign.content
                         )
+                        
+                        # DEBUG: Log what was built
+                        if 'template' in payload and 'components' in payload['template']:
+                            components = payload['template']['components']
+                            button_comp = next((c for c in components if c.get('type') == 'button'), None)
+                            if button_comp:
+                                logger.info(f"✅ Button component built: index={button_comp.get('index')}, params={[p.get('text', '')[:50] for p in button_comp.get('parameters', [])]}")
+                            else:
+                                logger.warning(f"⚠️  No button component in payload for {target.phone_number}")
                     except Exception as payload_err:
                         import traceback
                         logger.error(f"❌ Failed to build payload for recipient {target.id}: {payload_err}")
@@ -428,6 +446,23 @@ def callback(ch, method, properties, body):
 
             # Rate limiting delay
             time.sleep(RATE_LIMIT_DELAY_MS / 1000.0)
+
+            # DEBUG: Log the exact payload being sent to WhatsApp
+            import json
+            payload_debug = json.dumps(payload, indent=2)
+            logger.info(f"📤 Sending payload to WhatsApp for {wa_id}:")
+            logger.info(f"   Template: {payload.get('template', {}).get('name', 'N/A')}")
+            if 'template' in payload and 'components' in payload['template']:
+                components = payload['template']['components']
+                logger.info(f"   Components count: {len(components)}")
+                for idx, comp in enumerate(components):
+                    comp_type = comp.get('type', 'unknown')
+                    params = comp.get('parameters', [])
+                    logger.info(f"   Component {idx}: type={comp_type}, params_count={len(params)}")
+                    if comp_type == 'button':
+                        logger.info(f"      Button index: {comp.get('index')}, sub_type: {comp.get('sub_type')}")
+                        logger.info(f"      Button params: {[p.get('text', '')[:50] for p in params]}")
+            logger.debug(f"   Full payload: {payload_debug}")
 
             # Get HTTP session with connection pooling
             session = get_http_session()
