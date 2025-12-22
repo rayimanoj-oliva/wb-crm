@@ -294,6 +294,14 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
                 f"URL button requires a parameter but none provided for recipient {recipient.get('phone_number')}"
             )
 
+        # If the template URL has a single placeholder but we received multiple logical
+        # values (e.g. client_id and voucher), join them into a single runtime value
+        # that your landing page can split again (e.g. \"5218|PBPB07822\"). This keeps
+        # the WhatsApp payload valid while still allowing dynamic pieces.
+        if button_requires_param and len(cleaned_params) > 1:
+            joined = "|".join(cleaned_params)
+            cleaned_params = [joined]
+
         # If we have any valid params, build the button component
         if cleaned_params:
             button_index_str = str(button_index).strip() if button_index is not None else "0"
