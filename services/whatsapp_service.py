@@ -88,14 +88,31 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
                 break
     
     # Optional button parameters (for template URL buttons, etc.)
-    button_params = recipient_params.get("button_params")
+    button_params_raw = recipient_params.get("button_params")
+    # Convert button_params to list if it's a string (from Excel upload)
+    # Excel stores it as a string like "5123|PB56789" or comma-separated values
+    if button_params_raw is not None:
+        if isinstance(button_params_raw, str):
+            # If string contains commas, split by comma; otherwise treat as single value
+            if "," in button_params_raw:
+                button_params = [p.strip() for p in button_params_raw.split(",") if p.strip()]
+            else:
+                button_params = [button_params_raw.strip()] if button_params_raw.strip() else []
+        elif isinstance(button_params_raw, list):
+            button_params = button_params_raw
+        else:
+            # Convert other types to string and wrap in list
+            button_params = [str(button_params_raw).strip()] if str(button_params_raw).strip() else []
+    else:
+        button_params = None
+    
     # Use recipient's button_index if provided, otherwise use template's button_index, fallback to "0"
     button_index = recipient_params.get("button_index") or template_button_index or "0"
     button_sub_type = recipient_params.get("button_sub_type", "url")
 
     # Use logger instead of print for debugging
     logger.debug(f"Building template payload for recipient: {recipient.get('phone_number')}")
-    logger.debug(f"Body params: {body_params}, Button params: {button_params}")
+    logger.debug(f"Body params: {body_params}, Button params: {button_params} (type: {type(button_params_raw)})")
 
     # Only create body component if we have actual body params (non-empty list)
     if body_params is not None and len(body_params) > 0:
