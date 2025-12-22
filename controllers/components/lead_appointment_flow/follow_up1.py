@@ -17,7 +17,7 @@ from marketing.whatsapp_numbers import get_number_config
 
 
 # Follow-Up 1 content and timing
-FOLLOW_UP_1_DELAY_MINUTES = 2
+FOLLOW_UP_1_DELAY_MINUTES = 5
 FOLLOW_UP_1_TEXT = (
     "👋 Hi! Just checking in — are we still connected?\n\n"
     "Reply to continue. 💬\n\n"

@@ -64,9 +64,53 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
             filtered.append(new_component)
         return filtered
 
-    # Get params from recipient first
-    body_params = recipient_params.get("body_params")
-    header_text_params = recipient_params.get("header_text_params")
+    # Convert Excel format (body_var_1, body_var_2, etc.) to body_params list if needed
+    # Excel uploads store columns as body_var_1, body_var_2, body_var_3, etc.
+    # But the code expects body_params as a list
+    if "body_params" not in recipient_params or recipient_params.get("body_params") is None:
+        # Check for Excel format: body_var_1, body_var_2, etc.
+        body_var_keys = sorted([k for k in recipient_params.keys() if k.startswith("body_var_")])
+        if body_var_keys:
+            # Extract numeric suffix and sort by it
+            def get_var_index(key):
+                try:
+                    return int(key.replace("body_var_", ""))
+                except:
+                    return 999
+            body_var_keys = sorted(body_var_keys, key=get_var_index)
+            body_params = [str(recipient_params[k]).strip() for k in body_var_keys if recipient_params.get(k) is not None and str(recipient_params[k]).strip()]
+        else:
+            body_params = None
+    else:
+        body_params = recipient_params.get("body_params")
+        # Convert to list if it's a string (shouldn't happen, but safety check)
+        if isinstance(body_params, str):
+            body_params = [body_params.strip()] if body_params.strip() else []
+        elif not isinstance(body_params, list):
+            body_params = [str(body_params).strip()] if body_params is not None else None
+    
+    # Convert Excel format (header_var_1, header_var_2, etc.) to header_text_params list if needed
+    if "header_text_params" not in recipient_params or recipient_params.get("header_text_params") is None:
+        # Check for Excel format: header_var_1, header_var_2, etc.
+        header_var_keys = sorted([k for k in recipient_params.keys() if k.startswith("header_var_")])
+        if header_var_keys:
+            def get_var_index(key):
+                try:
+                    return int(key.replace("header_var_", ""))
+                except:
+                    return 999
+            header_var_keys = sorted(header_var_keys, key=get_var_index)
+            header_text_params = [str(recipient_params[k]).strip() for k in header_var_keys if recipient_params.get(k) is not None and str(recipient_params[k]).strip()]
+        else:
+            header_text_params = None
+    else:
+        header_text_params = recipient_params.get("header_text_params")
+        # Convert to list if it's a string
+        if isinstance(header_text_params, str):
+            header_text_params = [header_text_params.strip()] if header_text_params.strip() else []
+        elif not isinstance(header_text_params, list):
+            header_text_params = [str(header_text_params).strip()] if header_text_params is not None else None
+    
     header_media_id = recipient_params.get("header_media_id")
     
     # IMPORTANT: Do NOT start with base_components as they contain raw template definition
@@ -88,7 +132,22 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
                 break
     
     # Optional button parameters (for template URL buttons, etc.)
+    # Handle both "button_params" (plural) and "button_param_1" (singular from Excel template)
     button_params_raw = recipient_params.get("button_params")
+    if button_params_raw is None:
+        # Check for Excel format: button_param_1, button_param_2, etc.
+        button_param_keys = sorted([k for k in recipient_params.keys() if k.startswith("button_param_")])
+        if button_param_keys:
+            def get_param_index(key):
+                try:
+                    return int(key.replace("button_param_", ""))
+                except:
+                    return 999
+            button_param_keys = sorted(button_param_keys, key=get_param_index)
+            button_params_raw = [str(recipient_params[k]).strip() for k in button_param_keys if recipient_params.get(k) is not None and str(recipient_params[k]).strip()]
+            if not button_params_raw:
+                button_params_raw = None
+    
     # Convert button_params to list if it's a string (from Excel upload)
     # Excel stores it as a string like "5123|PB56789" or comma-separated values
     if button_params_raw is not None:
