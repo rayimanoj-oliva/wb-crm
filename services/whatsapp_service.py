@@ -73,9 +73,24 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
     # (text, format, example fields) which are not valid for WhatsApp API.
     # Instead, start with empty list and only add properly formatted API components.
     components = []
+    
+    # Extract button index from template metadata if not provided in recipient params
+    # This ensures we use the correct button index from the template definition
+    template_button_index = None
+    for comp in base_components:
+        if comp.get("type", "").upper() == "BUTTONS":
+            buttons = comp.get("buttons", [])
+            for button in buttons:
+                if button.get("type", "").upper() == "URL":
+                    template_button_index = str(button.get("index", "0"))
+                    break
+            if template_button_index:
+                break
+    
     # Optional button parameters (for template URL buttons, etc.)
     button_params = recipient_params.get("button_params")
-    button_index = recipient_params.get("button_index", "1")
+    # Use recipient's button_index if provided, otherwise use template's button_index, fallback to "0"
+    button_index = recipient_params.get("button_index") or template_button_index or "0"
     button_sub_type = recipient_params.get("button_sub_type", "url")
 
     # Use logger instead of print for debugging
@@ -118,7 +133,7 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
     # {
     #   "type": "button",
     #   "sub_type": "url",
-    #   "index": "1",
+    #   "index": "0",  # Button indices are 0-indexed (0, 1, 2, etc.)
     #   "parameters": [{ "type": "text", "text": "3WBCRqn" }]
     # }
     if button_params is not None and len(button_params) > 0:
@@ -127,11 +142,11 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
             button_component = {
                 "type": "button",
                 "sub_type": str(button_sub_type or "url"),
-                "index": str(button_index or "1"),
+                "index": str(button_index),  # button_index is already set correctly above (from recipient, template, or "0")
                 "parameters": [{"type": "text", "text": v} for v in valid_params]
             }
             components = replace_component(components, "button", button_component)
-            logger.debug(f"Created button component with {len(valid_params)} params")
+            logger.debug(f"Created button component with index={button_index}, {len(valid_params)} params")
 
     # Fallback to placeholder replacement if no structured params provided but recipient_params exist
     if not body_params and not header_text_params and not header_media_id and not button_params and recipient_params:

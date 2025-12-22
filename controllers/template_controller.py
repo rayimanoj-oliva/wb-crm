@@ -37,8 +37,12 @@ def delete_template(template_name: str, db: Session = Depends(get_db)):
     try:
         result = delete_template_from_meta(template_name, db)
         return result
+    except HTTPException:
+        # Preserve HTTP status codes coming from service layer (e.g. 400 from Meta API)
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Fallback for truly unexpected errors
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 
 # Removed explicit sync endpoint; templates are persisted automatically when fetched/created/deleted

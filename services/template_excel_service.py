@@ -36,20 +36,20 @@ def _extract_button_meta(components: List[Dict]) -> Dict:
                         "has_buttons": True,
                         "button_type": "URL",
                         "button_requires_param": has_placeholders,
-                        "button_index": str(button.get("index", "1")),
+                        "button_index": str(button.get("index", "0")),  # WhatsApp buttons are 0-indexed
                     }
                 elif button_type in {"QUICK_REPLY", "PHONE_NUMBER"}:
                     return {
                         "has_buttons": True,
                         "button_type": button_type,
                         "button_requires_param": False,
-                        "button_index": str(button.get("index", "1")),
+                        "button_index": str(button.get("index", "0")),  # WhatsApp buttons are 0-indexed
                     }
     return {
         "has_buttons": False,
         "button_type": None,
         "button_requires_param": False,
-        "button_index": "1",
+        "button_index": "0",  # Default to 0-indexed
     }
 
 
