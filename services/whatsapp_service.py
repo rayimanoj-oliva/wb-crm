@@ -218,14 +218,26 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
     
     # Prioritize template's button_index (source of truth) over stored value, fallback to "0"
     # Template button_index is extracted from the actual template definition, so it's most accurate
-    button_index = template_button_index or recipient_params.get("button_index") or "0"
+    stored_button_index = recipient_params.get("button_index")
+    
+    # CRITICAL FIX: If stored value is "1", it's incorrect (WhatsApp buttons are 0-indexed)
+    # Override it to "0" to prevent (#131008) errors
+    if stored_button_index == "1":
+        logger.warning(
+            f"⚠️  Stored button_index is '1' (incorrect), overriding to '0' for recipient {recipient.get('phone_number')}. "
+            f"WhatsApp buttons are 0-indexed."
+        )
+        stored_button_index = "0"
+    
+    # Use template's button_index if available, otherwise use corrected stored value, fallback to "0"
+    button_index = template_button_index or stored_button_index or "0"
     button_sub_type = recipient_params.get("button_sub_type", "url")
     
     # Log which button_index source was used for debugging
     if template_button_index:
         logger.debug(f"Using template button_index: {template_button_index}")
-    elif recipient_params.get("button_index"):
-        logger.debug(f"Using stored button_index: {recipient_params.get('button_index')}")
+    elif stored_button_index:
+        logger.debug(f"Using stored button_index: {stored_button_index}")
     else:
         logger.debug(f"Using default button_index: 0")
 
