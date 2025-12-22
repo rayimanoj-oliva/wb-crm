@@ -132,23 +132,30 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
             header_text_params = [str(header_text_params).strip()] if header_text_params is not None else None
     
     header_media_id = recipient_params.get("header_media_id")
-    
+
     # IMPORTANT: Do NOT start with base_components as they contain raw template definition
     # (text, format, example fields) which are not valid for WhatsApp API.
     # Instead, start with empty list and only add properly formatted API components.
     components = []
-    
-    # Extract button index from template metadata if not provided in recipient params
-    # This ensures we use the correct button index from the template definition
-    template_button_index = None
+
+    # Extract button metadata from template definition
+    # - template_button_index: default button index from template
+    # - button_requires_param: True if URL contains a {{placeholder}} and therefore
+    #   requires a parameter according to WhatsApp
+    template_button_index: Optional[str] = None
+    button_requires_param: bool = False
     for comp in base_components:
         if comp.get("type", "").upper() == "BUTTONS":
             buttons = comp.get("buttons", [])
             for button in buttons:
                 if button.get("type", "").upper() == "URL":
                     template_button_index = str(button.get("index", "0"))
+                    url = button.get("url", "") or ""
+                    # If URL has a placeholder, WhatsApp expects a parameter
+                    if "{{" in url and "}}" in url:
+                        button_requires_param = True
                     break
-            if template_button_index:
+            if template_button_index is not None:
                 break
     
     # Optional button parameters (for template URL buttons, etc.)
@@ -266,39 +273,52 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
     # {
     #   "type": "button",
     #   "sub_type": "url",
-    #   "index": "0",  # Button indices are 0-indexed (0, 1, 2, etc.)
-    #   "parameters": [{ "type": "text", "text": "3WBCRqn" }]
+    #   "index": "0",
+    #   "parameters": [{ "type": "text", "text": "..." }]
     # }
     if button_params is not None and len(button_params) > 0:
-        valid_params = []
+        # Normalise values and drop entries that are effectively empty
+        cleaned_params: List[str] = []
         for v in button_params:
             if v is None:
-                valid_params.append("")
-            else:
-                param_str = str(v).strip()
-                # Replace None/null/nan string with empty string
-                if param_str.lower() in ('none', 'null', 'nan'):
-                    valid_params.append("")
-                else:
-                    valid_params.append(param_str)
-        
-        if valid_params:  # Create button component if we have params (even if empty)
-            # Ensure button_index is a string and valid
+                continue
+            param_str = str(v).strip()
+            if not param_str or param_str.lower() in ("none", "null", "nan"):
+                continue
+            cleaned_params.append(param_str)
+
+        # If the button in the template requires a parameter, we MUST have at least one
+        if button_requires_param and not cleaned_params:
+            # Do NOT send an invalid payload to WhatsApp – raise so the caller can log
+            raise ValueError(
+                f"URL button requires a parameter but none provided for recipient {recipient.get('phone_number')}"
+            )
+
+        # If we have any valid params, build the button component
+        if cleaned_params:
             button_index_str = str(button_index).strip() if button_index is not None else "0"
             button_sub_type_str = str(button_sub_type or "url").strip()
-            
+
             button_component = {
                 "type": "button",
                 "sub_type": button_sub_type_str,
-                "index": button_index_str,  # button_index is already set correctly above (from recipient, template, or "0")
-                "parameters": [{"type": "text", "text": str(v) if v is not None else ""} for v in valid_params]
+                "index": button_index_str,
+                "parameters": [{"type": "text", "text": p} for p in cleaned_params]
             }
             components = replace_component(components, "button", button_component)
-            logger.debug(f"Created button component with index={button_index_str}, sub_type={button_sub_type_str}, {len(valid_params)} params: {valid_params}")
+            logger.debug(
+                f"Created button component with index={button_index_str}, "
+                f"sub_type={button_sub_type_str}, params={cleaned_params}"
+            )
         else:
-            logger.warning(f"No valid button params found for {recipient.get('phone_number')}")
+            logger.warning(f"No usable button params found for {recipient.get('phone_number')}: {button_params}")
     else:
-        logger.warning(f"Button params is None or empty for {recipient.get('phone_number')}: {button_params}")
+        # If template requires a button parameter but we have none, fail early
+        if button_requires_param:
+            raise ValueError(
+                f"URL button requires a parameter but none provided for recipient {recipient.get('phone_number')}"
+            )
+        logger.debug(f"No button params for {recipient.get('phone_number')}; skipping button component")
 
     # Fallback to placeholder replacement if no structured params provided but recipient_params exist
     if not body_params and not header_text_params and not header_media_id and not button_params and recipient_params:
