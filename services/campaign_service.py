@@ -501,6 +501,10 @@ class EnhancedJSONEncoder(json.JSONEncoder):
     def default(self, o):
         if isinstance(o, uuid_module.UUID):
             return str(o)
+        if isinstance(o, (datetime, date)):
+            return o.isoformat()
+        if o is None:
+            return None
         return super().default(o)
 
 
@@ -590,7 +594,32 @@ def publish_batch_to_queue(
         for i, message in enumerate(messages):
             target_id = message.get('target_id', 'unknown')
             try:
-                body = json.dumps(message, cls=EnhancedJSONEncoder)
+                # Ensure all values are JSON-serializable before encoding
+                serializable_message = {}
+                for k, v in message.items():
+                    try:
+                        if v is None:
+                            serializable_message[k] = None
+                        elif isinstance(v, (str, int, float, bool)):
+                            serializable_message[k] = v
+                        elif isinstance(v, uuid_module.UUID):
+                            serializable_message[k] = str(v)
+                        elif isinstance(v, (datetime, date)):
+                            serializable_message[k] = v.isoformat()
+                        else:
+                            # Try to convert to string as last resort
+                            serializable_message[k] = str(v)
+                    except Exception as convert_err:
+                        logger.error(f"Failed to serialize key '{k}' with value {v}: {convert_err}")
+                        serializable_message[k] = str(v) if v is not None else None
+                
+                # Validate JSON serialization
+                try:
+                    body = json.dumps(serializable_message, cls=EnhancedJSONEncoder)
+                except (TypeError, ValueError) as json_err:
+                    logger.error(f"JSON serialization failed for message: {serializable_message}")
+                    logger.error(f"Error: {json_err}")
+                    raise ValueError(f"Message is not JSON serializable: {json_err}") from json_err
                 channel.basic_publish(
                     exchange='',
                     routing_key=queue_name,
@@ -623,7 +652,10 @@ def publish_batch_to_queue(
                     logger.error(f"Failed to reconnect: {reconnect_err}")
 
             except Exception as e:
+                import traceback
                 logger.error(f"❌ Failed to publish message for {target_id}: {type(e).__name__}: {e}")
+                logger.error(f"   Message content: {message}")
+                logger.error(f"   Traceback: {traceback.format_exc()}")
                 failure_count += 1
                 failed_messages.append(message)
                 # Try to reconnect on unknown errors
@@ -732,8 +764,8 @@ def run_campaign(
                 "campaign_id": str(campaign.id),
                 "target_type": "recipient",
                 "target_id": str(r.id),
-                "batch_size": batch_size,
-                "batch_delay": batch_delay,
+                "batch_size": int(batch_size) if batch_size is not None else 0,
+                "batch_delay": int(batch_delay) if batch_delay is not None else 0,
             }
             messages_to_queue.append((task, r))
 

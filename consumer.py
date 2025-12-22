@@ -387,21 +387,28 @@ def callback(ch, method, properties, body):
             # Build payload based on campaign type
             if campaign.type == "template":
                 if target_type == "recipient":
-                    recipient_params = target.params if target.params else {}
-                    if not isinstance(recipient_params, dict):
-                        try:
-                            recipient_params = json.loads(recipient_params) if isinstance(recipient_params, str) else {}
-                        except:
-                            recipient_params = {}
+                    try:
+                        recipient_params = target.params if target.params else {}
+                        if not isinstance(recipient_params, dict):
+                            try:
+                                recipient_params = json.loads(recipient_params) if isinstance(recipient_params, str) else {}
+                            except:
+                                recipient_params = {}
 
-                    recipient_dict = {
-                        "phone_number": target.phone_number,
-                        "name": target.name,
-                        "params": recipient_params
-                    }
-                    payload = whatsapp_service.build_template_payload_for_recipient(
-                        recipient_dict, campaign.content
-                    )
+                        recipient_dict = {
+                            "phone_number": target.phone_number,
+                            "name": target.name,
+                            "params": recipient_params
+                        }
+                        payload = whatsapp_service.build_template_payload_for_recipient(
+                            recipient_dict, campaign.content
+                        )
+                    except Exception as payload_err:
+                        import traceback
+                        logger.error(f"❌ Failed to build payload for recipient {target.id}: {payload_err}")
+                        logger.error(f"   Traceback: {traceback.format_exc()}")
+                        logger.error(f"   Recipient params: {recipient_params}")
+                        raise  # Re-raise to be caught by outer exception handler
                 else:
                     customer_dict = {
                         "wa_id": target.wa_id,

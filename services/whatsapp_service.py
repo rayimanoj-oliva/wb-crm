@@ -78,7 +78,17 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
                 except:
                     return 999
             body_var_keys = sorted(body_var_keys, key=get_var_index)
-            body_params = [str(recipient_params[k]).strip() for k in body_var_keys if recipient_params.get(k) is not None and str(recipient_params[k]).strip()]
+            # Include ALL body_var values, even if empty, to match template's expected parameter count
+            body_params = []
+            for k in body_var_keys:
+                val = recipient_params.get(k)
+                if val is None:
+                    body_params.append("")
+                else:
+                    body_params.append(str(val).strip())
+            # Only set to None if we found no body_var keys at all
+            if not body_params:
+                body_params = None
         else:
             body_params = None
     else:
@@ -100,7 +110,17 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
                 except:
                     return 999
             header_var_keys = sorted(header_var_keys, key=get_var_index)
-            header_text_params = [str(recipient_params[k]).strip() for k in header_var_keys if recipient_params.get(k) is not None and str(recipient_params[k]).strip()]
+            # Include ALL header_var values, even if empty, to match template's expected parameter count
+            header_text_params = []
+            for k in header_var_keys:
+                val = recipient_params.get(k)
+                if val is None:
+                    header_text_params.append("")
+                else:
+                    header_text_params.append(str(val).strip())
+            # Only set to None if we found no header_var keys at all
+            if not header_text_params:
+                header_text_params = None
         else:
             header_text_params = None
     else:
@@ -156,12 +176,28 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
             if "," in button_params_raw:
                 button_params = [p.strip() for p in button_params_raw.split(",") if p.strip()]
             else:
-                button_params = [button_params_raw.strip()] if button_params_raw.strip() else []
+                stripped = button_params_raw.strip()
+                # Handle "none", "null", "nan" strings
+                if stripped.lower() in ('none', 'null', 'nan', ''):
+                    button_params = []
+                else:
+                    button_params = [stripped]
         elif isinstance(button_params_raw, list):
-            button_params = button_params_raw
+            # Filter out None/null/nan values from list
+            button_params = []
+            for item in button_params_raw:
+                if item is None:
+                    continue
+                item_str = str(item).strip()
+                if item_str.lower() not in ('none', 'null', 'nan', ''):
+                    button_params.append(item_str)
         else:
             # Convert other types to string and wrap in list
-            button_params = [str(button_params_raw).strip()] if str(button_params_raw).strip() else []
+            item_str = str(button_params_raw).strip()
+            if item_str.lower() in ('none', 'null', 'nan', ''):
+                button_params = []
+            else:
+                button_params = [item_str]
     else:
         button_params = None
     
@@ -171,19 +207,40 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
 
     # Use logger instead of print for debugging
     logger.debug(f"Building template payload for recipient: {recipient.get('phone_number')}")
-    logger.debug(f"Body params: {body_params}, Button params: {button_params} (type: {type(button_params_raw)})")
+    logger.debug(f"Raw recipient_params keys: {list(recipient_params.keys())}")
+    logger.debug(f"Body params: {body_params} (type: {type(body_params)})")
+    logger.debug(f"Header text params: {header_text_params} (type: {type(header_text_params)})")
+    logger.debug(f"Button params: {button_params} (type: {type(button_params_raw)})")
+    logger.debug(f"Button index: {button_index}")
 
     # Only create body component if we have actual body params (non-empty list)
     if body_params is not None and len(body_params) > 0:
         # Filter out None/empty values and ensure all are strings
-        valid_params = [str(v).strip() if v is not None else "" for v in body_params]
-        if any(valid_params):  # Only add if at least one param has a value
+        # IMPORTANT: Keep empty strings if they exist, as template might require all parameters
+        valid_params = []
+        for v in body_params:
+            if v is None:
+                valid_params.append("")
+            else:
+                param_str = str(v).strip()
+                # Replace None string with empty string
+                if param_str.lower() in ('none', 'null', 'nan'):
+                    valid_params.append("")
+                else:
+                    valid_params.append(param_str)
+        
+        # Create body component even if some params are empty (template might require all)
+        if valid_params:  # If we have any params (even empty ones)
             body_component = {
                 "type": "body",
-                "parameters": [{"type": "text", "text": v} for v in valid_params]
+                "parameters": [{"type": "text", "text": str(v) if v is not None else ""} for v in valid_params]
             }
             components = replace_component(components, "body", body_component)
-            logger.debug(f"Created body component with {len(valid_params)} params")
+            logger.debug(f"Created body component with {len(valid_params)} params: {valid_params}")
+        else:
+            logger.warning(f"No valid body params found for {recipient.get('phone_number')}")
+    else:
+        logger.warning(f"Body params is None or empty for {recipient.get('phone_number')}: {body_params}")
 
     # Handle header - prioritize media_id over text params
     if header_media_id and str(header_media_id).strip():
@@ -213,16 +270,35 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
     #   "parameters": [{ "type": "text", "text": "3WBCRqn" }]
     # }
     if button_params is not None and len(button_params) > 0:
-        valid_params = [str(v).strip() if v is not None else "" for v in button_params]
-        if any(valid_params):
+        valid_params = []
+        for v in button_params:
+            if v is None:
+                valid_params.append("")
+            else:
+                param_str = str(v).strip()
+                # Replace None/null/nan string with empty string
+                if param_str.lower() in ('none', 'null', 'nan'):
+                    valid_params.append("")
+                else:
+                    valid_params.append(param_str)
+        
+        if valid_params:  # Create button component if we have params (even if empty)
+            # Ensure button_index is a string and valid
+            button_index_str = str(button_index).strip() if button_index is not None else "0"
+            button_sub_type_str = str(button_sub_type or "url").strip()
+            
             button_component = {
                 "type": "button",
-                "sub_type": str(button_sub_type or "url"),
-                "index": str(button_index),  # button_index is already set correctly above (from recipient, template, or "0")
-                "parameters": [{"type": "text", "text": v} for v in valid_params]
+                "sub_type": button_sub_type_str,
+                "index": button_index_str,  # button_index is already set correctly above (from recipient, template, or "0")
+                "parameters": [{"type": "text", "text": str(v) if v is not None else ""} for v in valid_params]
             }
             components = replace_component(components, "button", button_component)
-            logger.debug(f"Created button component with index={button_index}, {len(valid_params)} params")
+            logger.debug(f"Created button component with index={button_index_str}, sub_type={button_sub_type_str}, {len(valid_params)} params: {valid_params}")
+        else:
+            logger.warning(f"No valid button params found for {recipient.get('phone_number')}")
+    else:
+        logger.warning(f"Button params is None or empty for {recipient.get('phone_number')}: {button_params}")
 
     # Fallback to placeholder replacement if no structured params provided but recipient_params exist
     if not body_params and not header_text_params and not header_media_id and not button_params and recipient_params:
@@ -246,17 +322,64 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
             }]
             logger.debug("Rebuilt body component as fallback")
 
+    # Validate payload before returning
+    # Ensure all required fields are present
+    if not template_name:
+        raise ValueError(f"Template name is required for recipient {recipient.get('phone_number')}")
+    
+    if not recipient.get('phone_number'):
+        raise ValueError(f"Phone number is required for recipient")
+    
+    # Validate components structure
+    validated_components = []
+    for comp in components:
+        if not isinstance(comp, dict):
+            logger.warning(f"Invalid component type: {type(comp)}, skipping")
+            continue
+        if 'type' not in comp:
+            logger.warning(f"Component missing 'type' field: {comp}, skipping")
+            continue
+        
+        # Ensure parameters is a list
+        if 'parameters' in comp:
+            if not isinstance(comp['parameters'], list):
+                logger.warning(f"Component parameters is not a list: {comp['parameters']}, converting")
+                comp['parameters'] = [comp['parameters']] if comp['parameters'] else []
+        
+        validated_components.append(comp)
+    
     payload = {
         "messaging_product": "whatsapp",
-        "to": recipient['phone_number'],
+        "to": str(recipient['phone_number']).strip(),  # Ensure phone is string
         "type": "template",
         "template": {
-            "name": template_name,
-            "language": {"code": language_code},
-            "components": components if components else []  # Ensure components is always a list
+            "name": str(template_name).strip(),
+            "language": {"code": str(language_code).strip()},
+            "components": validated_components  # Use validated components
         }
     }
+    
+    # Log the complete payload for debugging
+    import json
     logger.debug(f"Built template payload for {recipient['phone_number']}")
+    logger.debug(f"Payload components count: {len(validated_components)}")
+    for idx, comp in enumerate(validated_components):
+        comp_type = comp.get('type', 'unknown')
+        params = comp.get('parameters', [])
+        logger.debug(f"  Component {idx}: type={comp_type}, params_count={len(params)}")
+        if comp_type == 'button':
+            logger.debug(f"    Button index: {comp.get('index')}, sub_type: {comp.get('sub_type')}")
+    
+    # Final validation - check if payload can be JSON serialized
+    try:
+        json.dumps(payload)
+    except (TypeError, ValueError) as e:
+        logger.error(f"Payload is not JSON serializable: {e}")
+        logger.error(f"Payload: {payload}")
+        raise ValueError(f"Payload validation failed: {e}")
+    
+    logger.debug(f"Payload validation passed for {recipient['phone_number']}")
+    
     return payload
 
 
