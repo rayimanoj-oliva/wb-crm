@@ -82,8 +82,8 @@ def update_user(
         # Remove role from update if agent is trying to update themselves
         user.role = None
     
-    # Only admins can update other users' roles
-    elif current_user.role != "ADMIN":
+    # Only admins and super admins can update other users' roles
+    elif current_user.role not in ["ADMIN", "SUPER_ADMIN"]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only admins can update other users"

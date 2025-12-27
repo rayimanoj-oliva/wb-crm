@@ -67,8 +67,17 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 
 # -- Role-based access control --
 def get_current_admin_user(current_user: User = Depends(get_current_user)):
-    """Dependency to ensure the current user is an ADMIN"""
-    if current_user.role != "ADMIN":
+    """Dependency to ensure the current user is an ADMIN or SUPER_ADMIN"""
+    # Check new role system first
+    is_admin = False
+    if hasattr(current_user, 'role_obj') and current_user.role_obj:
+        if current_user.role_obj.name in ["SUPER_ADMIN", "ORG_ADMIN"]:
+            is_admin = True
+    # Fallback to legacy role enum
+    elif current_user.role in ["ADMIN", "SUPER_ADMIN"]:
+        is_admin = True
+    
+    if not is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required"

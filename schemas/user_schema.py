@@ -4,6 +4,7 @@ from enum import Enum
 
 # Enum for user roles
 class UserRole(str, Enum):
+    SUPER_ADMIN = "SUPER_ADMIN"
     ADMIN = "ADMIN"
     AGENT = "AGENT"
 

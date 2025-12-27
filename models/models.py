@@ -30,7 +30,7 @@ class CustomerStatusEnum(str, enum.Enum):
 
 
 user_role_enum = SAEnum(
-    "ADMIN", "AGENT",
+    "SUPER_ADMIN", "ADMIN", "AGENT",
     name="user_role_enum",
     create_type=False  # Let Alembic handle enum creation
 )
