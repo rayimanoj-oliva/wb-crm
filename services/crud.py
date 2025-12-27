@@ -39,6 +39,8 @@ def get_users(db: Session, skip: int = 0, limit: int = 50, search: str = None):
 
 
 def create_user(db: Session, user: UserCreate):
+    # SUPER_ADMIN should not have an organization_id (it's nullable by default)
+    # For other roles, organization_id can be set separately if needed
     db_user = User(
         username=user.username,
         password=get_password_hash(user.password),
@@ -47,6 +49,7 @@ def create_user(db: Session, user: UserCreate):
         last_name=user.last_name,
         phone_number=user.phone_number,
         role=user.role
+        # organization_id is None by default, which is correct for SUPER_ADMIN
     )
     db.add(db_user)
     db.commit()

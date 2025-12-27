@@ -30,6 +30,7 @@ def create_user(
     if crud.get_user_by_email(db, user.email):
         raise HTTPException(status_code=400, detail="Email already registered")
 
+    # SUPER_ADMIN should not have an organization_id (handled by model default)
     return crud.create_user(db, user)
 
 @router.get("/")
@@ -89,9 +90,20 @@ def update_user(
             detail="Only admins can update other users"
         )
     
+    # If updating to SUPER_ADMIN, ensure organization_id is None
+    if user.role == "SUPER_ADMIN":
+        target_user.organization_id = None
+    
     updated = crud.update_user(db, user_id, user)
     if not updated:
         raise HTTPException(status_code=404, detail="User not found")
+    
+    # Ensure organization_id is None for SUPER_ADMIN after update
+    if updated.role == "SUPER_ADMIN":
+        updated.organization_id = None
+        db.commit()
+        db.refresh(updated)
+    
     return updated
 
 @router.delete("/{user_id}")
