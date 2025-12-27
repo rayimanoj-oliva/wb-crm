@@ -3,7 +3,7 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from database.db import get_db
 from services.crud import get_user_by_username
 from models.models import User
@@ -56,7 +56,10 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     except JWTError:
         raise credentials_exception
 
-    user = db.query(User).filter(User.id == user_id).first()
+    user = db.query(User).options(
+        joinedload(User.role_obj),
+        joinedload(User.organization)
+    ).filter(User.id == user_id).first()
     if user is None:
         raise credentials_exception
     return user
@@ -79,5 +82,24 @@ def get_current_agent_user(current_user: User = Depends(get_current_user)):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Agent access required"
+        )
+    return current_user
+
+
+def get_current_super_admin(current_user: User = Depends(get_current_user)):
+    """Dependency to ensure the current user is a SUPER_ADMIN"""
+    is_super_admin = False
+    # Check new role system first
+    if hasattr(current_user, 'role_obj') and current_user.role_obj:
+        if current_user.role_obj.name == "SUPER_ADMIN":
+            is_super_admin = True
+    # Fallback to legacy role enum
+    elif current_user.role == "ADMIN":
+        is_super_admin = True
+    
+    if not is_super_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Super Admin access required"
         )
     return current_user

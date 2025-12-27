@@ -67,6 +67,47 @@ class PaymentMethod(enum.Enum):
 
 
 # ------------------------------
+# Organization & Role
+# ------------------------------
+
+class Role(Base):
+    __tablename__ = "roles"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(50), unique=True, nullable=False, index=True)  # SUPER_ADMIN, ORG_ADMIN, AGENT
+    display_name = Column(String(100), nullable=False)
+    description = Column(Text, nullable=True)
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    users = relationship("User", back_populates="role_obj")
+    
+    def __repr__(self):
+        return f"<Role(name='{self.name}', display_name='{self.display_name}')>"
+
+
+class Organization(Base):
+    __tablename__ = "organizations"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(255), nullable=False, index=True)
+    slug = Column(String(255), nullable=True, unique=True, index=True)
+    description = Column(Text, nullable=True)
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships - only include models that have organization_id foreign key
+    users = relationship("User", back_populates="organization")
+    # Note: Other relationships (customers, campaigns, orders, leads, templates, zoho_mappings)
+    # will be added later when organization_id columns are added to those tables
+    
+    def __repr__(self):
+        return f"<Organization(name='{self.name}', slug='{self.slug}')>"
+
+
+# ------------------------------
 # User & Customer
 # ------------------------------
 
@@ -74,15 +115,32 @@ class User(Base):
     __tablename__ = "users"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, unique=True, nullable=False)
-    username = Column(String(100), unique=True, nullable=False)
+    username = Column(String(100), nullable=False)
     password = Column(String(255), nullable=False)
     first_name = Column(String(100), nullable=False)
     last_name = Column(String(100), nullable=False)
     phone_number = Column(String(20), nullable=False)
-    email = Column(String(100), unique=True, nullable=False)
-    role = Column(user_role_enum, nullable=False, default="AGENT")
-
+    email = Column(String(100), nullable=False)
+    role = Column(user_role_enum, nullable=True)  # Legacy field, kept for backward compatibility
+    
+    # New organization and role fields
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=True, index=True)
+    role_id = Column(UUID(as_uuid=True), ForeignKey("roles.id"), nullable=True, index=True)
+    
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    organization = relationship("Organization", back_populates="users")
+    role_obj = relationship("Role", back_populates="users")
     customers = relationship("Customer", back_populates="user")
+    
+    # Composite unique constraints (username + organization_id, email + organization_id)
+    __table_args__ = (
+        Index('ix_users_username_organization', 'username', 'organization_id', unique=True),
+        Index('ix_users_email_organization', 'email', 'organization_id', unique=True),
+    )
 
 class Customer(Base):
     __tablename__ = "customers"
