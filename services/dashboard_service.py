@@ -324,14 +324,13 @@ def get_dashboard_summary_optimized(
     today_start = filter_start if filter_start else datetime.combine(today, datetime.min.time())
     today_end = filter_end if filter_end else datetime.combine(today, datetime.max.time())
     
-    # Organization filter: Get user IDs for this organization
-    org_user_ids = None
+    # Organization filter: Parse organization UUID
+    org_uuid = None
     if organization_id:
         try:
             org_uuid = UUIDType(organization_id)
-            org_user_ids = [u.id for u in db.query(User.id).filter(User.organization_id == org_uuid).all()]
         except (ValueError, TypeError):
-            org_user_ids = None
+            org_uuid = None
     
     # Campaign filter: Validate campaign ID
     campaign_uuid = None
@@ -347,14 +346,14 @@ def get_dashboard_summary_optimized(
             campaign_uuid = None
 
     # === BATCH 1: Simple count queries (fast) ===
-    # Filter messages by organization through customer -> user relationship
+    # Filter messages by organization through customer.organization_id (direct relationship)
     message_query = db.query(func.count(Message.id)).filter(
         Message.timestamp >= today_start,
         Message.timestamp <= today_end
     )
-    if org_user_ids:
-        # Get customers belonging to users in this organization
-        org_customer_ids = [c.id for c in db.query(Customer.id).filter(Customer.user_id.in_(org_user_ids)).all()]
+    if org_uuid:
+        # Get customers belonging to this organization directly
+        org_customer_ids = [c.id for c in db.query(Customer.id).filter(Customer.organization_id == org_uuid).all()]
         if org_customer_ids:
             message_query = message_query.filter(Message.customer_id.in_(org_customer_ids))
         else:
@@ -362,25 +361,31 @@ def get_dashboard_summary_optimized(
             message_query = message_query.filter(Message.customer_id == None)  # Will return 0
     new_conversations = message_query.scalar() or 0
 
-    # Filter customers by organization through user relationship
+    # Filter customers by organization directly
     customer_query = db.query(func.count(Customer.id)).filter(
         Customer.created_at >= today_start,
         Customer.created_at <= today_end
     )
-    if org_user_ids:
-        customer_query = customer_query.filter(Customer.user_id.in_(org_user_ids))
+    if org_uuid:
+        customer_query = customer_query.filter(Customer.organization_id == org_uuid)
     new_customers = customer_query.scalar() or 0
 
     total_customer_query = db.query(func.count(Customer.id))
-    if org_user_ids:
-        total_customer_query = total_customer_query.filter(Customer.user_id.in_(org_user_ids))
+    if org_uuid:
+        total_customer_query = total_customer_query.filter(Customer.organization_id == org_uuid)
     total_customers = total_customer_query.scalar() or 0
 
-    # === BATCH 2: Appointments today (simplified) ===
-    appointments_today = db.query(func.count(ReferrerTracking.id)).filter(
+    # === BATCH 2: Appointments today (filtered by organization) ===
+    appointments_query = db.query(func.count(ReferrerTracking.id)).filter(
         ReferrerTracking.is_appointment_booked == True,
         func.date(ReferrerTracking.created_at) == today
-    ).scalar() or 0
+    )
+    if org_uuid:
+        # Filter appointments by organization through ReferrerTracking.customer_id -> Customer.organization_id
+        appointments_query = appointments_query.join(
+            Customer, ReferrerTracking.customer_id == Customer.id
+        ).filter(Customer.organization_id == org_uuid)
+    appointments_today = appointments_query.scalar() or 0
 
     # === BATCH 3: Template status (single query with case) ===
     status_expr = func.lower(Template.template_body["status"].astext)
@@ -399,15 +404,21 @@ def get_dashboard_summary_optimized(
     # === BATCH 4: Campaign summary (simplified - just counts) ===
     # Filter campaigns by organization through created_by user, campaign_id, and date range
     from models.models import Campaign
+    
+    # Get org_user_ids for campaign filtering (campaigns are filtered by user.organization_id)
+    org_user_ids_for_campaigns = None
+    if org_uuid:
+        org_user_ids_for_campaigns = [u.id for u in db.query(User.id).filter(User.organization_id == org_uuid).all()]
+    
     campaign_filter_ids = None  # None means all campaigns
     
     # Build campaign filter if any filters are applied
-    has_filters = org_user_ids or campaign_uuid or filter_start or filter_end
+    has_filters = org_user_ids_for_campaigns or campaign_uuid or filter_start or filter_end
     if has_filters:
         campaign_filter_query = db.query(Campaign.id)
         
-        if org_user_ids:
-            campaign_filter_query = campaign_filter_query.filter(Campaign.created_by.in_(org_user_ids))
+        if org_user_ids_for_campaigns:
+            campaign_filter_query = campaign_filter_query.filter(Campaign.created_by.in_(org_user_ids_for_campaigns))
         if campaign_uuid:
             campaign_filter_query = campaign_filter_query.filter(Campaign.id == campaign_uuid)
         if filter_start:
@@ -478,49 +489,64 @@ def get_dashboard_summary_optimized(
         Campaign.type,
         Campaign.created_at
     )
-    if org_user_ids:
-        campaign_query = campaign_query.filter(Campaign.created_by.in_(org_user_ids))
-    campaigns = campaign_query.order_by(Campaign.created_at.desc()).limit(campaign_limit).all()
-
+    # Filter campaigns by organization
+    if org_uuid:
+        # Filter campaigns by organization through created_by user's organization_id
+        if org_user_ids_for_campaigns:
+            campaign_query = campaign_query.filter(Campaign.created_by.in_(org_user_ids_for_campaigns))
+            campaigns = campaign_query.order_by(Campaign.created_at.desc()).limit(campaign_limit).all()
+        else:
+            # No users for this org, return empty list
+            campaigns = []
+    else:
+        campaigns = campaign_query.order_by(Campaign.created_at.desc()).limit(campaign_limit).all()
+    
     campaign_list = []
-    for camp in campaigns:
-        # Get job IDs for this campaign
-        job_ids = db.query(Job.id).filter(Job.campaign_id == camp.id).all()
-        job_ids = [j[0] for j in job_ids]
 
-        sent = 0
-        delivered = 0
-        if job_ids:
-            sent = db.query(func.count()).select_from(JobStatus).filter(
-                JobStatus.job_id.in_(job_ids)
+    # Initialize campaign_list
+    if 'campaign_list' not in locals():
+        campaign_list = []
+    
+    # Process campaigns if we have any
+    if 'campaigns' in locals() and campaigns:
+        for camp in campaigns:
+            # Get job IDs for this campaign
+            job_ids = db.query(Job.id).filter(Job.campaign_id == camp.id).all()
+            job_ids = [j[0] for j in job_ids]
+
+            sent = 0
+            delivered = 0
+            if job_ids:
+                sent = db.query(func.count()).select_from(JobStatus).filter(
+                    JobStatus.job_id.in_(job_ids)
+                ).scalar() or 0
+                delivered = db.query(func.count()).select_from(JobStatus).filter(
+                    JobStatus.job_id.in_(job_ids),
+                    JobStatus.status == "success"
+                ).scalar() or 0
+
+            # Add CampaignRecipient counts
+            sent += db.query(func.count(CampaignRecipient.id)).filter(
+                CampaignRecipient.campaign_id == camp.id
             ).scalar() or 0
-            delivered = db.query(func.count()).select_from(JobStatus).filter(
-                JobStatus.job_id.in_(job_ids),
-                JobStatus.status == "success"
+            delivered += db.query(func.count(CampaignRecipient.id)).filter(
+                CampaignRecipient.campaign_id == camp.id,
+                CampaignRecipient.status == "SENT"
             ).scalar() or 0
 
-        # Add CampaignRecipient counts
-        sent += db.query(func.count(CampaignRecipient.id)).filter(
-            CampaignRecipient.campaign_id == camp.id
-        ).scalar() or 0
-        delivered += db.query(func.count(CampaignRecipient.id)).filter(
-            CampaignRecipient.campaign_id == camp.id,
-            CampaignRecipient.status == "SENT"
-        ).scalar() or 0
-
-        campaign_list.append({
-            "id": str(camp.id),
-            "name": camp.name,
-            "type": camp.type or "template",
-            "status": "active" if delivered > 0 else "pending",
-            "sent": sent,
-            "delivered": delivered,
-            "read": 0,
-            "replied": 0,
-            "ctr": 0,
-            "roi": 0,
-            "created_at": camp.created_at.isoformat() if camp.created_at else None
-        })
+            campaign_list.append({
+                "id": str(camp.id),
+                "name": camp.name,
+                "type": camp.type or "template",
+                "status": "active" if delivered > 0 else "pending",
+                "sent": sent,
+                "delivered": delivered,
+                "read": 0,
+                "replied": 0,
+                "ctr": 0,
+                "roi": 0,
+                "created_at": camp.created_at.isoformat() if camp.created_at else None
+            })
 
     # === Skip failed_messages (slow ILIKE queries) - return zeros ===
     failed_messages = {
