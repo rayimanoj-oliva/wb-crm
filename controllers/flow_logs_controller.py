@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, or_, text
+from sqlalchemy import and_, or_, text, func
 import csv
 import io
 import json
@@ -14,7 +14,7 @@ import json
 from openpyxl import Workbook
 
 from database.db import get_db
-from models.models import FlowLog, Lead
+from models.models import FlowLog, Lead, Customer, Message
 
 router = APIRouter(prefix="/api/flow-logs", tags=["flow-logs"])
 
@@ -248,6 +248,302 @@ def export_pushed_leads_excel(
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={
                 "Content-Disposition": f"attachment; filename=pushed_leads{suffix}.xlsx"
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/export-non-pushed-leads")
+def export_non_pushed_leads_excel(
+    db: Session = Depends(get_db),
+    flow_type: Optional[str] = Query(None),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
+):
+    """
+    Export leads that started a flow but were NOT pushed to Zoho (no Lead entry).
+    Results can be filtered by flow type and date range.
+    """
+    try:
+        dt_from = _parse_dt(date_from)
+        dt_to = _parse_dt(date_to)
+        dt_to_upper: Optional[datetime] = None
+        if dt_to:
+            if date_to and len(date_to) == 10:
+                dt_to_upper = dt_to + timedelta(days=1)
+            else:
+                dt_to_upper = dt_to
+
+        # Get all FlowLog entries that represent flow starts
+        log_filters = [
+            FlowLog.step.isnot(None),
+            FlowLog.wa_id.isnot(None),
+        ]
+        if flow_type:
+            log_filters.append(FlowLog.flow_type == flow_type)
+        if dt_from:
+            log_filters.append(FlowLog.created_at >= dt_from)
+        if dt_to_upper:
+            log_filters.append(FlowLog.created_at < dt_to_upper)
+
+        # Get all unique wa_ids from FlowLog that have entries
+        flow_log_wa_ids_result = (
+            db.query(FlowLog.wa_id)
+            .filter(and_(*log_filters))
+            .distinct()
+            .all()
+        )
+        flow_log_wa_ids_set = {row[0] for row in flow_log_wa_ids_result if row[0]}
+
+        # Get all wa_ids that have Lead entries (pushed to Zoho)
+        pushed_wa_ids_result = (
+            db.query(Lead.wa_id)
+            .distinct()
+            .all()
+        )
+        pushed_wa_ids_set = {row[0] for row in pushed_wa_ids_result if row[0]}
+
+        # Find wa_ids that are in FlowLog but NOT in Lead (non-pushed leads)
+        non_pushed_wa_ids_set = flow_log_wa_ids_set - pushed_wa_ids_set
+        non_pushed_wa_ids = list(non_pushed_wa_ids_set)
+
+        if not non_pushed_wa_ids:
+            raise HTTPException(status_code=404, detail="No non-pushed leads found for the selected filters.")
+
+        # Get latest FlowLog entry for each non-pushed wa_id
+        latest_log_subq = (
+            db.query(
+                FlowLog.wa_id,
+                func.max(FlowLog.created_at).label('max_created_at')
+            )
+            .filter(FlowLog.wa_id.in_(non_pushed_wa_ids))
+            .filter(and_(*log_filters))
+            .group_by(FlowLog.wa_id)
+            .subquery()
+        )
+
+        # Get full FlowLog entries with customer info
+        results = (
+            db.query(
+                FlowLog,
+                Customer.name,
+                Customer.phone_1,
+                Customer.email
+            )
+            .join(
+                latest_log_subq,
+                and_(
+                    FlowLog.wa_id == latest_log_subq.c.wa_id,
+                    FlowLog.created_at == latest_log_subq.c.max_created_at
+                )
+            )
+            .outerjoin(Customer, FlowLog.wa_id == Customer.wa_id)
+            .all()
+        )
+
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.title = "Non-Pushed Leads"
+        worksheet.append([
+            "Name", "Phone Number", "Email", "WA ID", "Flow Type", "Last Step", 
+            "Description", "Status Code", "Created At"
+        ])
+
+        rows_written = 0
+        for log, customer_name, phone_1, email in results:
+            name = customer_name or log.name or "Unknown"
+            phone = phone_1 or log.wa_id or ""
+            
+            worksheet.append([
+                name,
+                phone,
+                email or "",
+                log.wa_id or "",
+                log.flow_type or "",
+                log.step or "",
+                log.description or "",
+                log.status_code or "",
+                log.created_at.isoformat() if log.created_at else "",
+            ])
+            rows_written += 1
+
+        if rows_written == 0:
+            raise HTTPException(status_code=404, detail="No non-pushed leads matched the selected filters.")
+
+        output = io.BytesIO()
+        workbook.save(output)
+        output.seek(0)
+
+        suffix_parts = []
+        if flow_type:
+            suffix_parts.append(flow_type)
+        if date_from:
+            suffix_parts.append(f"from_{date_from}")
+        if date_to:
+            suffix_parts.append(f"to_{date_to}")
+        suffix = ("_" + "_".join(suffix_parts)) if suffix_parts else ""
+
+        return StreamingResponse(
+            output,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": f"attachment; filename=non_pushed_leads{suffix}.xlsx"
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/export-chats-without-push")
+def export_chats_without_push_excel(
+    db: Session = Depends(get_db),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
+):
+    """
+    Export customers who have messages (chats) but no FlowLog entries (never entered a flow).
+    Results can be filtered by date range.
+    """
+    try:
+        dt_from = _parse_dt(date_from)
+        dt_to = _parse_dt(date_to)
+        dt_to_upper: Optional[datetime] = None
+        if dt_to:
+            if date_to and len(date_to) == 10:
+                dt_to_upper = dt_to + timedelta(days=1)
+            else:
+                dt_to_upper = dt_to
+
+        # Get all wa_ids that have messages (join Message with Customer)
+        message_filters = []
+        if dt_from:
+            message_filters.append(Message.timestamp >= dt_from)
+        if dt_to_upper:
+            message_filters.append(Message.timestamp < dt_to_upper)
+
+        customers_with_messages_query = (
+            db.query(Customer.wa_id)
+            .join(Message, Customer.id == Message.customer_id)
+        )
+        if message_filters:
+            customers_with_messages_query = customers_with_messages_query.filter(and_(*message_filters))
+        customers_with_messages_result = customers_with_messages_query.distinct().all()
+        customers_with_messages_set = {row[0] for row in customers_with_messages_result if row[0]}
+
+        # Get all wa_ids that have FlowLog entries (entered a flow)
+        customers_with_flows_wa_ids = (
+            db.query(FlowLog.wa_id)
+            .distinct()
+            .all()
+        )
+        customers_with_flows_set = {row[0] for row in customers_with_flows_wa_ids if row[0]}
+
+        # Find customers with messages but NO FlowLog entries
+        chats_without_flow_wa_ids = customers_with_messages_set - customers_with_flows_set
+
+        if not chats_without_flow_wa_ids:
+            raise HTTPException(status_code=404, detail="No chats without flow push found for the selected filters.")
+
+        # Get customers
+        customers_query = (
+            db.query(Customer)
+            .filter(Customer.wa_id.in_(list(chats_without_flow_wa_ids)))
+        )
+
+        if dt_from or dt_to_upper:
+            # Also filter by customer creation date if date filters are provided
+            customer_date_filters = []
+            if dt_from:
+                customer_date_filters.append(Customer.created_at >= dt_from)
+            if dt_to_upper:
+                customer_date_filters.append(Customer.created_at < dt_to_upper)
+            if customer_date_filters:
+                customers_query = customers_query.filter(and_(*customer_date_filters))
+
+        customers = customers_query.order_by(Customer.created_at.desc()).limit(20000).all()
+
+        if not customers:
+            raise HTTPException(status_code=404, detail="No chats without flow push found for the selected filters.")
+
+        # Get latest message for each customer (join via customer_id)
+        latest_message_subq = (
+            db.query(
+                Message.customer_id,
+                func.max(Message.timestamp).label('max_timestamp')
+            )
+            .join(Customer, Message.customer_id == Customer.id)
+            .filter(Customer.wa_id.in_([c.wa_id for c in customers]))
+            .group_by(Message.customer_id)
+            .subquery()
+        )
+
+        latest_messages = (
+            db.query(
+                Customer.wa_id,
+                Message.body,
+                Message.timestamp
+            )
+            .join(Message, Message.customer_id == latest_message_subq.c.customer_id)
+            .join(Customer, Message.customer_id == Customer.id)
+            .filter(
+                and_(
+                    Message.timestamp == latest_message_subq.c.max_timestamp
+                )
+            )
+            .all()
+        )
+
+        message_map = {wa_id: (body, timestamp) for wa_id, body, timestamp in latest_messages}
+
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.title = "Chats Without Push"
+        worksheet.append([
+            "Name", "Phone Number", "Email", "WA ID", "Last Message", "Last Message Time", "Created At"
+        ])
+
+        rows_written = 0
+        for customer in customers:
+            last_msg_body, last_msg_time = message_map.get(customer.wa_id, ("", None))
+            
+            name = customer.name or "Unknown"
+            phone = customer.phone_1 or customer.wa_id or ""
+            
+            worksheet.append([
+                name,
+                phone,
+                customer.email or "",
+                customer.wa_id or "",
+                (last_msg_body[:100] if last_msg_body else ""),  # Truncate long messages
+                last_msg_time.isoformat() if last_msg_time else "",
+                customer.created_at.isoformat() if customer.created_at else "",
+            ])
+            rows_written += 1
+
+        if rows_written == 0:
+            raise HTTPException(status_code=404, detail="No chats without flow push matched the selected filters.")
+
+        output = io.BytesIO()
+        workbook.save(output)
+        output.seek(0)
+
+        suffix_parts = []
+        if date_from:
+            suffix_parts.append(f"from_{date_from}")
+        if date_to:
+            suffix_parts.append(f"to_{date_to}")
+        suffix = ("_" + "_".join(suffix_parts)) if suffix_parts else ""
+
+        return StreamingResponse(
+            output,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": f"attachment; filename=chats_without_push{suffix}.xlsx"
             },
         )
     except HTTPException:
