@@ -10,9 +10,14 @@ from schemas.customer_schema import CustomerCreate, CustomerUpdate, CustomerStat
 from uuid import UUID
 
 # Create a new customer or return existing if wa_id matches
-def get_or_create_customer(db: Session, customer_data: CustomerCreate) -> Customer:
+def get_or_create_customer(db: Session, customer_data: CustomerCreate, organization_id=None) -> Customer:
     customer = db.query(Customer).filter(Customer.wa_id == customer_data.wa_id).first()
     if customer:
+        # Update organization_id if provided and customer doesn't have one
+        if organization_id and not customer.organization_id:
+            customer.organization_id = organization_id
+            db.commit()
+            db.refresh(customer)
         # Ensure default phone_1 is set from wa_id if missing
         if not getattr(customer, "phone_1", None):
             try:
@@ -38,6 +43,7 @@ def get_or_create_customer(db: Session, customer_data: CustomerCreate) -> Custom
         name=customer_data.name,
         phone_1=customer_data.phone_1 or default_phone_1,
         phone_2=customer_data.phone_2,
+        organization_id=organization_id or customer_data.organization_id if hasattr(customer_data, 'organization_id') else None,
     )
     db.add(new_customer)
     db.commit()

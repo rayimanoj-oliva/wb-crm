@@ -101,11 +101,32 @@ class Organization(Base):
     
     # Relationships - only include models that have organization_id foreign key
     users = relationship("User", back_populates="organization")
+    whatsapp_numbers = relationship("WhatsAppNumber", back_populates="organization")
     # Note: Other relationships (customers, campaigns, orders, leads, templates, zoho_mappings)
     # will be added later when organization_id columns are added to those tables
     
     def __repr__(self):
         return f"<Organization(name='{self.name}', slug='{self.slug}')>"
+
+
+class WhatsAppNumber(Base):
+    __tablename__ = "whatsapp_numbers"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    phone_number_id = Column(String(100), nullable=False, unique=True, index=True)  # WhatsApp Business phone_number_id from Meta
+    display_number = Column(String(50), nullable=True)  # Human-readable phone number (e.g., "+91 77299 92376")
+    access_token = Column(String(500), nullable=True)  # WhatsApp Business API access token for this number
+    webhook_path = Column(String(255), nullable=True)  # Webhook path/endpoint (e.g., "/webhook", "/webhook2")
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    organization = relationship("Organization", back_populates="whatsapp_numbers")
+    
+    def __repr__(self):
+        return f"<WhatsAppNumber(phone_number_id='{self.phone_number_id}', display_number='{self.display_number}', organization='{self.organization.name if self.organization else None}')>"
 
 
 # ------------------------------
@@ -167,6 +188,7 @@ class Customer(Base):
     # Relations
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     user = relationship("User", back_populates="customers")
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=True, index=True)
 
     orders = relationship("Order", back_populates="customer")
     campaigns = relationship("Campaign", secondary="campaign_customers", back_populates="customers")

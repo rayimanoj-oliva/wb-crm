@@ -71,6 +71,7 @@ from controllers.flow_logs_controller import router as flow_logs_router
 from controllers.analytics_controller import router as analytics_router
 from controllers.quick_reply_controller import router as quick_reply_router
 from controllers.organization_controller import router as organization_router
+from controllers.whatsapp_number_controller import router as whatsapp_number_router
 from database.db import SessionLocal, engine, get_db
 from models import models
 from schemas.token_schema import Token
@@ -143,6 +144,7 @@ app.include_router(flow_logs_router)  # Flow logs API
 app.include_router(analytics_router)  # Analytics API
 app.include_router(quick_reply_router)
 app.include_router(organization_router)  # Organizations API
+app.include_router(whatsapp_number_router)  # WhatsApp Numbers API
 app.include_router(webhook_router)  # First webhook endpoint: POST/GET /webhook
 app.include_router(webhook2_router)  # Second webhook endpoint: POST/GET /webhook2
 

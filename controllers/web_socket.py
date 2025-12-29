@@ -361,8 +361,20 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         # Check prior messages first (before any early returns)
         prior_messages = message_service.get_messages_by_wa_id(db, wa_id)
 
-        # Fetch or create customer
-        customer = customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=sender_name))
+        # Look up organization from phone_number_id
+        organization_id = None
+        if phone_number_id:
+            try:
+                from services.whatsapp_number_service import get_organization_by_phone_id
+                organization = get_organization_by_phone_id(db, str(phone_number_id))
+                if organization:
+                    organization_id = organization.id
+                    print(f"[ws_webhook] DEBUG - Found organization {organization.name} (id: {organization_id}) for phone_number_id={phone_number_id}")
+            except Exception as e:
+                print(f"[ws_webhook] WARNING - Could not look up organization for phone_number_id={phone_number_id}: {e}")
+
+        # Fetch or create customer with organization_id
+        customer = customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=sender_name), organization_id=organization_id)
 
         # Save customer messages to database EARLY (before flow handling)
         # This ensures messages are saved even if flows return early
