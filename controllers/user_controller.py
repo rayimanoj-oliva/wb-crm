@@ -30,23 +30,18 @@ def create_user(
     if crud.get_user_by_email(db, user.email):
         raise HTTPException(status_code=400, detail="Email already registered")
 
-    # Admins can create users with any role, including SUPER_ADMIN
-    # SUPER_ADMIN should not have an organization_id (handled by model default)
-    created_user = crud.create_user(db, user)
-    
-    # Ensure organization_id is None for SUPER_ADMIN (supports both legacy role enum and new role_obj)
-    is_super_admin = False
-    if hasattr(created_user, 'role_obj') and created_user.role_obj and created_user.role_obj.name == "SUPER_ADMIN":
-        is_super_admin = True
-    elif created_user.role == "SUPER_ADMIN":
-        is_super_admin = True
-    
-    if is_super_admin:
-        created_user.organization_id = None
-        db.commit()
-        db.refresh(created_user)
-    
-    return created_user
+    try:
+        # create_user now handles organization_id and role_id validation
+        # It ensures:
+        # - SUPER_ADMIN has organization_id = None
+        # - ORG_ADMIN and AGENT have organization_id set
+        # - Organization exists if organization_id is provided
+        created_user = crud.create_user(db, user)
+        return created_user
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create user: {str(e)}")
 
 @router.get("/")
 def read_users(
@@ -105,21 +100,20 @@ def update_user(
             detail="Only admins can update other users"
         )
     
-    # If updating to SUPER_ADMIN, ensure organization_id is None
-    if user.role == "SUPER_ADMIN":
-        target_user.organization_id = None
-    
-    updated = crud.update_user(db, user_id, user)
-    if not updated:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    # Ensure organization_id is None for SUPER_ADMIN after update
-    if updated.role == "SUPER_ADMIN":
-        updated.organization_id = None
-        db.commit()
-        db.refresh(updated)
-    
-    return updated
+    try:
+        # update_user now handles organization_id and role_id validation
+        # It ensures:
+        # - SUPER_ADMIN has organization_id = None
+        # - ORG_ADMIN and AGENT have organization_id set
+        # - Organization exists if organization_id is provided
+        updated = crud.update_user(db, user_id, user)
+        if not updated:
+            raise HTTPException(status_code=404, detail="User not found")
+        return updated
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update user: {str(e)}")
 
 @router.delete("/{user_id}")
 def delete_user(
