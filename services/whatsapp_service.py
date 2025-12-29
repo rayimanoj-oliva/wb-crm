@@ -345,34 +345,42 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
             )
         
         # ALWAYS create button component when required (even if we only have one param)
-        button_index_str = str(button_index).strip() if button_index is not None else "0"
+        # Convert button_index to integer (WhatsApp API requires integer, not string)
+        try:
+            button_index_int = int(str(button_index).strip()) if button_index is not None else 0
+        except (ValueError, AttributeError):
+            button_index_int = 0
         button_sub_type_str = str(button_sub_type or "url").strip()
 
         button_component = {
             "type": "button",
             "sub_type": button_sub_type_str,
-            "index": button_index_str,
+            "index": button_index_int,  # WhatsApp API requires integer, not string
             "parameters": [{"type": "text", "text": p} for p in cleaned_params]
         }
         components = replace_component(components, "button", button_component)
         logger.debug(
-            f"✅ Created button component with index={button_index_str}, "
+            f"✅ Created button component with index={button_index_int}, "
             f"sub_type={button_sub_type_str}, params={cleaned_params}"
         )
     elif cleaned_params:
         # Button doesn't require param but we have params - create component anyway
-        button_index_str = str(button_index).strip() if button_index is not None else "0"
+        # Convert button_index to integer (WhatsApp API requires integer, not string)
+        try:
+            button_index_int = int(str(button_index).strip()) if button_index is not None else 0
+        except (ValueError, AttributeError):
+            button_index_int = 0
         button_sub_type_str = str(button_sub_type or "url").strip()
 
         button_component = {
             "type": "button",
             "sub_type": button_sub_type_str,
-            "index": button_index_str,
+            "index": button_index_int,  # WhatsApp API requires integer, not string
             "parameters": [{"type": "text", "text": p} for p in cleaned_params]
         }
         components = replace_component(components, "button", button_component)
         logger.debug(
-            f"Created optional button component with index={button_index_str}, "
+            f"Created optional button component with index={button_index_int}, "
             f"sub_type={button_sub_type_str}, params={cleaned_params}"
         )
     else:

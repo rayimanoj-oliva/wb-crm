@@ -343,10 +343,15 @@ async def send_whatsapp_message(
                     btn_param_list = [p.strip() for p in template_button_params.split(",") if p]
 
                 if btn_param_list:
+                    # Convert button_index to integer (WhatsApp API requires integer, not string)
+                    try:
+                        button_index_int = int(str(template_button_index or "0").strip())
+                    except (ValueError, AttributeError):
+                        button_index_int = 0
                     button_component = {
                         "type": "button",
                         "sub_type": str(template_button_sub_type or "url"),
-                        "index": str(template_button_index or "0"),  # WhatsApp buttons are 0-indexed
+                        "index": button_index_int,  # WhatsApp API requires integer, not string
                         "parameters": [
                             {"type": "text", "text": v} for v in btn_param_list
                         ]
