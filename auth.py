@@ -73,9 +73,11 @@ def get_current_admin_user(current_user: User = Depends(get_current_user)):
     if hasattr(current_user, 'role_obj') and current_user.role_obj:
         if current_user.role_obj.name in ["SUPER_ADMIN", "ORG_ADMIN"]:
             is_admin = True
-    # Fallback to legacy role enum
-    elif current_user.role in ["ADMIN", "SUPER_ADMIN"]:
-        is_admin = True
+    
+    # Also check legacy role enum (check both independently for better compatibility)
+    if not is_admin and hasattr(current_user, 'role') and current_user.role:
+        if str(current_user.role).upper() in ["ADMIN", "SUPER_ADMIN"]:
+            is_admin = True
     
     if not is_admin:
         raise HTTPException(
