@@ -2,8 +2,9 @@
 Organization service for business logic
 """
 from typing import Optional, List
+from datetime import datetime, date
 from sqlalchemy.orm import Session
-from sqlalchemy import or_, func
+from sqlalchemy import or_, func, and_
 from uuid import UUID
 
 from models.models import Organization, User, Role
@@ -25,8 +26,16 @@ def create_organization(db: Session, organization_data: OrganizationCreate, crea
         if existing:
             raise ValueError(f"Organization with slug '{slug}' already exists")
     
+    # Check if code already exists
+    code = organization_data.code
+    if code:
+        existing_code = db.query(Organization).filter(Organization.code == code).first()
+        if existing_code:
+            raise ValueError(f"Organization with code '{code}' already exists")
+    
     organization = Organization(
         name=organization_data.name,
+        code=code,
         slug=slug,
         description=organization_data.description,
         is_active=organization_data.is_active
@@ -49,6 +58,8 @@ def get_organizations(
     limit: int = 100,
     search: Optional[str] = None,
     is_active: Optional[bool] = None,
+    from_date: Optional[date] = None,
+    to_date: Optional[date] = None,
     current_user: Optional[User] = None
 ) -> tuple[List[Organization], int]:
     """Get list of organizations with filtering"""
@@ -77,6 +88,7 @@ def get_organizations(
         query = query.filter(
             or_(
                 Organization.name.ilike(search_pattern),
+                Organization.code.ilike(search_pattern),
                 Organization.slug.ilike(search_pattern),
                 Organization.description.ilike(search_pattern)
             )
@@ -84,6 +96,15 @@ def get_organizations(
     
     if is_active is not None:
         query = query.filter(Organization.is_active == is_active)
+    
+    # Date filtering
+    if from_date:
+        query = query.filter(func.date(Organization.created_at) >= from_date)
+    if to_date:
+        query = query.filter(func.date(Organization.created_at) <= to_date)
+    
+    # Order by created_at descending (newest first)
+    query = query.order_by(Organization.created_at.desc())
     
     # Get total count
     total = query.count()
@@ -128,6 +149,15 @@ def update_organization(
         ).first()
         if existing:
             raise ValueError(f"Organization with slug '{update_data['slug']}' already exists")
+    
+    # Handle code uniqueness check
+    if "code" in update_data and update_data["code"]:
+        existing_code = db.query(Organization).filter(
+            Organization.code == update_data["code"],
+            Organization.id != organization_id
+        ).first()
+        if existing_code:
+            raise ValueError(f"Organization with code '{update_data['code']}' already exists")
     
     for field, value in update_data.items():
         setattr(organization, field, value)

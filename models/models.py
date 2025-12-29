@@ -92,6 +92,7 @@ class Organization(Base):
     
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String(255), nullable=False, index=True)
+    code = Column(String(50), nullable=True, unique=True, index=True)  # Organization code (e.g., RH0007)
     slug = Column(String(255), nullable=True, unique=True, index=True)
     description = Column(Text, nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)

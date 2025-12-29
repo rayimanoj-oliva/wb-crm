@@ -3,8 +3,12 @@ Organization controller for API endpoints
 """
 from typing import Optional
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, Query
+from datetime import date
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+import csv
+import io
 
 from database.db import get_db
 from models.models import User
@@ -44,6 +48,8 @@ def list_organizations(
     limit: int = Query(100, ge=1, le=1000),
     search: Optional[str] = Query(None),
     is_active: Optional[bool] = Query(None),
+    from_date: Optional[date] = Query(None, description="Filter by created date from"),
+    to_date: Optional[date] = Query(None, description="Filter by created date to"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -54,6 +60,8 @@ def list_organizations(
         limit=limit,
         search=search,
         is_active=is_active,
+        from_date=from_date,
+        to_date=to_date,
         current_user=current_user
     )
     return OrganizationListResponse(items=organizations, total=total)
@@ -118,4 +126,59 @@ def delete_organization(
     success = organization_service.delete_organization(db, organization_id, current_user)
     if not success:
         raise HTTPException(status_code=404, detail="Organization not found")
+
+
+@router.get("/export/csv")
+def export_organizations_csv(
+    search: Optional[str] = Query(None),
+    is_active: Optional[bool] = Query(None),
+    from_date: Optional[date] = Query(None),
+    to_date: Optional[date] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_super_admin)
+):
+    """Export organizations to CSV (Super Admin only)"""
+    # Get all organizations (no pagination for export)
+    organizations, _ = organization_service.get_organizations(
+        db=db,
+        skip=0,
+        limit=10000,  # Large limit for export
+        search=search,
+        is_active=is_active,
+        from_date=from_date,
+        to_date=to_date,
+        current_user=current_user
+    )
+    
+    # Create CSV in memory
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    # Write header
+    writer.writerow([
+        'Name', 'Code', 'Slug', 'Description', 'Status', 
+        'Created Date', 'Last Modified'
+    ])
+    
+    # Write data
+    for org in organizations:
+        writer.writerow([
+            org.name,
+            org.code or '',
+            org.slug or '',
+            org.description or '',
+            'Active' if org.is_active else 'Inactive',
+            org.created_at.strftime('%Y-%m-%d %H:%M:%S') if org.created_at else '',
+            org.updated_at.strftime('%Y-%m-%d %H:%M:%S') if org.updated_at else ''
+        ])
+    
+    # Prepare response
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": "attachment; filename=organizations_export.csv"
+        }
+    )
 
