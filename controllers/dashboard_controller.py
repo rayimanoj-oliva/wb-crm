@@ -19,7 +19,14 @@ router = APIRouter(tags=["Dashboard"])
 
 
 @router.get("/summary")
-def dashboard_summary(campaign_limit: Optional[int] = 10, db: Session = Depends(get_db)):
+def dashboard_summary(
+    campaign_limit: Optional[int] = 10,
+    organization_id: Optional[str] = None,
+    campaign_id: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
     """
     Unified dashboard API that returns all dashboard data in a single call.
     Replaces 7 separate API calls:
@@ -30,8 +37,21 @@ def dashboard_summary(campaign_limit: Optional[int] = 10, db: Session = Depends(
     - /dashboard/recent-failed-messages
     - /dashboard/campaign-performance/summary
     - /dashboard/campaign-performance/list
+    
+    Filters:
+    - organization_id: Filter data by organization
+    - campaign_id: Filter data by specific campaign
+    - date_from: Filter data from this date (YYYY-MM-DD)
+    - date_to: Filter data to this date (YYYY-MM-DD)
     """
-    return get_dashboard_summary(db, campaign_limit=campaign_limit)
+    return get_dashboard_summary(
+        db, 
+        campaign_limit=campaign_limit, 
+        organization_id=organization_id,
+        campaign_id=campaign_id,
+        date_from=date_from,
+        date_to=date_to
+    )
 
 
 @router.get("/today")
