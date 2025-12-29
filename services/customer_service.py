@@ -68,9 +68,17 @@ def get_unread_count(wa_id: str) -> int:
         return 0
 
 def get_all_customers(db: Session, skip: int = 0, limit: int = 50, search: str = None,
-                       include_flow_step: bool = False, flow_type: str = None):
-    """Get all customers with pagination, optional search, and optional flow step data."""
+                       include_flow_step: bool = False, flow_type: str = None, organization_id=None):
+    """Get all customers with pagination, optional search, and optional flow step data.
+    
+    Args:
+        organization_id: If provided, filter customers by this organization_id. If None, returns all customers.
+    """
     query = db.query(Customer)
+
+    # Filter by organization_id if provided
+    if organization_id is not None:
+        query = query.filter(Customer.organization_id == organization_id)
 
     # Apply search filter if provided
     if search:
@@ -450,6 +458,10 @@ def get_conversations_optimized(
     # FILTERS
     # -----------------------------
 
+    # Organization filter
+    if organization_id is not None:
+        query = query.filter(Customer.organization_id == organization_id)
+
     # Search filter
     if search:
         like = f"%{search}%"
@@ -632,6 +644,7 @@ def get_conversations_by_peer(
     pending_reply_only: bool = False,
     date_filter: str = None,
     unread_only: bool = False,
+    organization_id=None,
 ):
     """
     Returns one row per (customer_id, peer_number) using the latest message per pair.
@@ -722,6 +735,10 @@ def get_conversations_by_peer(
     )
 
     # Filters
+    # Organization filter
+    if organization_id is not None:
+        query = query.filter(Customer.organization_id == organization_id)
+
     if search:
         like = f"%{search}%"
         query = query.filter(

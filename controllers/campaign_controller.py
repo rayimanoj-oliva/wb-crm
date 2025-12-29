@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session
 
 from auth import get_current_user
 from database.db import get_db
+from models.models import User
+from utils.organization_filter import get_user_organization_id
 from schemas.campaign_schema import (
     BulkTemplateRequest,
     CampaignOut,
@@ -139,14 +141,15 @@ def list_campaigns(
     search: Optional[str] = Query(None, description="Search by campaign name or description"),
     include_jobs: bool = Query(False, description="Include job details (deprecated, use /list for optimized response)"),
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
+    current_user: User = Depends(get_current_user)
 ):
     """
     List campaigns with pagination and optional search.
 
     NOTE: For better performance, use GET /campaign/list which returns optimized payload.
     """
-    return campaign_service.get_all_campaigns(db, skip=skip, limit=limit, search=search, include_jobs=include_jobs)
+    organization_id = get_user_organization_id(current_user)
+    return campaign_service.get_all_campaigns(db, skip=skip, limit=limit, search=search, include_jobs=include_jobs, organization_id=organization_id)
 
 
 @router.get("/list")
@@ -155,7 +158,7 @@ def list_campaigns_optimized(
     limit: int = Query(50, ge=1, le=200, description="Max records to return"),
     search: Optional[str] = Query(None, description="Search by campaign name or description"),
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
+    current_user: User = Depends(get_current_user)
 ):
     """
     Optimized campaign list API - returns minimal payload with aggregated stats.
@@ -174,7 +177,8 @@ def list_campaigns_optimized(
     - Individual job statuses (use /campaign/{id}/logs for that)
     - Customer/recipient lists (use /campaign/{id}/recipients)
     """
-    return campaign_service.get_campaigns_list_optimized(db, skip=skip, limit=limit, search=search)
+    organization_id = get_user_organization_id(current_user)
+    return campaign_service.get_campaigns_list_optimized(db, skip=skip, limit=limit, search=search, organization_id=organization_id)
 
 @router.get("/{campaign_id}", response_model=CampaignOut)
 def get_campaign(campaign_id: UUID, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):

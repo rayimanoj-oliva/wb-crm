@@ -122,13 +122,20 @@ rabbitmq_manager = RabbitMQConnectionManager()
 
 
 
-def get_all_campaigns(db: Session, skip: int = 0, limit: int = 50, search: str = None, include_jobs: bool = False):
+def get_all_campaigns(db: Session, skip: int = 0, limit: int = 50, search: str = None, include_jobs: bool = False, organization_id=None):
     """Get all campaigns with pagination, optional search, and job details.
 
     NOTE: include_jobs=True is deprecated for performance reasons.
     Use get_campaigns_list_optimized() instead for the campaigns list page.
+    
+    Args:
+        organization_id: If provided, filter campaigns by this organization_id. If None, returns all campaigns.
     """
     query = db.query(Campaign)
+
+    # Filter by organization_id if provided
+    if organization_id is not None:
+        query = query.filter(Campaign.organization_id == organization_id)
 
     # Apply search filter if provided
     if search:
@@ -239,7 +246,7 @@ def get_all_campaigns(db: Session, skip: int = 0, limit: int = 50, search: str =
     return {"items": campaign_items, "total": total, "skip": skip, "limit": limit}
 
 
-def get_campaigns_list_optimized(db: Session, skip: int = 0, limit: int = 50, search: str = None):
+def get_campaigns_list_optimized(db: Session, skip: int = 0, limit: int = 50, search: str = None, organization_id=None):
     """
     Optimized campaign list - single query with all needed data.
 
@@ -255,11 +262,19 @@ def get_campaigns_list_optimized(db: Session, skip: int = 0, limit: int = 50, se
     - /user/ (for usernames)
     - /cost/ (for cost types)
     - /job/campaign/{id}/job-stats (for stats)
+    
+    Args:
+        organization_id: If provided, filter campaigns by this organization_id. If None, returns all campaigns.
     """
     from sqlalchemy.orm import aliased
+    from models.models import User
 
     # Base query
     query = db.query(Campaign)
+
+    # Filter by organization_id if provided
+    if organization_id is not None:
+        query = query.filter(Campaign.organization_id == organization_id)
 
     if search:
         search_term = f"%{search}%"

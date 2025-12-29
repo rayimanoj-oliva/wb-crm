@@ -8,6 +8,8 @@ from schemas.customer_schema import CustomerCreate, CustomerOut, CustomerUpdate,
 from services import customer_service
 from database.db import get_db
 from uuid import UUID
+from auth import get_current_user
+from utils.organization_filter import get_user_organization_id
 
 from services.customer_service import update_customer_status
 
@@ -25,7 +27,8 @@ def list_conversations_optimized(
     pending_reply_only: bool = Query(False, description="Show only customers pending agent reply"),
     date_filter: Optional[str] = Query(None, description="Filter by message date (YYYY-MM-DD)"),
     unread_only: bool = Query(False, description="Show only customers with unread messages"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
     Optimized unified conversation list API.
@@ -38,6 +41,7 @@ def list_conversations_optimized(
 
     All in a single API call to replace multiple frontend calls.
     """
+    organization_id = get_user_organization_id(current_user)
     return customer_service.get_conversations_optimized(
         db,
         skip=skip,
@@ -49,6 +53,7 @@ def list_conversations_optimized(
         pending_reply_only=pending_reply_only,
         date_filter=date_filter,
         unread_only=unread_only,
+        organization_id=organization_id,
     )
 
 @router.get("/conversations/by-peer")
@@ -62,12 +67,14 @@ def list_conversations_by_peer(
     pending_reply_only: bool = Query(False, description="Show only customers pending agent reply"),
     date_filter: Optional[str] = Query(None, description="Filter by message date (YYYY-MM-DD)"),
     unread_only: bool = Query(False, description="Show only conversations with unread messages"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
     Returns conversations grouped by (customer_id, peer_number).
     Use when you need the same customer to appear under multiple business numbers they've chatted with.
     """
+    organization_id = get_user_organization_id(current_user)
     return customer_service.get_conversations_by_peer(
         db,
         skip=skip,
@@ -79,6 +86,7 @@ def list_conversations_by_peer(
         pending_reply_only=pending_reply_only,
         date_filter=date_filter,
         unread_only=unread_only,
+        organization_id=organization_id,
     )
 
 @router.post("/", response_model=CustomerOut)
@@ -99,7 +107,8 @@ def list_customers(
     search: Optional[str] = Query(None, description="Search by name, phone, or email"),
     include_flow_step: bool = Query(False, description="Include last flow step data for each customer"),
     flow_type: Optional[str] = Query(None, description="Flow type: treatment or lead_appointment"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
     List customers with pagination and optional search.
@@ -111,9 +120,11 @@ def list_customers(
     - items: list of customers
     - flow_steps: dict mapping wa_id -> {last_step, reached_at, ...}
     """
+    organization_id = get_user_organization_id(current_user)
     return customer_service.get_all_customers(
         db, skip=skip, limit=limit, search=search,
-        include_flow_step=include_flow_step, flow_type=flow_type
+        include_flow_step=include_flow_step, flow_type=flow_type,
+        organization_id=organization_id
     )
 
 @router.put("/{customer_id}")
