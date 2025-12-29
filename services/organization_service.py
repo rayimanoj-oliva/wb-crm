@@ -69,10 +69,17 @@ def get_organizations(
     if current_user:
         # Check if user has SUPER_ADMIN role
         is_super_admin = False
-        if current_user.role_obj and current_user.role_obj.name == "SUPER_ADMIN":
-            is_super_admin = True
-        elif current_user.role == "ADMIN":  # Legacy support
-            is_super_admin = True
+        
+        # Check new role system first
+        if hasattr(current_user, 'role_obj') and current_user.role_obj:
+            if current_user.role_obj.name == "SUPER_ADMIN":
+                is_super_admin = True
+        
+        # Also check legacy role enum (check both independently for better compatibility)
+        if not is_super_admin and hasattr(current_user, 'role') and current_user.role:
+            role_str = str(current_user.role).upper()
+            if role_str in ["SUPER_ADMIN", "ADMIN"]:
+                is_super_admin = True
         
         if not is_super_admin:
             # Non-super admins can only see their own organization
@@ -128,10 +135,17 @@ def update_organization(
     
     # Check permissions
     is_super_admin = False
-    if current_user.role_obj and current_user.role_obj.name == "SUPER_ADMIN":
-        is_super_admin = True
-    elif current_user.role == "ADMIN":  # Legacy support
-        is_super_admin = True
+    
+    # Check new role system first
+    if hasattr(current_user, 'role_obj') and current_user.role_obj:
+        if current_user.role_obj.name == "SUPER_ADMIN":
+            is_super_admin = True
+    
+    # Also check legacy role enum (check both independently for better compatibility)
+    if not is_super_admin and hasattr(current_user, 'role') and current_user.role:
+        role_str = str(current_user.role).upper()
+        if role_str in ["SUPER_ADMIN", "ADMIN"]:
+            is_super_admin = True
     
     if not is_super_admin:
         # Non-super admins can only update their own organization
@@ -175,10 +189,17 @@ def delete_organization(db: Session, organization_id: UUID, current_user: User) 
     
     # Only Super Admin can delete organizations
     is_super_admin = False
-    if current_user.role_obj and current_user.role_obj.name == "SUPER_ADMIN":
-        is_super_admin = True
-    elif current_user.role == "ADMIN":  # Legacy support
-        is_super_admin = True
+    
+    # Check new role system first
+    if hasattr(current_user, 'role_obj') and current_user.role_obj:
+        if current_user.role_obj.name == "SUPER_ADMIN":
+            is_super_admin = True
+    
+    # Also check legacy role enum (check both independently for better compatibility)
+    if not is_super_admin and hasattr(current_user, 'role') and current_user.role:
+        role_str = str(current_user.role).upper()
+        if role_str in ["SUPER_ADMIN", "ADMIN"]:
+            is_super_admin = True
     
     if not is_super_admin:
         raise PermissionError("Only Super Admin can delete organizations")
