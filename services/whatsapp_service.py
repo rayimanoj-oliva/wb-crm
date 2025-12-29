@@ -359,8 +359,8 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
             "parameters": [{"type": "text", "text": p} for p in cleaned_params]
         }
         components = replace_component(components, "button", button_component)
-        logger.debug(
-            f"✅ Created button component with index={button_index_int}, "
+        logger.info(
+            f"✅ Created button component with index={button_index_int} (type: {type(button_index_int).__name__}), "
             f"sub_type={button_sub_type_str}, params={cleaned_params}"
         )
     elif cleaned_params:
@@ -379,8 +379,8 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
             "parameters": [{"type": "text", "text": p} for p in cleaned_params]
         }
         components = replace_component(components, "button", button_component)
-        logger.debug(
-            f"Created optional button component with index={button_index_int}, "
+        logger.info(
+            f"Created optional button component with index={button_index_int} (type: {type(button_index_int).__name__}), "
             f"sub_type={button_sub_type_str}, params={cleaned_params}"
         )
     else:
@@ -466,8 +466,8 @@ def build_template_payload_for_recipient(recipient: dict, template_content: dict
                         f"Button component requires at least one parameter but none found for recipient {recipient.get('phone_number')}. "
                         f"Please ensure button_params has a value in Excel."
                     )
-                logger.debug(
-                    f"✅ Button component validated: index={comp.get('index')}, "
+                logger.info(
+                    f"✅ Button component validated: index={comp.get('index')} (type: {type(comp.get('index')).__name__}), "
                     f"params_count={len(button_params_in_comp)}, "
                     f"params={[p.get('text', '')[:20] for p in button_params_in_comp]}"
                 )

@@ -460,8 +460,11 @@ def callback(ch, method, properties, body):
                     params = comp.get('parameters', [])
                     logger.info(f"   Component {idx}: type={comp_type}, params_count={len(params)}")
                     if comp_type == 'button':
-                        logger.info(f"      Button index: {comp.get('index')}, sub_type: {comp.get('sub_type')}")
+                        btn_index = comp.get('index')
+                        logger.info(f"      Button index: {btn_index} (type: {type(btn_index).__name__}), sub_type: {comp.get('sub_type')}")
                         logger.info(f"      Button params: {[p.get('text', '')[:50] for p in params]}")
+                        if isinstance(btn_index, str):
+                            logger.error(f"      ⚠️ WARNING: Button index is still a STRING! Should be integer. This will cause (#131008) error.")
             logger.debug(f"   Full payload: {payload_debug}")
 
             # Get HTTP session with connection pooling
