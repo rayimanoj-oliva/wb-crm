@@ -100,13 +100,17 @@ def get_current_agent_user(current_user: User = Depends(get_current_user)):
 def get_current_super_admin(current_user: User = Depends(get_current_user)):
     """Dependency to ensure the current user is a SUPER_ADMIN"""
     is_super_admin = False
+    
     # Check new role system first
     if hasattr(current_user, 'role_obj') and current_user.role_obj:
         if current_user.role_obj.name == "SUPER_ADMIN":
             is_super_admin = True
-    # Fallback to legacy role enum
-    elif current_user.role == "ADMIN":
-        is_super_admin = True
+    
+    # Also check legacy role enum (check both independently for better compatibility)
+    if not is_super_admin and hasattr(current_user, 'role') and current_user.role:
+        role_str = str(current_user.role).upper()
+        if role_str in ["SUPER_ADMIN", "ADMIN"]:
+            is_super_admin = True
     
     if not is_super_admin:
         raise HTTPException(
