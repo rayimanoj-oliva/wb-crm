@@ -30,8 +30,23 @@ def create_user(
     if crud.get_user_by_email(db, user.email):
         raise HTTPException(status_code=400, detail="Email already registered")
 
+    # Admins can create users with any role, including SUPER_ADMIN
     # SUPER_ADMIN should not have an organization_id (handled by model default)
-    return crud.create_user(db, user)
+    created_user = crud.create_user(db, user)
+    
+    # Ensure organization_id is None for SUPER_ADMIN (supports both legacy role enum and new role_obj)
+    is_super_admin = False
+    if hasattr(created_user, 'role_obj') and created_user.role_obj and created_user.role_obj.name == "SUPER_ADMIN":
+        is_super_admin = True
+    elif created_user.role == "SUPER_ADMIN":
+        is_super_admin = True
+    
+    if is_super_admin:
+        created_user.organization_id = None
+        db.commit()
+        db.refresh(created_user)
+    
+    return created_user
 
 @router.get("/")
 def read_users(

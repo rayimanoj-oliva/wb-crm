@@ -56,6 +56,7 @@ from controllers import (
     template_controller, files_controller, job_controller, dashboard_controller, referrer_controller
 )
 from controllers.payment_controller import router as payment_router
+from controllers.webhook_controller import router as webhook_router, router2 as webhook2_router
 
 from controllers.address_controller import router as address_router
 from controllers.catalog import router as catalog_router
@@ -142,6 +143,8 @@ app.include_router(flow_logs_router)  # Flow logs API
 app.include_router(analytics_router)  # Analytics API
 app.include_router(quick_reply_router)
 app.include_router(organization_router)  # Organizations API
+app.include_router(webhook_router)  # First webhook endpoint: POST/GET /webhook
+app.include_router(webhook2_router)  # Second webhook endpoint: POST/GET /webhook2
 
 
 
