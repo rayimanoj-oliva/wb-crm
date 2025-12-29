@@ -48,6 +48,7 @@ def create_user(db: Session, user: UserCreate):
     - If role_id is provided, use it; otherwise use legacy role enum
     """
     from models.models import Role, Organization
+    from schemas.user_schema import UserRole
     
     # Determine if this is a SUPER_ADMIN
     is_super_admin = False
