@@ -61,7 +61,12 @@ def list_flow_logs(
         if date_to:
             dt_to = _parse_dt(date_to)
             if dt_to:
-                filters.append(FlowLog.created_at <= dt_to)
+                # Include entire day when only a date is provided
+                if date_to and len(date_to) == 10:
+                    dt_to_upper = dt_to + timedelta(days=1)
+                    filters.append(FlowLog.created_at < dt_to_upper)
+                else:
+                    filters.append(FlowLog.created_at <= dt_to)
 
         query = db.query(FlowLog).filter(and_(*filters)) if filters else db.query(FlowLog)
         if q:
@@ -399,6 +404,247 @@ def export_non_pushed_leads_excel(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/export-all-leads")
+def export_all_leads_excel(
+    db: Session = Depends(get_db),
+    flow_type: Optional[str] = Query(None),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
+):
+    """
+    Export all leads (both pushed and non-pushed) as an Excel workbook with separate sheets.
+    Results can be filtered by flow type and date range.
+    """
+    try:
+        dt_from = _parse_dt(date_from)
+        dt_to = _parse_dt(date_to)
+        dt_to_upper: Optional[datetime] = None
+        if dt_to:
+            if date_to and len(date_to) == 10:
+                dt_to_upper = dt_to + timedelta(days=1)
+            else:
+                dt_to_upper = dt_to
+
+        workbook = Workbook()
+        
+        # Remove default sheet
+        if workbook.active:
+            workbook.remove(workbook.active)
+
+        flow_type_labels = {
+            "treatment": "Marketing",
+            "lead_appointment": "Meta Ad Campaign",
+        }
+
+        def infer_flow_from_source(lead_source: Optional[str]) -> Optional[str]:
+            if not lead_source:
+                return None
+            source_lower = lead_source.lower()
+            if "business" in source_lower:
+                return "treatment"
+            if "facebook" in source_lower or "meta" in source_lower:
+                return "lead_appointment"
+            return None
+
+        # Sheet 1: Pushed Leads
+        pushed_sheet = workbook.create_sheet("Pushed Leads")
+        pushed_sheet.append(["Name", "Lead ID", "Lead Source", "Sub Source", "Phone Number", "Type of Flow", "Created At"])
+
+        lead_query = db.query(Lead)
+        if dt_from:
+            lead_query = lead_query.filter(Lead.created_at >= dt_from)
+        if dt_to_upper:
+            lead_query = lead_query.filter(Lead.created_at < dt_to_upper)
+
+        leads: List[Lead] = (
+            lead_query.order_by(Lead.created_at.desc()).limit(20000).all()
+        )
+
+        log_filters = [
+            FlowLog.step == "result",
+            FlowLog.status_code == 200,
+            FlowLog.response_json.isnot(None),
+        ]
+        if flow_type:
+            log_filters.append(FlowLog.flow_type == flow_type)
+        if dt_from:
+            log_filters.append(FlowLog.created_at >= dt_from)
+        if dt_to_upper:
+            log_filters.append(FlowLog.created_at < dt_to_upper)
+
+        flow_log_map: Dict[str, str] = {}
+        wa_id_map: Dict[str, str] = {}
+
+        log_rows = db.query(FlowLog).filter(and_(*log_filters)).all()
+        for log in log_rows:
+            if not log.response_json:
+                continue
+            lead_id: Optional[str] = None
+            try:
+                payload = json.loads(log.response_json)
+                if isinstance(payload, dict):
+                    if payload.get("success") and not payload.get("duplicate") and not payload.get("skipped"):
+                        lead_id = payload.get("lead_id")
+                        if not lead_id:
+                            response_block = payload.get("response") or {}
+                            data_list = response_block.get("data") or []
+                            if data_list:
+                                details = (data_list[0] or {}).get("details") or {}
+                                lead_id = details.get("id")
+            except Exception:
+                continue
+
+            if not lead_id:
+                continue
+            lead_id_str = str(lead_id)
+            flow_log_map.setdefault(lead_id_str, log.flow_type or "")
+            if log.wa_id:
+                wa_id_map.setdefault(lead_id_str, log.wa_id)
+
+        pushed_rows_written = 0
+        for lead in leads:
+            lead_id = lead.zoho_lead_id
+            if not lead_id:
+                continue
+
+            flow_code = flow_log_map.get(lead_id) or infer_flow_from_source(lead.lead_source)
+            if flow_type:
+                if not flow_code:
+                    continue
+                if flow_code != flow_type:
+                    continue
+
+            flow_label = flow_type_labels.get(flow_code or "", flow_code or "Unknown")
+
+            name_parts = [lead.first_name or "", lead.last_name or ""]
+            name = " ".join(part.strip() for part in name_parts if part and part.strip()).strip() or "Unknown"
+
+            phone = lead.phone or lead.mobile or wa_id_map.get(lead_id) or ""
+
+            pushed_sheet.append([
+                name,
+                lead_id,
+                lead.lead_source or "",
+                lead.sub_source or "",
+                phone,
+                flow_label,
+                lead.created_at.isoformat() if lead.created_at else "",
+            ])
+            pushed_rows_written += 1
+
+        # Sheet 2: Non-Pushed Leads
+        non_pushed_sheet = workbook.create_sheet("Non-Pushed Leads")
+        non_pushed_sheet.append([
+            "Name", "Phone Number", "Email", "WA ID", "Flow Type", "Last Step", 
+            "Description", "Status Code", "Created At"
+        ])
+
+        log_filters_non_pushed = [
+            FlowLog.step.isnot(None),
+            FlowLog.wa_id.isnot(None),
+        ]
+        if flow_type:
+            log_filters_non_pushed.append(FlowLog.flow_type == flow_type)
+        if dt_from:
+            log_filters_non_pushed.append(FlowLog.created_at >= dt_from)
+        if dt_to_upper:
+            log_filters_non_pushed.append(FlowLog.created_at < dt_to_upper)
+
+        flow_log_wa_ids_result = (
+            db.query(FlowLog.wa_id)
+            .filter(and_(*log_filters_non_pushed))
+            .distinct()
+            .all()
+        )
+        flow_log_wa_ids_set = {row[0] for row in flow_log_wa_ids_result if row[0]}
+
+        pushed_wa_ids_result = (
+            db.query(Lead.wa_id)
+            .distinct()
+            .all()
+        )
+        pushed_wa_ids_set = {row[0] for row in pushed_wa_ids_result if row[0]}
+
+        non_pushed_wa_ids_set = flow_log_wa_ids_set - pushed_wa_ids_set
+        non_pushed_wa_ids = list(non_pushed_wa_ids_set)
+
+        non_pushed_rows_written = 0
+        if non_pushed_wa_ids:
+            latest_log_subq = (
+                db.query(
+                    FlowLog.wa_id,
+                    func.max(FlowLog.created_at).label('max_created_at')
+                )
+                .filter(FlowLog.wa_id.in_(non_pushed_wa_ids))
+                .filter(and_(*log_filters_non_pushed))
+                .group_by(FlowLog.wa_id)
+                .subquery()
+            )
+
+            results = (
+                db.query(
+                    FlowLog,
+                    Customer.name,
+                    Customer.phone_1,
+                    Customer.email
+                )
+                .join(
+                    latest_log_subq,
+                    and_(
+                        FlowLog.wa_id == latest_log_subq.c.wa_id,
+                        FlowLog.created_at == latest_log_subq.c.max_created_at
+                    )
+                )
+                .outerjoin(Customer, FlowLog.wa_id == Customer.wa_id)
+                .all()
+            )
+
+            for log, customer_name, phone_1, email in results:
+                name = customer_name or log.name or "Unknown"
+                phone = phone_1 or log.wa_id or ""
+                
+                non_pushed_sheet.append([
+                    name,
+                    phone,
+                    email or "",
+                    log.wa_id or "",
+                    log.flow_type or "",
+                    log.step or "",
+                    log.description or "",
+                    log.status_code or "",
+                    log.created_at.isoformat() if log.created_at else "",
+                ])
+                non_pushed_rows_written += 1
+
+        if pushed_rows_written == 0 and non_pushed_rows_written == 0:
+            raise HTTPException(status_code=404, detail="No leads found for the selected filters.")
+
+        output = io.BytesIO()
+        workbook.save(output)
+        output.seek(0)
+
+        suffix_parts = []
+        if flow_type:
+            suffix_parts.append(flow_type)
+        if date_from:
+            suffix_parts.append(f"from_{date_from}")
+        if date_to:
+            suffix_parts.append(f"to_{date_to}")
+        suffix = ("_" + "_".join(suffix_parts)) if suffix_parts else ""
+
+        return StreamingResponse(
+            output,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": f"attachment; filename=all_leads{suffix}.xlsx"
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/export-chats-without-push")
 def export_chats_without_push_excel(
     db: Session = Depends(get_db),
@@ -471,34 +717,39 @@ def export_chats_without_push_excel(
             raise HTTPException(status_code=404, detail="No chats without flow push found for the selected filters.")
 
         # Get latest message for each customer (join via customer_id)
-        latest_message_subq = (
-            db.query(
-                Message.customer_id,
-                func.max(Message.timestamp).label('max_timestamp')
-            )
-            .join(Customer, Message.customer_id == Customer.id)
-            .filter(Customer.wa_id.in_([c.wa_id for c in customers]))
-            .group_by(Message.customer_id)
-            .subquery()
-        )
-
-        latest_messages = (
-            db.query(
-                Customer.wa_id,
-                Message.body,
-                Message.timestamp
-            )
-            .join(Message, Message.customer_id == latest_message_subq.c.customer_id)
-            .join(Customer, Message.customer_id == Customer.id)
-            .filter(
-                and_(
-                    Message.timestamp == latest_message_subq.c.max_timestamp
+        customer_wa_ids = [c.wa_id for c in customers if c.wa_id]
+        if not customer_wa_ids:
+            message_map = {}
+        else:
+            latest_message_subq = (
+                db.query(
+                    Message.customer_id,
+                    func.max(Message.timestamp).label('max_timestamp')
                 )
+                .join(Customer, Message.customer_id == Customer.id)
+                .filter(Customer.wa_id.in_(customer_wa_ids))
+                .group_by(Message.customer_id)
+                .subquery()
             )
-            .all()
-        )
 
-        message_map = {wa_id: (body, timestamp) for wa_id, body, timestamp in latest_messages}
+            latest_messages = (
+                db.query(
+                    Customer.wa_id,
+                    Message.body,
+                    Message.timestamp
+                )
+                .select_from(Message)
+                .join(
+                    latest_message_subq,
+                    and_(
+                        Message.customer_id == latest_message_subq.c.customer_id,
+                        Message.timestamp == latest_message_subq.c.max_timestamp
+                    )
+                )
+                .join(Customer, Message.customer_id == Customer.id)
+                .all()
+            )
+            message_map = {wa_id: (body, timestamp) for wa_id, body, timestamp in latest_messages}
 
         workbook = Workbook()
         worksheet = workbook.active
