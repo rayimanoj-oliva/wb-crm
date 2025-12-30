@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, or_, text, func
+from sqlalchemy import and_, or_, text, func, case
 import csv
 import io
 import json
@@ -29,6 +29,54 @@ def _parse_dt(val: Optional[str]) -> Optional[datetime]:
         return datetime.fromisoformat(val)
     except Exception:
         return None
+
+
+def _get_peer_numbers_for_customers(db: Session, wa_ids: List[str]) -> Dict[str, str]:
+    """
+    Get peer numbers (business WhatsApp numbers) for a list of customer wa_ids.
+    Returns a dict mapping customer wa_id to their peer number.
+    The peer number is the business number the customer messaged.
+    """
+    if not wa_ids:
+        return {}
+    
+    # Get the first message for each customer to determine peer number
+    # Peer number is the business number (to_wa_id when customer sent, from_wa_id when business sent)
+    peer_subq = (
+        db.query(
+            Message.customer_id,
+            func.min(Message.timestamp).label('first_timestamp')
+        )
+        .join(Customer, Message.customer_id == Customer.id)
+        .filter(Customer.wa_id.in_(wa_ids))
+        .group_by(Message.customer_id)
+        .subquery()
+    )
+    
+    peer_results = (
+        db.query(
+            Customer.wa_id,
+            func.coalesce(
+                case(
+                    (Message.from_wa_id == Customer.wa_id, Message.to_wa_id),
+                    else_=Message.from_wa_id
+                ),
+                ""
+            ).label('peer_number')
+        )
+        .select_from(Message)
+        .join(
+            peer_subq,
+            and_(
+                Message.customer_id == peer_subq.c.customer_id,
+                Message.timestamp == peer_subq.c.first_timestamp
+            )
+        )
+        .join(Customer, Message.customer_id == Customer.id)
+        .all()
+    )
+    
+    return {wa_id: peer_number for wa_id, peer_number in peer_results if wa_id and peer_number}
 
 
 @router.get("")
@@ -196,10 +244,14 @@ def export_pushed_leads_excel(
                 return "lead_appointment"
             return None
 
+        # Get peer numbers for all leads
+        lead_wa_ids = [lead.wa_id for lead in leads if lead.wa_id]
+        peer_number_map = _get_peer_numbers_for_customers(db, lead_wa_ids)
+
         workbook = Workbook()
         worksheet = workbook.active
         worksheet.title = "Pushed Leads"
-        worksheet.append(["Name", "Lead ID", "Lead Source", "Sub Source", "Phone Number", "Type of Flow", "Created At"])
+        worksheet.append(["Name", "Lead ID", "Lead Source", "Sub Source", "Phone Number", "Peer Number", "Type of Flow", "Created At"])
 
         rows_written = 0
         for lead in leads:
@@ -220,6 +272,7 @@ def export_pushed_leads_excel(
             name = " ".join(part.strip() for part in name_parts if part and part.strip()).strip() or "Unknown"
 
             phone = lead.phone or lead.mobile or wa_id_map.get(lead_id) or ""
+            peer_number = peer_number_map.get(lead.wa_id, "")
 
             worksheet.append([
                 name,
@@ -227,6 +280,7 @@ def export_pushed_leads_excel(
                 lead.lead_source or "",
                 lead.sub_source or "",
                 phone,
+                peer_number,
                 flow_label,
                 lead.created_at.isoformat() if lead.created_at else "",
             ])
@@ -349,11 +403,15 @@ def export_non_pushed_leads_excel(
             .all()
         )
 
+        # Get peer numbers for non-pushed leads
+        non_pushed_wa_ids = [log.wa_id for log, _, _, _ in results if log.wa_id]
+        peer_number_map = _get_peer_numbers_for_customers(db, non_pushed_wa_ids)
+
         workbook = Workbook()
         worksheet = workbook.active
         worksheet.title = "Non-Pushed Leads"
         worksheet.append([
-            "Name", "Phone Number", "Email", "WA ID", "Flow Type", "Last Step", 
+            "Name", "Phone Number", "Email", "WA ID", "Peer Number", "Flow Type", "Last Step", 
             "Description", "Status Code", "Created At"
         ])
 
@@ -361,12 +419,14 @@ def export_non_pushed_leads_excel(
         for log, customer_name, phone_1, email in results:
             name = customer_name or log.name or "Unknown"
             phone = phone_1 or log.wa_id or ""
+            peer_number = peer_number_map.get(log.wa_id, "") if log.wa_id else ""
             
             worksheet.append([
                 name,
                 phone,
                 email or "",
                 log.wa_id or "",
+                peer_number,
                 log.flow_type or "",
                 log.step or "",
                 log.description or "",
@@ -448,7 +508,7 @@ def export_all_leads_excel(
 
         # Sheet 1: Pushed Leads
         pushed_sheet = workbook.create_sheet("Pushed Leads")
-        pushed_sheet.append(["Name", "Lead ID", "Lead Source", "Sub Source", "Phone Number", "Type of Flow", "Created At"])
+        pushed_sheet.append(["Name", "Lead ID", "Lead Source", "Sub Source", "Phone Number", "Peer Number", "Type of Flow", "Created At"])
 
         lead_query = db.query(Lead)
         if dt_from:
@@ -459,6 +519,12 @@ def export_all_leads_excel(
         leads: List[Lead] = (
             lead_query.order_by(Lead.created_at.desc()).limit(20000).all()
         )
+
+        # Get peer numbers for all pushed leads
+        all_wa_ids = []
+        for lead in leads:
+            if lead.wa_id:
+                all_wa_ids.append(lead.wa_id)
 
         log_filters = [
             FlowLog.step == "result",
@@ -501,6 +567,9 @@ def export_all_leads_excel(
             if log.wa_id:
                 wa_id_map.setdefault(lead_id_str, log.wa_id)
 
+        # Get peer numbers for pushed leads
+        pushed_peer_number_map = _get_peer_numbers_for_customers(db, all_wa_ids)
+
         pushed_rows_written = 0
         for lead in leads:
             lead_id = lead.zoho_lead_id
@@ -520,6 +589,7 @@ def export_all_leads_excel(
             name = " ".join(part.strip() for part in name_parts if part and part.strip()).strip() or "Unknown"
 
             phone = lead.phone or lead.mobile or wa_id_map.get(lead_id) or ""
+            peer_number = pushed_peer_number_map.get(lead.wa_id, "") if lead.wa_id else ""
 
             pushed_sheet.append([
                 name,
@@ -527,6 +597,7 @@ def export_all_leads_excel(
                 lead.lead_source or "",
                 lead.sub_source or "",
                 phone,
+                peer_number,
                 flow_label,
                 lead.created_at.isoformat() if lead.created_at else "",
             ])
@@ -535,7 +606,7 @@ def export_all_leads_excel(
         # Sheet 2: Non-Pushed Leads
         non_pushed_sheet = workbook.create_sheet("Non-Pushed Leads")
         non_pushed_sheet.append([
-            "Name", "Phone Number", "Email", "WA ID", "Flow Type", "Last Step", 
+            "Name", "Phone Number", "Email", "WA ID", "Peer Number", "Flow Type", "Last Step", 
             "Description", "Status Code", "Created At"
         ])
 
@@ -599,15 +670,21 @@ def export_all_leads_excel(
                 .all()
             )
 
+            # Get peer numbers for non-pushed leads
+            non_pushed_wa_ids_list = [log.wa_id for log, _, _, _ in results if log.wa_id]
+            non_pushed_peer_number_map = _get_peer_numbers_for_customers(db, non_pushed_wa_ids_list)
+
             for log, customer_name, phone_1, email in results:
                 name = customer_name or log.name or "Unknown"
                 phone = phone_1 or log.wa_id or ""
+                peer_number = non_pushed_peer_number_map.get(log.wa_id, "") if log.wa_id else ""
                 
                 non_pushed_sheet.append([
                     name,
                     phone,
                     email or "",
                     log.wa_id or "",
+                    peer_number,
                     log.flow_type or "",
                     log.step or "",
                     log.description or "",
