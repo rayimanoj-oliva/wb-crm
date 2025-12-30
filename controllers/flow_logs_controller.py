@@ -79,6 +79,63 @@ def _get_peer_numbers_for_customers(db: Session, wa_ids: List[str]) -> Dict[str,
     return {wa_id: peer_number for wa_id, peer_number in peer_results if wa_id and peer_number}
 
 
+def _extract_keywords_from_messages(db: Session, wa_ids: List[str]) -> Dict[str, str]:
+    """
+    Extract keywords from customer messages.
+    Returns a dict mapping customer wa_id to comma-separated keywords found in their messages.
+    """
+    if not wa_ids:
+        return {}
+    
+    # Define keywords to search for (case-insensitive)
+    keywords = [
+        "price",
+        "appointment",
+        "cost",
+        "vacancy",
+        "contact us",
+        "clinic address",
+        "clinic number",
+        "treatment information",
+        "treatment type",
+    ]
+    
+    # Get all messages from customers
+    messages = (
+        db.query(
+            Customer.wa_id,
+            Message.body
+        )
+        .join(Message, Customer.id == Message.customer_id)
+        .filter(Customer.wa_id.in_(wa_ids))
+        .filter(Message.sender_type == "customer")  # Only customer messages
+        .filter(Message.body.isnot(None))
+        .all()
+    )
+    
+    # Map wa_id to found keywords
+    keyword_map: Dict[str, Set[str]] = {}
+    for wa_id, body in messages:
+        if not wa_id or not body:
+            continue
+        
+        body_lower = body.lower()
+        found_keywords = []
+        
+        for keyword in keywords:
+            if keyword.lower() in body_lower:
+                # Use the original keyword format for display
+                found_keywords.append(keyword)
+        
+        if found_keywords:
+            if wa_id not in keyword_map:
+                keyword_map[wa_id] = set()
+            keyword_map[wa_id].update(found_keywords)
+    
+    # Convert sets to comma-separated strings
+    return {wa_id: ", ".join(sorted(keywords)) for wa_id, keywords in keyword_map.items()}
+
+
 @router.get("")
 def list_flow_logs(
     db: Session = Depends(get_db),
@@ -472,7 +529,7 @@ def export_all_leads_excel(
     date_to: Optional[str] = Query(None),
 ):
     """
-    Export all leads (both pushed and non-pushed) as an Excel workbook with separate sheets.
+    Export all leads (both pushed and non-pushed) as a single Excel sheet.
     Results can be filtered by flow type and date range.
     """
     try:
@@ -486,10 +543,8 @@ def export_all_leads_excel(
                 dt_to_upper = dt_to
 
         workbook = Workbook()
-        
-        # Remove default sheet
-        if workbook.active:
-            workbook.remove(workbook.active)
+        worksheet = workbook.active
+        worksheet.title = "All Leads"
 
         flow_type_labels = {
             "treatment": "Marketing",
@@ -506,9 +561,12 @@ def export_all_leads_excel(
                 return "lead_appointment"
             return None
 
-        # Sheet 1: Pushed Leads
-        pushed_sheet = workbook.create_sheet("Pushed Leads")
-        pushed_sheet.append(["Name", "Lead ID", "Lead Source", "Sub Source", "Phone Number", "Peer Number", "Type of Flow", "Created At"])
+        # Unified header with all columns
+        worksheet.append([
+            "Status", "Name", "Phone Number", "Email", "WA ID", "Lead ID", 
+            "Lead Source", "Sub Source", "Peer Number", "Flow Type", 
+            "Last Step", "Description", "Status Code", "Keywords", "Created At"
+        ])
 
         lead_query = db.query(Lead)
         if dt_from:
@@ -570,6 +628,16 @@ def export_all_leads_excel(
         # Get peer numbers for pushed leads
         pushed_peer_number_map = _get_peer_numbers_for_customers(db, all_wa_ids)
 
+        # Get keywords from messages for pushed leads
+        pushed_keywords_map = _extract_keywords_from_messages(db, all_wa_ids)
+
+        # Get customer info for pushed leads
+        pushed_wa_ids_list = [lead.wa_id for lead in leads if lead.wa_id]
+        customer_map = {}
+        if pushed_wa_ids_list:
+            customers = db.query(Customer).filter(Customer.wa_id.in_(pushed_wa_ids_list)).all()
+            customer_map = {c.wa_id: c for c in customers}
+
         pushed_rows_written = 0
         for lead in leads:
             lead_id = lead.zoho_lead_id
@@ -590,25 +658,30 @@ def export_all_leads_excel(
 
             phone = lead.phone or lead.mobile or wa_id_map.get(lead_id) or ""
             peer_number = pushed_peer_number_map.get(lead.wa_id, "") if lead.wa_id else ""
+            keywords = pushed_keywords_map.get(lead.wa_id, "") if lead.wa_id else ""
+            
+            # Get customer email if available
+            customer = customer_map.get(lead.wa_id) if lead.wa_id else None
+            email = customer.email if customer else ""
 
-            pushed_sheet.append([
+            worksheet.append([
+                "Pushed",  # Status
                 name,
+                phone,
+                email,
+                lead.wa_id or "",
                 lead_id,
                 lead.lead_source or "",
                 lead.sub_source or "",
-                phone,
                 peer_number,
                 flow_label,
+                "",  # Last Step (not applicable for pushed leads)
+                "",  # Description (not applicable for pushed leads)
+                "",  # Status Code (not applicable for pushed leads)
+                keywords,  # Keywords found in messages
                 lead.created_at.isoformat() if lead.created_at else "",
             ])
             pushed_rows_written += 1
-
-        # Sheet 2: Non-Pushed Leads
-        non_pushed_sheet = workbook.create_sheet("Non-Pushed Leads")
-        non_pushed_sheet.append([
-            "Name", "Phone Number", "Email", "WA ID", "Peer Number", "Flow Type", "Last Step", 
-            "Description", "Status Code", "Created At"
-        ])
 
         log_filters_non_pushed = [
             FlowLog.step.isnot(None),
@@ -673,22 +746,33 @@ def export_all_leads_excel(
             # Get peer numbers for non-pushed leads
             non_pushed_wa_ids_list = [log.wa_id for log, _, _, _ in results if log.wa_id]
             non_pushed_peer_number_map = _get_peer_numbers_for_customers(db, non_pushed_wa_ids_list)
+            
+            # Get keywords from messages for non-pushed leads
+            non_pushed_keywords_map = _extract_keywords_from_messages(db, non_pushed_wa_ids_list)
 
             for log, customer_name, phone_1, email in results:
                 name = customer_name or log.name or "Unknown"
                 phone = phone_1 or log.wa_id or ""
                 peer_number = non_pushed_peer_number_map.get(log.wa_id, "") if log.wa_id else ""
+                keywords = non_pushed_keywords_map.get(log.wa_id, "") if log.wa_id else ""
                 
-                non_pushed_sheet.append([
+                flow_label = flow_type_labels.get(log.flow_type or "", log.flow_type or "Unknown")
+                
+                worksheet.append([
+                    "Non-Pushed",  # Status
                     name,
                     phone,
                     email or "",
                     log.wa_id or "",
+                    "",  # Lead ID (not applicable for non-pushed leads)
+                    "",  # Lead Source (not applicable for non-pushed leads)
+                    "",  # Sub Source (not applicable for non-pushed leads)
                     peer_number,
-                    log.flow_type or "",
+                    flow_label,
                     log.step or "",
                     log.description or "",
-                    log.status_code or "",
+                    str(log.status_code) if log.status_code else "",
+                    keywords,  # Keywords found in messages
                     log.created_at.isoformat() if log.created_at else "",
                 ])
                 non_pushed_rows_written += 1
