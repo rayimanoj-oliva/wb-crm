@@ -76,7 +76,13 @@ def _get_peer_numbers_for_customers(db: Session, wa_ids: List[str]) -> Dict[str,
         .all()
     )
     
-    return {wa_id: peer_number for wa_id, peer_number in peer_results if wa_id and peer_number}
+    # Return map with all wa_ids, using empty string if peer_number not found
+    result = {}
+    for wa_id, peer_number in peer_results:
+        if wa_id:
+            result[wa_id] = peer_number or ""
+    
+    return result
 
 
 def _extract_keywords_from_messages(db: Session, wa_ids: List[str]) -> Dict[str, str]:
@@ -144,11 +150,12 @@ def _get_who_ended_chat_first(db: Session, wa_ids: List[str]) -> Dict[str, str]:
     if not wa_ids:
         return {}
     
-    # Get the last message for each customer
+    # Get the last message for each customer (handle multiple messages with same timestamp)
     last_message_subq = (
         db.query(
             Message.customer_id,
-            func.max(Message.timestamp).label('last_timestamp')
+            func.max(Message.timestamp).label('last_timestamp'),
+            func.max(Message.id).label('last_message_id')  # Use ID as tiebreaker
         )
         .join(Customer, Message.customer_id == Customer.id)
         .filter(Customer.wa_id.in_(wa_ids))
@@ -166,7 +173,8 @@ def _get_who_ended_chat_first(db: Session, wa_ids: List[str]) -> Dict[str, str]:
             last_message_subq,
             and_(
                 Message.customer_id == last_message_subq.c.customer_id,
-                Message.timestamp == last_message_subq.c.last_timestamp
+                Message.timestamp == last_message_subq.c.last_timestamp,
+                Message.id == last_message_subq.c.last_message_id
             )
         )
         .join(Customer, Message.customer_id == Customer.id)
@@ -180,8 +188,10 @@ def _get_who_ended_chat_first(db: Session, wa_ids: List[str]) -> Dict[str, str]:
             continue
         if sender_type == "customer":
             result[wa_id] = "Customer"
-        else:
+        elif sender_type:
             result[wa_id] = "Agent"
+        else:
+            result[wa_id] = "Unknown"
     
     return result
 
@@ -716,24 +726,24 @@ def export_all_leads_excel(
             
             # Get customer email if available
             customer = customer_map.get(lead.wa_id) if lead.wa_id else None
-            email = customer.email if customer else ""
+            email = (customer.email if customer and customer.email else "") or ""
 
             worksheet.append([
                 "Pushed",  # Status
-                name,
-                phone,
-                email,
+                name or "",
+                phone or "",
+                email or "",
                 lead.wa_id or "",
-                lead_id,
+                lead_id or "",
                 lead.lead_source or "",
                 lead.sub_source or "",
-                peer_number,
-                flow_label,
+                peer_number or "",
+                flow_label or "",
                 "",  # Last Step (not applicable for pushed leads)
                 "",  # Description (not applicable for pushed leads)
                 "",  # Status Code (not applicable for pushed leads)
-                keywords,  # Keywords found in customer messages only
-                who_ended,  # Who ended chat first
+                keywords or "",  # Keywords found in customer messages only
+                who_ended or "",  # Who ended chat first
                 lead.created_at.isoformat() if lead.created_at else "",
             ])
             pushed_rows_written += 1
@@ -809,11 +819,12 @@ def export_all_leads_excel(
             non_pushed_who_ended_map = _get_who_ended_chat_first(db, non_pushed_wa_ids_list)
 
             for log, customer_name, phone_1, email in results:
-                name = customer_name or log.name or "Unknown"
-                phone = phone_1 or log.wa_id or ""
+                name = (customer_name or log.name or "Unknown") if customer_name or log.name else "Unknown"
+                phone = (phone_1 or log.wa_id or "") if phone_1 or log.wa_id else ""
                 peer_number = non_pushed_peer_number_map.get(log.wa_id, "") if log.wa_id else ""
                 keywords = non_pushed_keywords_map.get(log.wa_id, "") if log.wa_id else ""
                 who_ended = non_pushed_who_ended_map.get(log.wa_id, "") if log.wa_id else ""
+                email_value = (email or "") if email else ""
                 
                 flow_label = flow_type_labels.get(log.flow_type or "", log.flow_type or "Unknown")
                 
@@ -821,18 +832,18 @@ def export_all_leads_excel(
                     "Non-Pushed",  # Status
                     name,
                     phone,
-                    email or "",
+                    email_value,
                     log.wa_id or "",
                     "",  # Lead ID (not applicable for non-pushed leads)
                     "",  # Lead Source (not applicable for non-pushed leads)
                     "",  # Sub Source (not applicable for non-pushed leads)
-                    peer_number,
-                    flow_label,
+                    peer_number or "",
+                    flow_label or "",
                     log.step or "",
                     log.description or "",
                     str(log.status_code) if log.status_code else "",
-                    keywords,  # Keywords found in customer messages only
-                    who_ended,  # Who ended chat first
+                    keywords or "",  # Keywords found in customer messages only
+                    who_ended or "",  # Who ended chat first
                     log.created_at.isoformat() if log.created_at else "",
                 ])
                 non_pushed_rows_written += 1

@@ -82,8 +82,10 @@ def get_organization(
     is_super_admin = False
     if current_user.role_obj and current_user.role_obj.name == "SUPER_ADMIN":
         is_super_admin = True
-    elif current_user.role == "ADMIN":  # Legacy support
-        is_super_admin = True
+    # Legacy support: Check legacy role enum (but ADMIN should not be treated as SUPER_ADMIN)
+    elif hasattr(current_user, 'role') and current_user.role:
+        if str(current_user.role).upper() == "SUPER_ADMIN":
+            is_super_admin = True
     
     if not is_super_admin:
         # Non-super admins can only see their own organization

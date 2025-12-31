@@ -94,7 +94,18 @@ def update_user(
         user.role = None
     
     # Only admins and super admins can update other users' roles
-    elif current_user.role not in ["ADMIN", "SUPER_ADMIN"]:
+    # Check new role system first (role_obj)
+    is_admin = False
+    if hasattr(current_user, 'role_obj') and current_user.role_obj:
+        if current_user.role_obj.name in ["SUPER_ADMIN", "ORG_ADMIN"]:
+            is_admin = True
+    
+    # Also check legacy role enum for backward compatibility
+    if not is_admin and hasattr(current_user, 'role') and current_user.role:
+        if str(current_user.role).upper() in ["ADMIN", "SUPER_ADMIN"]:
+            is_admin = True
+    
+    if not is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only admins can update other users"
