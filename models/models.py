@@ -644,6 +644,7 @@ class Campaign(Base):
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     updated_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
     campaign_cost_type = Column(String, ForeignKey("costs.type"))
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True)
     content = Column(JSONB, nullable=True)
     type = Column(campaign_type_enum, nullable=False, index=True)
 
