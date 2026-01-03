@@ -373,13 +373,25 @@ def get_dashboard_summary_optimized(
     total_customer_query = db.query(func.count(Customer.id))
     if org_uuid:
         total_customer_query = total_customer_query.filter(Customer.organization_id == org_uuid)
+    # Apply date filter to total customers (customers created in date range)
+    if filter_start:
+        total_customer_query = total_customer_query.filter(Customer.created_at >= filter_start)
+    if filter_end:
+        total_customer_query = total_customer_query.filter(Customer.created_at <= filter_end)
     total_customers = total_customer_query.scalar() or 0
 
-    # === BATCH 2: Appointments today (filtered by organization) ===
+    # === BATCH 2: Appointments in date range (filtered by organization) ===
     appointments_query = db.query(func.count(ReferrerTracking.id)).filter(
-        ReferrerTracking.is_appointment_booked == True,
-        func.date(ReferrerTracking.created_at) == today
+        ReferrerTracking.is_appointment_booked == True
     )
+    # Apply date filter to appointments
+    if filter_start:
+        appointments_query = appointments_query.filter(ReferrerTracking.created_at >= filter_start)
+    if filter_end:
+        appointments_query = appointments_query.filter(ReferrerTracking.created_at <= filter_end)
+    if not filter_start and not filter_end:
+        # Default to today if no date filter
+        appointments_query = appointments_query.filter(func.date(ReferrerTracking.created_at) == today)
     if org_uuid:
         # Filter appointments by organization through ReferrerTracking.customer_id -> Customer.organization_id
         appointments_query = appointments_query.join(
