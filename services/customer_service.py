@@ -371,6 +371,7 @@ def get_conversations_optimized(
     pending_reply_only: bool = False,
     date_filter: str = None,
     unread_only: bool = False,
+    organization_id=None,
 ):
     """
     Optimized unified conversation list API including:
