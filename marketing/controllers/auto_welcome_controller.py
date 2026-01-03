@@ -263,6 +263,17 @@ async def whatsapp_auto_welcome_webhook(request: Request, db: Session = Depends(
         to_wa_id = value.get("metadata", {}).get("display_phone_number")
         phone_id_meta = (value.get("metadata", {}) or {}).get("phone_number_id")
 
+        # Look up organization from phone_number_id
+        organization_id = None
+        if phone_id_meta:
+            try:
+                from services.whatsapp_number_service import get_organization_by_phone_id
+                organization = get_organization_by_phone_id(db, str(phone_id_meta))
+                if organization:
+                    organization_id = organization.id
+            except Exception as e:
+                print(f"[auto_webhook] WARNING - Could not look up organization: {e}")
+
         # Resolve credentials based on phone_number_id mapping (multi-number support)
         def _resolve_credentials():
             cfg = get_number_config(str(phone_id_meta)) if phone_id_meta else None
@@ -301,7 +312,7 @@ async def whatsapp_auto_welcome_webhook(request: Request, db: Session = Depends(
             pass
 
         # Ensure customer exists
-        customer = customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=sender_name))
+        customer = customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=sender_name), organization_id=organization_id)
 
         # Check if this is the first-ever message from this WA ID (before persisting current one)
         try:

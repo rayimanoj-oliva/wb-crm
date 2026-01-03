@@ -64,6 +64,20 @@ async def handle_marketing_event(db: Session, *, value: Dict[str, Any]) -> Dict[
     message_id = message.get("id")
     timestamp = message.get("timestamp")
 
+    # Get phone_number_id for organization lookup
+    phone_number_id = (value.get("metadata", {}) or {}).get("phone_number_id")
+    
+    # Look up organization from phone_number_id
+    organization_id = None
+    if phone_number_id:
+        try:
+            from services.whatsapp_number_service import get_organization_by_phone_id
+            organization = get_organization_by_phone_id(db, str(phone_number_id))
+            if organization:
+                organization_id = organization.id
+        except Exception as e:
+            print(f"[ws_marketing] WARNING - Could not look up organization: {e}")
+
     # Gate: only handle our two treatment numbers
     if not _is_allowed_marketing_number(value, to_wa_id):
         return {"status": "ignored", "reason": "not_marketing_number"}
@@ -126,7 +140,7 @@ async def handle_marketing_event(db: Session, *, value: Dict[str, Any]) -> Dict[
         from services import customer_service
         from schemas.customer_schema import CustomerCreate
         from services.followup_service import mark_customer_replied
-        cust = customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=(contact.get("profile") or {}).get("name")))
+        cust = customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa_id, name=(contact.get("profile") or {}).get("name")), organization_id=organization_id)
         # Reset Follow-Up 1 window from last inbound interaction
         mark_customer_replied(db, customer_id=cust.id)
     except Exception:
@@ -147,6 +161,7 @@ async def handle_marketing_event(db: Session, *, value: Dict[str, Any]) -> Dict[
                 customer = customer_service.get_or_create_customer(
                     db,
                     CustomerCreate(wa_id=wa_id, name=(contact.get("profile") or {}).get("name")),
+                    organization_id=organization_id,
                 )
             except Exception:
                 customer = None

@@ -11,6 +11,16 @@ from uuid import UUID
 
 # Create a new customer or return existing if wa_id matches
 def get_or_create_customer(db: Session, customer_data: CustomerCreate, organization_id=None) -> Customer:
+    # If no organization_id provided, try to get the default organization
+    if not organization_id:
+        try:
+            from models.models import Organization
+            default_org = db.query(Organization).first()
+            if default_org:
+                organization_id = default_org.id
+        except Exception:
+            pass
+    
     customer = db.query(Customer).filter(Customer.wa_id == customer_data.wa_id).first()
     if customer:
         # Update organization_id if provided and customer doesn't have one

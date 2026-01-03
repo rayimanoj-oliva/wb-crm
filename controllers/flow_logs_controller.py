@@ -207,7 +207,7 @@ def list_flow_logs(
     date_to: Optional[str] = Query(None, description="YYYY-MM-DD"),
     q: Optional[str] = Query(None, description="search in description"),
     page: int = Query(1, ge=1),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(50, ge=1, le=5000),
 ):
     try:
         filters = []
@@ -246,12 +246,23 @@ def list_flow_logs(
             .all()
         )
 
+        # Fetch customer names for wa_ids with missing names
+        wa_ids_needing_names = set(r.wa_id for r in rows if r.wa_id and (not r.name or r.name.strip() == ''))
+        customer_names = {}
+        if wa_ids_needing_names:
+            customers = db.query(Customer.wa_id, Customer.name).filter(Customer.wa_id.in_(wa_ids_needing_names)).all()
+            customer_names = {c.wa_id: c.name for c in customers if c.name}
+
         def _row_to_dict(x: FlowLog) -> Dict[str, Any]:
+            # Use flow_log name if available, otherwise fallback to customer name
+            name = x.name
+            if not name or name.strip() == '':
+                name = customer_names.get(x.wa_id, '')
             return {
                 "id": str(x.id),
                 "created_at": x.created_at.isoformat() if x.created_at else None,
                 "flow_type": x.flow_type,
-                "name": x.name,
+                "name": name,
                 "step": x.step,
                 "status_code": x.status_code,
                 "wa_id": x.wa_id,
