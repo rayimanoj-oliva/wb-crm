@@ -319,10 +319,10 @@ def get_dashboard_summary_optimized(
         except (ValueError, TypeError):
             filter_end = None
     
-    # If no date filters, use today as default for "today" metrics
+    # "today" metrics should ALWAYS be today's data (not affected by date filter)
     today = date.today()
-    today_start = filter_start if filter_start else datetime.combine(today, datetime.min.time())
-    today_end = filter_end if filter_end else datetime.combine(today, datetime.max.time())
+    today_start = datetime.combine(today, datetime.min.time())
+    today_end = datetime.combine(today, datetime.max.time())
     
     # Organization filter: Parse organization UUID
     org_uuid = None
