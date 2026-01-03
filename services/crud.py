@@ -15,9 +15,29 @@ def get_user_by_email(db: Session, email: str):
 def get_user_by_username(db: Session, username: str):
     return db.query(User).filter(User.username == username).first()
 
-def get_users(db: Session, skip: int = 0, limit: int = 50, search: str = None):
-    """Get all users with pagination and optional search."""
+def get_users(db: Session, skip: int = 0, limit: int = 50, search: str = None, organization_id=None):
+    """
+    Get users with pagination and optional search.
+    
+    Args:
+        organization_id: If provided (UUID), filter users by this organization_id. 
+                        If None, returns all users (for Super Admin).
+                        If empty string or invalid, returns empty result.
+    """
+    from uuid import UUID
     query = db.query(User)
+
+    # Filter by organization_id if provided
+    # None means show all (Super Admin), UUID means filter by organization
+    if organization_id is not None:
+        # Ensure organization_id is a valid UUID
+        try:
+            if isinstance(organization_id, str):
+                organization_id = UUID(organization_id)
+            query = query.filter(User.organization_id == organization_id)
+        except (ValueError, TypeError):
+            # Invalid UUID, return empty result
+            return {"items": [], "total": 0, "skip": skip, "limit": limit}
 
     # Apply search filter if provided
     if search:

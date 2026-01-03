@@ -11,6 +11,7 @@ from services import crud
 from auth import get_current_user, get_current_admin_user
 from database.db import get_db
 from services.customer_service import get_customers_for_user
+from utils.organization_filter import get_user_organization_id
 
 router = APIRouter(
     tags=["users"]
@@ -51,8 +52,17 @@ def read_users(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin_user),  # Only admins can list all users
 ):
-    """List users with pagination and optional search."""
-    return crud.get_users(db, skip=skip, limit=limit, search=search)
+    """
+    List users with pagination and optional search.
+    Super Admins see all users, Org Admins see only users from their organization.
+    """
+    organization_id = get_user_organization_id(current_user)
+    # Debug logging
+    print(f"[read_users] Current user: {current_user.email}, role: {current_user.role}, role_obj: {current_user.role_obj.name if current_user.role_obj else None}")
+    print(f"[read_users] Organization ID filter: {organization_id}")
+    result = crud.get_users(db, skip=skip, limit=limit, search=search, organization_id=organization_id)
+    print(f"[read_users] Returning {len(result.get('items', []))} users out of {result.get('total', 0)} total")
+    return result
 
 @router.get("/{user_id}", response_model=UserRead)
 def read_user(
