@@ -672,51 +672,108 @@ def export_all_leads_excel(
             "Last Step", "Description", "Status Code", "Keywords", "Who Ended Chat First", "Message Count", "First Message", "Last Message", "Created At"
         ])
         
-        # FIRST: Get ALL customers who messaged in the date range (to ensure none are missing)
-        # Build message filters properly - only add date filters if dates are provided
-        message_filters = [Message.sender_type == "customer"]
+        # FIRST: Get ALL customers who messaged in the date range from Message table (PRIMARY SOURCE)
+        # Start from Message table to ensure we get EVERY customer who messaged
+        message_filters = [
+            Message.sender_type == "customer",
+            Message.timestamp >= dt_from,
+            Message.timestamp < dt_to_upper
+        ]
         
-        if not dt_from or not dt_to_upper:
-            raise HTTPException(status_code=400, detail="Both date_from and date_to are required (YYYY-MM-DD)")
-        
-        # Add date filters
-        message_filters.append(Message.timestamp >= dt_from)
-        message_filters.append(Message.timestamp < dt_to_upper)
-        
-        customers_with_messages_query = (
-            db.query(Customer.wa_id)
-            .join(Message, Customer.id == Message.customer_id)
-            .filter(and_(*message_filters))
-        )
-        
-        all_customers_wa_ids_result = customers_with_messages_query.distinct().all()
-        all_customers_wa_ids_set = {row[0] for row in all_customers_wa_ids_result if row[0]}
-        
-        if not all_customers_wa_ids_set:
-            raise HTTPException(status_code=404, detail="No customers found for the selected date range.")
-        
-        # Get message stats for all customers
-        message_stats_query = (
+        # Get all unique customer_ids from messages in date range
+        # Use outerjoin to include messages even if Customer record doesn't exist
+        messages_query = (
             db.query(
-                Customer.wa_id,
+                Message.customer_id,
+                Message.from_wa_id,  # Use from_wa_id as wa_id if customer_id is null
                 func.count(Message.id).label("message_count"),
                 func.min(Message.timestamp).label("first_message"),
                 func.max(Message.timestamp).label("last_message")
             )
-            .join(Message, Customer.id == Message.customer_id)
-            .filter(Customer.wa_id.in_(list(all_customers_wa_ids_set)))
+            .outerjoin(Customer, Message.customer_id == Customer.id)
+            .filter(and_(*message_filters))
+            .group_by(Message.customer_id, Message.from_wa_id)
         )
-        if dt_from:
-            message_stats_query = message_stats_query.filter(Message.timestamp >= dt_from)
-        if dt_to_upper:
-            message_stats_query = message_stats_query.filter(Message.timestamp < dt_to_upper)
         
-        message_stats_query = message_stats_query.group_by(Customer.wa_id)
-        message_stats = {row[0]: {
-            'count': row[1],
-            'first': row[2],
-            'last': row[3]
-        } for row in message_stats_query.all()}
+        messages_result = messages_query.all()
+        
+        if not messages_result:
+            raise HTTPException(status_code=404, detail=f"No messages found for the selected date range ({date_from} to {date_to}).")
+        
+        # Build maps: customer_id -> wa_id and wa_id -> message stats
+        customer_id_to_wa_id = {}
+        message_stats = {}
+        all_customer_ids = []
+        
+        for row in messages_result:
+            customer_id = row[0]
+            from_wa_id = row[1]
+            msg_count = row[2]
+            first_msg = row[3]
+            last_msg = row[4]
+            
+            # Determine wa_id: use Customer.wa_id if customer_id exists, otherwise use from_wa_id
+            if customer_id:
+                all_customer_ids.append(customer_id)
+                # We'll get wa_id from Customer table below
+            else:
+                # If no customer_id, use from_wa_id directly
+                wa_id = from_wa_id
+                if wa_id:
+                    message_stats[wa_id] = {
+                        'count': msg_count,
+                        'first': first_msg,
+                        'last': last_msg
+                    }
+        
+        # Get all Customer records for the customer_ids we found
+        all_customers = []
+        if all_customer_ids:
+            all_customers = db.query(Customer).filter(Customer.id.in_(all_customer_ids)).all()
+        
+        customer_map_all = {}
+        for customer in all_customers:
+            if customer.wa_id:
+                customer_map_all[customer.wa_id] = customer
+                customer_id_to_wa_id[customer.id] = customer.wa_id
+        
+        # Now get message stats for customers with Customer records
+        if all_customer_ids:
+            message_stats_query = (
+                db.query(
+                    Customer.wa_id,
+                    func.count(Message.id).label("message_count"),
+                    func.min(Message.timestamp).label("first_message"),
+                    func.max(Message.timestamp).label("last_message")
+                )
+                .join(Message, Customer.id == Message.customer_id)
+                .filter(and_(
+                    Message.customer_id.in_(all_customer_ids),
+                    Message.timestamp >= dt_from,
+                    Message.timestamp < dt_to_upper
+                ))
+                .group_by(Customer.wa_id)
+            )
+            
+            for row in message_stats_query.all():
+                wa_id = row[0]
+                if wa_id:
+                    message_stats[wa_id] = {
+                        'count': row[1],
+                        'first': row[2],
+                        'last': row[3]
+                    }
+        
+        # Get all unique wa_ids (from Customer records + from_wa_id for messages without customer_id)
+        all_wa_ids_set = set(customer_map_all.keys())
+        for row in messages_result:
+            if not row[0] and row[1]:  # No customer_id but has from_wa_id
+                all_wa_ids_set.add(row[1])
+        
+        if not all_wa_ids_set:
+            raise HTTPException(status_code=404, detail=f"No customers found for the selected date range ({date_from} to {date_to}).")
+        
+        all_wa_ids_list = list(all_wa_ids_set)
 
         lead_query = db.query(Lead)
         if dt_from:
@@ -728,12 +785,7 @@ def export_all_leads_excel(
             lead_query.order_by(Lead.created_at.desc()).limit(20000).all()
         )
 
-        # Get all customer details
-        all_customers = db.query(Customer).filter(Customer.wa_id.in_(list(all_customers_wa_ids_set))).all()
-        customer_map_all = {c.wa_id: c for c in all_customers}
-        
         # Get peer numbers for ALL customers
-        all_wa_ids_list = list(all_customers_wa_ids_set)
         peer_number_map_all = _get_peer_numbers_for_customers(db, all_wa_ids_list)
         
         # Get keywords and who ended for ALL customers
@@ -773,15 +825,28 @@ def export_all_leads_excel(
         # Process ALL customers who messaged in date range
         rows_written = 0
         
-        for wa_id in all_customers_wa_ids_set:
+        for wa_id in all_wa_ids_list:
             customer = customer_map_all.get(wa_id)
+            
+            # If no customer record, create a minimal customer object from message data
             if not customer:
-                continue
+                # Try to get wa_id from messages
+                customer_wa_id = wa_id
+                customer_name = "Unknown"
+                customer_phone = wa_id if wa_id else ""
+                customer_email = ""
+                customer_org_id = None
+            else:
+                customer_wa_id = customer.wa_id
+                customer_name = customer.name
+                customer_phone = customer.phone_1
+                customer_email = customer.email
+                customer_org_id = customer.organization_id
             
             # Get customer name (prioritize Customer.name)
-            name = customer.name if customer.name and customer.name.strip() else "Unknown"
-            phone = customer.phone_1 or wa_id or ""
-            email = customer.email or ""
+            name = customer_name if customer_name and customer_name.strip() else "Unknown"
+            phone = customer_phone or wa_id or ""
+            email = customer_email or ""
             peer_number = peer_number_map_all.get(wa_id, "") if wa_id else ""
             
             # Get message stats
