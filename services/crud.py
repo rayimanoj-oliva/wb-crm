@@ -103,6 +103,19 @@ def create_user(db: Session, user: UserCreate):
         if not org:
             raise ValueError(f"Organization with id '{organization_id}' not found")
     
+    # Map role for legacy enum (database enum only has SUPER_ADMIN, ADMIN, AGENT)
+    # ORG_ADMIN maps to ADMIN in the legacy enum
+    legacy_role = user.role
+    if user.role == UserRole.ORG_ADMIN:
+        legacy_role = UserRole.ADMIN
+    
+    # If role_id is not provided but role is ORG_ADMIN, look it up
+    final_role_id = user.role_id
+    if not final_role_id and user.role == UserRole.ORG_ADMIN:
+        org_admin_role = db.query(Role).filter(Role.name == "ORG_ADMIN").first()
+        if org_admin_role:
+            final_role_id = org_admin_role.id
+    
     db_user = User(
         username=user.username,
         password=get_password_hash(user.password),
@@ -110,9 +123,9 @@ def create_user(db: Session, user: UserCreate):
         first_name=user.first_name,
         last_name=user.last_name,
         phone_number=user.phone_number,
-        role=user.role,  # Legacy role enum (for backward compatibility)
+        role=legacy_role,  # Legacy role enum (mapped: ORG_ADMIN -> ADMIN)
         organization_id=organization_id,
-        role_id=user.role_id
+        role_id=final_role_id
     )
     db.add(db_user)
     db.commit()
@@ -191,6 +204,16 @@ def update_user(db: Session, user_id: uuid.UUID, user: UserUpdate):
             org = db.query(Organization).filter(Organization.id == target_org_id).first()
             if not org:
                 raise ValueError(f"Organization with id '{target_org_id}' not found")
+            
+            # Map ORG_ADMIN to ADMIN for legacy enum (database enum only has SUPER_ADMIN, ADMIN, AGENT)
+            if target_role_enum == UserRole.ORG_ADMIN:
+                update_data["role"] = UserRole.ADMIN
+                
+                # If role_id is not provided but role is ORG_ADMIN, look it up
+                if "role_id" not in update_data or not update_data.get("role_id"):
+                    org_admin_role = db.query(Role).filter(Role.name == "ORG_ADMIN").first()
+                    if org_admin_role:
+                        update_data["role_id"] = org_admin_role.id
     
     # Apply all other updates
     for field, value in update_data.items():
