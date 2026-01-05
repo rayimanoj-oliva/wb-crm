@@ -25,9 +25,17 @@ def _parse_dt(val: Optional[str]) -> Optional[datetime]:
     try:
         # Accept "YYYY-MM-DD" or ISO strings
         if len(val) == 10:
-            return datetime.strptime(val, "%Y-%m-%d")
-        return datetime.fromisoformat(val)
-    except Exception:
+            # Parse as date and set to start of day (00:00:00) - naive datetime
+            dt = datetime.strptime(val, "%Y-%m-%d")
+            return dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        # For ISO strings, parse and ensure naive datetime
+        dt = datetime.fromisoformat(val.replace('Z', '+00:00'))
+        # If timezone-aware, convert to naive (assuming UTC, then remove timezone)
+        if dt.tzinfo is not None:
+            dt = dt.replace(tzinfo=None)
+        return dt
+    except Exception as e:
+        print(f"Error parsing date '{val}': {e}")
         return None
 
 
@@ -622,14 +630,21 @@ def export_all_leads_excel(
     Results can be filtered by flow type and date range.
     """
     try:
+        # Validate and parse dates
+        if not date_from or not date_to:
+            raise HTTPException(status_code=400, detail="Both date_from and date_to are required (YYYY-MM-DD)")
+        
         dt_from = _parse_dt(date_from)
         dt_to = _parse_dt(date_to)
-        dt_to_upper: Optional[datetime] = None
-        if dt_to:
-            if date_to and len(date_to) == 10:
-                dt_to_upper = dt_to + timedelta(days=1)
-            else:
-                dt_to_upper = dt_to
+        
+        if not dt_from or not dt_to:
+            raise HTTPException(status_code=400, detail="Invalid date format. Please use YYYY-MM-DD format.")
+        
+        # Ensure dt_to includes the entire day
+        if date_to and len(date_to) == 10:
+            dt_to_upper = dt_to + timedelta(days=1)
+        else:
+            dt_to_upper = dt_to
 
         workbook = Workbook()
         worksheet = workbook.active
@@ -658,20 +673,21 @@ def export_all_leads_excel(
         ])
         
         # FIRST: Get ALL customers who messaged in the date range (to ensure none are missing)
-        message_filters = [
-            Message.timestamp >= dt_from,
-            Message.timestamp < dt_to_upper,
-            Message.sender_type == "customer"
-        ]
+        # Build message filters properly - only add date filters if dates are provided
+        message_filters = [Message.sender_type == "customer"]
+        
+        if not dt_from or not dt_to_upper:
+            raise HTTPException(status_code=400, detail="Both date_from and date_to are required (YYYY-MM-DD)")
+        
+        # Add date filters
+        message_filters.append(Message.timestamp >= dt_from)
+        message_filters.append(Message.timestamp < dt_to_upper)
         
         customers_with_messages_query = (
             db.query(Customer.wa_id)
             .join(Message, Customer.id == Message.customer_id)
+            .filter(and_(*message_filters))
         )
-        if dt_from:
-            customers_with_messages_query = customers_with_messages_query.filter(Message.timestamp >= dt_from)
-        if dt_to_upper:
-            customers_with_messages_query = customers_with_messages_query.filter(Message.timestamp < dt_to_upper)
         
         all_customers_wa_ids_result = customers_with_messages_query.distinct().all()
         all_customers_wa_ids_set = {row[0] for row in all_customers_wa_ids_result if row[0]}
