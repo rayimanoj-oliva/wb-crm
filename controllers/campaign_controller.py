@@ -332,10 +332,23 @@ class TemplateSaveRequest(BaseModel):
 def save_template_campaign(
     payload: TemplateSaveRequest = Body(...),
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
+    current_user: User = Depends(get_current_user)
 ):
     """Save a template campaign with recipients from Excel or selected clients."""
     from services import customer_service as cs
+    from utils.organization_filter import get_user_organization_id
+    
+    # Determine if user is Super Admin
+    is_super_admin = False
+    if hasattr(current_user, 'role_obj') and current_user.role_obj:
+        if current_user.role_obj.name == "SUPER_ADMIN":
+            is_super_admin = True
+    if not is_super_admin and hasattr(current_user, 'role') and current_user.role:
+        if str(current_user.role).upper() == "SUPER_ADMIN":
+            is_super_admin = True
+    
+    # For Org Admin: always use their organization_id
+    final_organization_id = None if is_super_admin else get_user_organization_id(current_user)
     
     template_meta = get_template_metadata(db, payload.template_name)
     template_body = template_meta["template"].template_body or {}
