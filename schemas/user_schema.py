@@ -2,6 +2,7 @@ from pydantic import BaseModel, EmailStr, Field
 from uuid import UUID
 from enum import Enum
 from typing import Optional
+from schemas.organization_schema import OrganizationResponse
 
 # Enum for user roles (legacy support)
 class UserRole(str, Enum):
@@ -36,6 +37,7 @@ class UserUpdate(BaseModel):
 
 class UserRead(UserBase):
     id: UUID
+    organization: Optional[OrganizationResponse] = None  # Include organization object
 
     class Config:
         from_attributes = True
