@@ -31,6 +31,80 @@ def create_user(
     if crud.get_user_by_email(db, user.email):
         raise HTTPException(status_code=400, detail="Email already registered")
 
+    # Determine current user's role
+    is_super_admin = False
+    is_org_admin = False
+    
+    # Check new role system first (role_obj)
+    if hasattr(current_user, 'role_obj') and current_user.role_obj:
+        if current_user.role_obj.name == "SUPER_ADMIN":
+            is_super_admin = True
+        elif current_user.role_obj.name == "ORG_ADMIN":
+            is_org_admin = True
+    
+    # Also check legacy role enum for backward compatibility
+    if not is_super_admin and not is_org_admin and hasattr(current_user, 'role') and current_user.role:
+        role_str = str(current_user.role).upper()
+        if role_str == "SUPER_ADMIN":
+            is_super_admin = True
+        elif role_str in ["ADMIN", "ORG_ADMIN"]:
+            is_org_admin = True
+    
+    # Determine the role being created
+    creating_role = None
+    if user.role_id:
+        from models.models import Role
+        role_obj = db.query(Role).filter(Role.id == user.role_id).first()
+        if role_obj:
+            creating_role = role_obj.name
+    elif user.role:
+        creating_role = user.role.value if hasattr(user.role, 'value') else str(user.role).upper()
+    
+    # Role-based permission checks
+    if is_org_admin:
+        # Org Admin can only create ORG_ADMIN and AGENT
+        if creating_role == "SUPER_ADMIN":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Organization Admins cannot create Super Admin users"
+            )
+        if creating_role not in ["ORG_ADMIN", "AGENT"]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Organization Admins can only create Organization Admin and Agent users, not {creating_role}"
+            )
+        
+        # Org Admin can only create users in their own organization
+        if user.organization_id and user.organization_id != current_user.organization_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Organization Admins can only create users in their own organization"
+            )
+        
+        # Auto-set organization_id to current user's organization if not provided
+        if not user.organization_id:
+            if not current_user.organization_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Current user's organization_id is not set"
+                )
+            user.organization_id = current_user.organization_id
+            print(f"[create_user] Org Admin auto-setting organization_id to {user.organization_id}")
+    
+    elif is_super_admin:
+        # Super Admin can create SUPER_ADMIN, ORG_ADMIN, and AGENT (any organization)
+        if creating_role not in ["SUPER_ADMIN", "ORG_ADMIN", "AGENT"]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Invalid role: {creating_role}"
+            )
+    else:
+        # This should not happen as get_current_admin_user ensures admin access
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can create users"
+        )
+
     try:
         # create_user now handles organization_id and role_id validation
         # It ensures:
@@ -38,6 +112,7 @@ def create_user(
         # - ORG_ADMIN and AGENT have organization_id set
         # - Organization exists if organization_id is provided
         created_user = crud.create_user(db, user)
+        print(f"[create_user] User created successfully: {created_user.email}, role: {creating_role}, org_id: {created_user.organization_id}")
         return created_user
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

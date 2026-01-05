@@ -7,6 +7,7 @@ from typing import Optional
 class UserRole(str, Enum):
     SUPER_ADMIN = "SUPER_ADMIN"
     ADMIN = "ADMIN"
+    ORG_ADMIN = "ORG_ADMIN"  # Added for compatibility with new role system
     AGENT = "AGENT"
 
 class UserBase(BaseModel):
