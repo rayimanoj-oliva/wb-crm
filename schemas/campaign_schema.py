@@ -45,6 +45,7 @@ class CampaignBase(BaseModel):
     content: Optional[dict] = None
     type: AllowedTypes
     campaign_cost_type: Optional[str] = None
+    organization_id: Optional[UUID] = None
 
 class CampaignCreate(CampaignBase):
     pass

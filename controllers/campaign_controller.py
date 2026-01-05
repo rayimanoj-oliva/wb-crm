@@ -1,7 +1,7 @@
 import io
 from typing import List
 import pandas as pd
-from fastapi import APIRouter, Depends, File, UploadFile, Response
+from fastapi import APIRouter, Depends, File, UploadFile, Response, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -157,6 +157,7 @@ def list_campaigns_optimized(
     skip: int = Query(0, ge=0, description="Number of records to skip"),
     limit: int = Query(50, ge=1, le=200, description="Max records to return"),
     search: Optional[str] = Query(None, description="Search by campaign name or description"),
+    organization_id: Optional[UUID] = Query(None, description="Filter by organization ID (Super Admin can filter, Org Admin auto-filtered)"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -176,17 +177,67 @@ def list_campaigns_optimized(
     - Full content/components (heavy)
     - Individual job statuses (use /campaign/{id}/logs for that)
     - Customer/recipient lists (use /campaign/{id}/recipients)
+    
+    Organization filtering:
+    - If organization_id is provided and user is Super Admin, use provided organization_id
+    - Otherwise, use get_user_organization_id to auto-filter for Org Admin
     """
-    organization_id = get_user_organization_id(current_user)
-    return campaign_service.get_campaigns_list_optimized(db, skip=skip, limit=limit, search=search, organization_id=organization_id)
+    from utils.organization_filter import get_user_organization_id
+    
+    # Determine if user is Super Admin
+    is_super_admin = False
+    if hasattr(current_user, 'role_obj') and current_user.role_obj:
+        if current_user.role_obj.name == "SUPER_ADMIN":
+            is_super_admin = True
+    if not is_super_admin and hasattr(current_user, 'role') and current_user.role:
+        if str(current_user.role).upper() == "SUPER_ADMIN":
+            is_super_admin = True
+    
+    # For Super Admin: use provided organization_id if given, otherwise None (all orgs)
+    # For Org Admin: always use their organization_id (ignore provided param)
+    if is_super_admin:
+        # Super Admin can filter by organization_id or see all
+        final_organization_id = organization_id
+    else:
+        # Org Admin: always filter by their organization
+        final_organization_id = get_user_organization_id(current_user)
+    
+    return campaign_service.get_campaigns_list_optimized(db, skip=skip, limit=limit, search=search, organization_id=final_organization_id)
 
 @router.get("/{campaign_id}", response_model=CampaignOut)
 def get_campaign(campaign_id: UUID, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     return campaign_service.get_campaign(db, campaign_id)
 
 @router.post("/", response_model=CampaignOut)
-def create_campaign(campaign: CampaignCreate, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
-    return campaign_service.create_campaign(db, campaign, user_id=current_user.id)
+def create_campaign(campaign: CampaignCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Create a new campaign.
+    
+    Organization handling:
+    - If organization_id is provided and user is Super Admin, use provided organization_id
+    - Otherwise, use get_user_organization_id to auto-set for Org Admin
+    """
+    from utils.organization_filter import get_user_organization_id
+    
+    # Determine if user is Super Admin
+    is_super_admin = False
+    if hasattr(current_user, 'role_obj') and current_user.role_obj:
+        if current_user.role_obj.name == "SUPER_ADMIN":
+            is_super_admin = True
+    if not is_super_admin and hasattr(current_user, 'role') and current_user.role:
+        if str(current_user.role).upper() == "SUPER_ADMIN":
+            is_super_admin = True
+    
+    # For Super Admin: use provided organization_id if given, otherwise None
+    # For Org Admin: always use their organization_id (ignore provided param for security)
+    if is_super_admin:
+        # Super Admin can set organization_id or leave it None
+        final_organization_id = campaign.organization_id
+    else:
+        # Org Admin: always use their organization
+        final_organization_id = get_user_organization_id(current_user)
+    
+    return campaign_service.create_campaign(db, campaign, user_id=current_user.id, organization_id=final_organization_id)
 
 @router.put("/{campaign_id}", response_model=CampaignOut)
 def update_campaign(campaign_id: UUID, updates: CampaignUpdate, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
@@ -207,8 +258,22 @@ def run_campaign(campaign_id:UUID,db :Session = Depends(get_db),current_user: di
 def create_template_campaign(
     payload: TemplateCampaignCreateRequest,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
+    current_user: User = Depends(get_current_user)
 ):
+    from utils.organization_filter import get_user_organization_id
+    
+    # Determine if user is Super Admin
+    is_super_admin = False
+    if hasattr(current_user, 'role_obj') and current_user.role_obj:
+        if current_user.role_obj.name == "SUPER_ADMIN":
+            is_super_admin = True
+    if not is_super_admin and hasattr(current_user, 'role') and current_user.role:
+        if str(current_user.role).upper() == "SUPER_ADMIN":
+            is_super_admin = True
+    
+    # For Org Admin: always use their organization_id
+    final_organization_id = None if is_super_admin else get_user_organization_id(current_user)
+    
     template_meta = get_template_metadata(db, payload.template_name)
     template_body = template_meta["template"].template_body or {}
     content = {
@@ -226,8 +291,9 @@ def create_template_campaign(
         content=content,
         type="template",
         campaign_cost_type=payload.campaign_cost_type,
+        organization_id=final_organization_id,
     )
-    campaign = campaign_service.create_campaign(db, campaign_payload, user_id=current_user.id)
+    campaign = campaign_service.create_campaign(db, campaign_payload, user_id=current_user.id, organization_id=final_organization_id)
     return campaign
 
 
@@ -321,8 +387,9 @@ def save_template_campaign(
         content=content,
         type="template",
         campaign_cost_type=payload.campaign_cost_type,
+        organization_id=final_organization_id,
     )
-    campaign = campaign_service.create_campaign(db, campaign_payload, user_id=current_user.id)
+    campaign = campaign_service.create_campaign(db, campaign_payload, user_id=current_user.id, organization_id=final_organization_id)
     
     # Update recipients with campaign_id
     if payload.personalized_recipients:
@@ -591,7 +658,7 @@ class QuickTemplateRunRequest(BaseModel):
 def run_template_campaign_quick(
     req: QuickTemplateRunRequest = Body(...),
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
     """Create and run a template campaign in one call using wa_ids.
 
@@ -599,6 +666,20 @@ def run_template_campaign_quick(
     - Builds WhatsApp template components (header text/image + body params)
     - Creates a Job and enqueues tasks via the existing worker pipeline
     """
+    from utils.organization_filter import get_user_organization_id
+    
+    # Determine if user is Super Admin
+    is_super_admin = False
+    if hasattr(current_user, 'role_obj') and current_user.role_obj:
+        if current_user.role_obj.name == "SUPER_ADMIN":
+            is_super_admin = True
+    if not is_super_admin and hasattr(current_user, 'role') and current_user.role:
+        if str(current_user.role).upper() == "SUPER_ADMIN":
+            is_super_admin = True
+    
+    # For Org Admin: always use their organization_id
+    final_organization_id = None if is_super_admin else get_user_organization_id(current_user)
+    
     customers = []
     for wa in req.customer_wa_ids:
         cust = customer_service.get_or_create_customer(db, CustomerCreate(wa_id=wa, name=""))
@@ -654,11 +735,12 @@ def run_template_campaign_quick(
         customer_ids=[c.id for c in customers],
         content=content,
         type="template",
-        campaign_cost_type=normalized_cost_type
+        campaign_cost_type=normalized_cost_type,
+        organization_id=final_organization_id
     )
 
     try:
-        campaign = campaign_service.create_campaign(db, campaign_payload, user_id=current_user.id)
+        campaign = campaign_service.create_campaign(db, campaign_payload, user_id=current_user.id, organization_id=final_organization_id)
         job = job_service.create_job(db, campaign.id, current_user)
         campaign_service.run_campaign(campaign, job, db)
 
@@ -808,17 +890,31 @@ def run_saved_template_campaign(
             normalized_cost_type = None
 
     # Create campaign and run with transaction handling
+    # Get organization_id based on user role
+    from utils.organization_filter import get_user_organization_id
+    
+    is_super_admin = False
+    if hasattr(current_user, 'role_obj') and current_user.role_obj:
+        if current_user.role_obj.name == "SUPER_ADMIN":
+            is_super_admin = True
+    if not is_super_admin and hasattr(current_user, 'role') and current_user.role:
+        if str(current_user.role).upper() == "SUPER_ADMIN":
+            is_super_admin = True
+    
+    final_organization_id = None if is_super_admin else get_user_organization_id(current_user)
+    
     campaign_payload = CampaignCreate(
         name=req.campaign_name or f"Saved: {req.template_name}",
         description=req.campaign_description or "Run saved template campaign",
         customer_ids=[c.id for c in customers],
         content=content,
         type="template",
-        campaign_cost_type=normalized_cost_type
+        campaign_cost_type=normalized_cost_type,
+        organization_id=final_organization_id
     )
 
     try:
-        campaign = campaign_service.create_campaign(db, campaign_payload, user_id=current_user.id)
+        campaign = campaign_service.create_campaign(db, campaign_payload, user_id=current_user.id, organization_id=final_organization_id)
 
         # Attach personalized recipients if provided
         personalized_entries = []

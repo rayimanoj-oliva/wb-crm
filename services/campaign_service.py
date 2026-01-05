@@ -460,7 +460,7 @@ def get_campaign(db: Session, campaign_id: UUID):
         raise HTTPException(status_code=404, detail="Campaign not found")
     return campaign
 
-def create_campaign(db: Session, campaign: CampaignCreate, user_id: UUID):
+def create_campaign(db: Session, campaign: CampaignCreate, user_id: UUID, organization_id: Optional[UUID] = None):
     new_campaign = Campaign(
         name=campaign.name,
         description=campaign.description,
@@ -468,7 +468,8 @@ def create_campaign(db: Session, campaign: CampaignCreate, user_id: UUID):
         type=campaign.type,
         campaign_cost_type=campaign.campaign_cost_type,
         created_by=user_id,
-        updated_by=user_id
+        updated_by=user_id,
+        organization_id=organization_id or campaign.organization_id
     )
     db.add(new_campaign)
 
