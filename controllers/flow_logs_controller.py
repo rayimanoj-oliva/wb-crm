@@ -372,8 +372,14 @@ def export_pushed_leads_excel(
                 return "lead_appointment"
             return None
 
-        # Get peer numbers for all leads
+        # Get customer info for pushed leads FIRST
         lead_wa_ids = [lead.wa_id for lead in leads if lead.wa_id]
+        customer_map_pushed = {}
+        if lead_wa_ids:
+            customers = db.query(Customer).filter(Customer.wa_id.in_(lead_wa_ids)).all()
+            customer_map_pushed = {c.wa_id: c for c in customers}
+
+        # Get peer numbers for all leads
         peer_number_map = _get_peer_numbers_for_customers(db, lead_wa_ids)
 
         workbook = Workbook()
@@ -396,8 +402,13 @@ def export_pushed_leads_excel(
 
             flow_label = flow_type_labels.get(flow_code or "", flow_code or "Unknown")
 
-            name_parts = [lead.first_name or "", lead.last_name or ""]
-            name = " ".join(part.strip() for part in name_parts if part and part.strip()).strip() or "Unknown"
+            # Prioritize Customer.name, then Lead names, then "Unknown"
+            customer = customer_map_pushed.get(lead.wa_id) if lead.wa_id else None
+            if customer and customer.name and customer.name.strip():
+                name = customer.name.strip()
+            else:
+                name_parts = [lead.first_name or "", lead.last_name or ""]
+                name = " ".join(part.strip() for part in name_parts if part and part.strip()).strip() or "Unknown"
 
             phone = lead.phone or lead.mobile or wa_id_map.get(lead_id) or ""
             peer_number = peer_number_map.get(lead.wa_id, "")
@@ -545,7 +556,13 @@ def export_non_pushed_leads_excel(
 
         rows_written = 0
         for log, customer_name, phone_1, email in results:
-            name = customer_name or log.name or "Unknown"
+            # Prioritize Customer.name from join, then FlowLog.name, then "Unknown"
+            if customer_name and customer_name.strip():
+                name = customer_name.strip()
+            elif log.name and log.name.strip():
+                name = log.name.strip()
+            else:
+                name = "Unknown"
             phone = phone_1 or log.wa_id or ""
             peer_number = peer_number_map.get(log.wa_id, "") if log.wa_id else ""
             
@@ -600,7 +617,8 @@ def export_all_leads_excel(
     date_to: Optional[str] = Query(None),
 ):
     """
-    Export all leads (both pushed and non-pushed) as a single Excel sheet.
+    Export ALL customers (both pushed and non-pushed) who messaged in the date range.
+    Includes customers with messages but no FlowLog entries to ensure no contacts are missing.
     Results can be filtered by flow type and date range.
     """
     try:
@@ -615,7 +633,7 @@ def export_all_leads_excel(
 
         workbook = Workbook()
         worksheet = workbook.active
-        worksheet.title = "All Leads"
+        worksheet.title = "All Customers"
 
         flow_type_labels = {
             "treatment": "Marketing",
@@ -636,8 +654,53 @@ def export_all_leads_excel(
         worksheet.append([
             "Status", "Name", "Phone Number", "Email", "WA ID", "Lead ID", 
             "Lead Source", "Sub Source", "Peer Number", "Flow Type", 
-            "Last Step", "Description", "Status Code", "Keywords", "Who Ended Chat First", "Created At"
+            "Last Step", "Description", "Status Code", "Keywords", "Who Ended Chat First", "Message Count", "First Message", "Last Message", "Created At"
         ])
+        
+        # FIRST: Get ALL customers who messaged in the date range (to ensure none are missing)
+        message_filters = [
+            Message.timestamp >= dt_from,
+            Message.timestamp < dt_to_upper,
+            Message.sender_type == "customer"
+        ]
+        
+        customers_with_messages_query = (
+            db.query(Customer.wa_id)
+            .join(Message, Customer.id == Message.customer_id)
+        )
+        if dt_from:
+            customers_with_messages_query = customers_with_messages_query.filter(Message.timestamp >= dt_from)
+        if dt_to_upper:
+            customers_with_messages_query = customers_with_messages_query.filter(Message.timestamp < dt_to_upper)
+        
+        all_customers_wa_ids_result = customers_with_messages_query.distinct().all()
+        all_customers_wa_ids_set = {row[0] for row in all_customers_wa_ids_result if row[0]}
+        
+        if not all_customers_wa_ids_set:
+            raise HTTPException(status_code=404, detail="No customers found for the selected date range.")
+        
+        # Get message stats for all customers
+        message_stats_query = (
+            db.query(
+                Customer.wa_id,
+                func.count(Message.id).label("message_count"),
+                func.min(Message.timestamp).label("first_message"),
+                func.max(Message.timestamp).label("last_message")
+            )
+            .join(Message, Customer.id == Message.customer_id)
+            .filter(Customer.wa_id.in_(list(all_customers_wa_ids_set)))
+        )
+        if dt_from:
+            message_stats_query = message_stats_query.filter(Message.timestamp >= dt_from)
+        if dt_to_upper:
+            message_stats_query = message_stats_query.filter(Message.timestamp < dt_to_upper)
+        
+        message_stats_query = message_stats_query.group_by(Customer.wa_id)
+        message_stats = {row[0]: {
+            'count': row[1],
+            'first': row[2],
+            'last': row[3]
+        } for row in message_stats_query.all()}
 
         lead_query = db.query(Lead)
         if dt_from:
@@ -649,218 +712,139 @@ def export_all_leads_excel(
             lead_query.order_by(Lead.created_at.desc()).limit(20000).all()
         )
 
-        # Get peer numbers for all pushed leads
-        all_wa_ids = []
-        for lead in leads:
-            if lead.wa_id:
-                all_wa_ids.append(lead.wa_id)
-
-        log_filters = [
-            FlowLog.step == "result",
-            FlowLog.status_code == 200,
-            FlowLog.response_json.isnot(None),
+        # Get all customer details
+        all_customers = db.query(Customer).filter(Customer.wa_id.in_(list(all_customers_wa_ids_set))).all()
+        customer_map_all = {c.wa_id: c for c in all_customers}
+        
+        # Get peer numbers for ALL customers
+        all_wa_ids_list = list(all_customers_wa_ids_set)
+        peer_number_map_all = _get_peer_numbers_for_customers(db, all_wa_ids_list)
+        
+        # Get keywords and who ended for ALL customers
+        keywords_map_all = _extract_keywords_from_messages(db, all_wa_ids_list)
+        who_ended_map_all = _get_who_ended_chat_first(db, all_wa_ids_list)
+        
+        # Get FlowLog info for customers who entered flows in date range
+        flow_log_filters = [
+            FlowLog.wa_id.in_(all_wa_ids_list),
         ]
-        if flow_type:
-            log_filters.append(FlowLog.flow_type == flow_type)
         if dt_from:
-            log_filters.append(FlowLog.created_at >= dt_from)
+            flow_log_filters.append(FlowLog.created_at >= dt_from)
         if dt_to_upper:
-            log_filters.append(FlowLog.created_at < dt_to_upper)
-
-        flow_log_map: Dict[str, str] = {}
-        wa_id_map: Dict[str, str] = {}
-
-        log_rows = db.query(FlowLog).filter(and_(*log_filters)).all()
-        for log in log_rows:
-            if not log.response_json:
+            flow_log_filters.append(FlowLog.created_at < dt_to_upper)
+        if flow_type:
+            flow_log_filters.append(FlowLog.flow_type == flow_type)
+        
+        flow_logs_all = db.query(FlowLog).filter(and_(*flow_log_filters)).all()
+        
+        # Get latest flow log for each customer
+        customer_flow_map = {}
+        for log in flow_logs_all:
+            if not log.wa_id:
                 continue
-            lead_id: Optional[str] = None
-            try:
-                payload = json.loads(log.response_json)
-                if isinstance(payload, dict):
-                    if payload.get("success") and not payload.get("duplicate") and not payload.get("skipped"):
-                        lead_id = payload.get("lead_id")
-                        if not lead_id:
-                            response_block = payload.get("response") or {}
-                            data_list = response_block.get("data") or []
-                            if data_list:
-                                details = (data_list[0] or {}).get("details") or {}
-                                lead_id = details.get("id")
-            except Exception:
+            if log.wa_id not in customer_flow_map:
+                customer_flow_map[log.wa_id] = log
+            else:
+                # Keep the latest flow log
+                if log.created_at and customer_flow_map[log.wa_id].created_at:
+                    if log.created_at > customer_flow_map[log.wa_id].created_at:
+                        customer_flow_map[log.wa_id] = log
+        
+        # Get pushed leads (customers who have Lead entries)
+        lead_map_by_wa_id = {lead.wa_id: lead for lead in leads if lead.wa_id}
+        pushed_wa_ids_set = set(lead_map_by_wa_id.keys())
+        
+        # Process ALL customers who messaged in date range
+        rows_written = 0
+        
+        for wa_id in all_customers_wa_ids_set:
+            customer = customer_map_all.get(wa_id)
+            if not customer:
                 continue
-
-            if not lead_id:
-                continue
-            lead_id_str = str(lead_id)
-            flow_log_map.setdefault(lead_id_str, log.flow_type or "")
-            if log.wa_id:
-                wa_id_map.setdefault(lead_id_str, log.wa_id)
-
-        # Get peer numbers for pushed leads
-        pushed_peer_number_map = _get_peer_numbers_for_customers(db, all_wa_ids)
-
-        # Get keywords from customer messages only for pushed leads
-        pushed_keywords_map = _extract_keywords_from_messages(db, all_wa_ids)
-
-        # Get who ended chat first for pushed leads
-        pushed_who_ended_map = _get_who_ended_chat_first(db, all_wa_ids)
-
-        # Get customer info for pushed leads
-        pushed_wa_ids_list = [lead.wa_id for lead in leads if lead.wa_id]
-        customer_map = {}
-        if pushed_wa_ids_list:
-            customers = db.query(Customer).filter(Customer.wa_id.in_(pushed_wa_ids_list)).all()
-            customer_map = {c.wa_id: c for c in customers}
-
-        pushed_rows_written = 0
-        for lead in leads:
-            lead_id = lead.zoho_lead_id
-            if not lead_id:
-                continue
-
-            flow_code = flow_log_map.get(lead_id) or infer_flow_from_source(lead.lead_source)
+            
+            # Get customer name (prioritize Customer.name)
+            name = customer.name if customer.name and customer.name.strip() else "Unknown"
+            phone = customer.phone_1 or wa_id or ""
+            email = customer.email or ""
+            peer_number = peer_number_map_all.get(wa_id, "") if wa_id else ""
+            
+            # Get message stats
+            stats = message_stats.get(wa_id, {'count': 0, 'first': None, 'last': None})
+            message_count = stats['count']
+            first_message = stats['first']
+            last_message = stats['last']
+            
+            # Get keywords and who ended
+            keywords = keywords_map_all.get(wa_id, "") if wa_id else ""
+            who_ended = who_ended_map_all.get(wa_id, "") if wa_id else ""
+            
+            # Determine if pushed or non-pushed
+            is_pushed = wa_id in pushed_wa_ids_set
+            status = "Pushed" if is_pushed else "Non-Pushed"
+            
+            # Get Lead info if pushed
+            lead_id = ""
+            lead_source = ""
+            sub_source = ""
+            lead_created_at = ""
+            if is_pushed:
+                lead = lead_map_by_wa_id.get(wa_id)
+                if lead:
+                    lead_id = lead.zoho_lead_id or ""
+                    lead_source = lead.lead_source or ""
+                    sub_source = lead.sub_source or ""
+                    lead_created_at = lead.created_at.isoformat() if lead.created_at else ""
+            
+            # Get FlowLog info if available
+            flow_log = customer_flow_map.get(wa_id)
+            flow_type_str = ""
+            last_step = ""
+            description = ""
+            status_code = ""
+            
+            if flow_log:
+                flow_type_str = flow_type_labels.get(flow_log.flow_type or "", flow_log.flow_type or "")
+                last_step = flow_log.step or ""
+                description = flow_log.description or ""
+                status_code = str(flow_log.status_code) if flow_log.status_code else ""
+            
+            # If flow_type filter is set, only include customers with matching flow type
+            # Include customers who messaged even if they don't have a flow log (they might have messaged but not entered a flow)
             if flow_type:
-                if not flow_code:
+                # If customer has a flow log, check if it matches the filter
+                if flow_log:
+                    if flow_log.flow_type != flow_type:
+                        continue  # Skip if flow type doesn't match
+                # If customer has no flow log but flow_type filter is set, 
+                # we skip them as they didn't enter any flow (and we're filtering by flow type)
+                else:
                     continue
-                if flow_code != flow_type:
-                    continue
-
-            flow_label = flow_type_labels.get(flow_code or "", flow_code or "Unknown")
-
-            name_parts = [lead.first_name or "", lead.last_name or ""]
-            name = " ".join(part.strip() for part in name_parts if part and part.strip()).strip() or "Unknown"
-
-            phone = lead.phone or lead.mobile or wa_id_map.get(lead_id) or ""
-            peer_number = pushed_peer_number_map.get(lead.wa_id, "") if lead.wa_id else ""
-            keywords = pushed_keywords_map.get(lead.wa_id, "") if lead.wa_id else ""
-            who_ended = pushed_who_ended_map.get(lead.wa_id, "") if lead.wa_id else ""
             
-            # Get customer email if available
-            customer = customer_map.get(lead.wa_id) if lead.wa_id else None
-            email = (customer.email if customer and customer.email else "") or ""
-
             worksheet.append([
-                "Pushed",  # Status
-                name or "",
-                phone or "",
-                email or "",
-                lead.wa_id or "",
-                lead_id or "",
-                lead.lead_source or "",
-                lead.sub_source or "",
-                peer_number or "",
-                flow_label or "",
-                "",  # Last Step (not applicable for pushed leads)
-                "",  # Description (not applicable for pushed leads)
-                "",  # Status Code (not applicable for pushed leads)
-                keywords or "",  # Keywords found in customer messages only
-                who_ended or "",  # Who ended chat first
-                lead.created_at.isoformat() if lead.created_at else "",
+                status,
+                name,
+                phone,
+                email,
+                wa_id,
+                lead_id,
+                lead_source,
+                sub_source,
+                peer_number,
+                flow_type_str,
+                last_step,
+                description,
+                status_code,
+                keywords,
+                who_ended,
+                message_count,
+                first_message.isoformat() if first_message else "",
+                last_message.isoformat() if last_message else "",
+                lead_created_at if lead_created_at else (flow_log.created_at.isoformat() if flow_log and flow_log.created_at else "")
             ])
-            pushed_rows_written += 1
+            rows_written += 1
 
-        log_filters_non_pushed = [
-            FlowLog.step.isnot(None),
-            FlowLog.wa_id.isnot(None),
-        ]
-        if flow_type:
-            log_filters_non_pushed.append(FlowLog.flow_type == flow_type)
-        if dt_from:
-            log_filters_non_pushed.append(FlowLog.created_at >= dt_from)
-        if dt_to_upper:
-            log_filters_non_pushed.append(FlowLog.created_at < dt_to_upper)
-
-        flow_log_wa_ids_result = (
-            db.query(FlowLog.wa_id)
-            .filter(and_(*log_filters_non_pushed))
-            .distinct()
-            .all()
-        )
-        flow_log_wa_ids_set = {row[0] for row in flow_log_wa_ids_result if row[0]}
-
-        pushed_wa_ids_result = (
-            db.query(Lead.wa_id)
-            .distinct()
-            .all()
-        )
-        pushed_wa_ids_set = {row[0] for row in pushed_wa_ids_result if row[0]}
-
-        non_pushed_wa_ids_set = flow_log_wa_ids_set - pushed_wa_ids_set
-        non_pushed_wa_ids = list(non_pushed_wa_ids_set)
-
-        non_pushed_rows_written = 0
-        if non_pushed_wa_ids:
-            latest_log_subq = (
-                db.query(
-                    FlowLog.wa_id,
-                    func.max(FlowLog.created_at).label('max_created_at')
-                )
-                .filter(FlowLog.wa_id.in_(non_pushed_wa_ids))
-                .filter(and_(*log_filters_non_pushed))
-                .group_by(FlowLog.wa_id)
-                .subquery()
-            )
-
-            results = (
-                db.query(
-                    FlowLog,
-                    Customer.name,
-                    Customer.phone_1,
-                    Customer.email
-                )
-                .join(
-                    latest_log_subq,
-                    and_(
-                        FlowLog.wa_id == latest_log_subq.c.wa_id,
-                        FlowLog.created_at == latest_log_subq.c.max_created_at
-                    )
-                )
-                .outerjoin(Customer, FlowLog.wa_id == Customer.wa_id)
-                .all()
-            )
-
-            # Get peer numbers for non-pushed leads
-            non_pushed_wa_ids_list = [log.wa_id for log, _, _, _ in results if log.wa_id]
-            non_pushed_peer_number_map = _get_peer_numbers_for_customers(db, non_pushed_wa_ids_list)
-            
-            # Get keywords from customer messages only for non-pushed leads
-            non_pushed_keywords_map = _extract_keywords_from_messages(db, non_pushed_wa_ids_list)
-            
-            # Get who ended chat first for non-pushed leads
-            non_pushed_who_ended_map = _get_who_ended_chat_first(db, non_pushed_wa_ids_list)
-
-            for log, customer_name, phone_1, email in results:
-                name = (customer_name or log.name or "Unknown") if customer_name or log.name else "Unknown"
-                phone = (phone_1 or log.wa_id or "") if phone_1 or log.wa_id else ""
-                peer_number = non_pushed_peer_number_map.get(log.wa_id, "") if log.wa_id else ""
-                keywords = non_pushed_keywords_map.get(log.wa_id, "") if log.wa_id else ""
-                who_ended = non_pushed_who_ended_map.get(log.wa_id, "") if log.wa_id else ""
-                email_value = (email or "") if email else ""
-                
-                flow_label = flow_type_labels.get(log.flow_type or "", log.flow_type or "Unknown")
-                
-                worksheet.append([
-                    "Non-Pushed",  # Status
-                    name,
-                    phone,
-                    email_value,
-                    log.wa_id or "",
-                    "",  # Lead ID (not applicable for non-pushed leads)
-                    "",  # Lead Source (not applicable for non-pushed leads)
-                    "",  # Sub Source (not applicable for non-pushed leads)
-                    peer_number or "",
-                    flow_label or "",
-                    log.step or "",
-                    log.description or "",
-                    str(log.status_code) if log.status_code else "",
-                    keywords or "",  # Keywords found in customer messages only
-                    who_ended or "",  # Who ended chat first
-                    log.created_at.isoformat() if log.created_at else "",
-                ])
-                non_pushed_rows_written += 1
-
-        if pushed_rows_written == 0 and non_pushed_rows_written == 0:
-            raise HTTPException(status_code=404, detail="No leads found for the selected filters.")
+        if rows_written == 0:
+            raise HTTPException(status_code=404, detail="No customers found for the selected filters.")
 
         output = io.BytesIO()
         workbook.save(output)
@@ -886,6 +870,226 @@ def export_all_leads_excel(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/export-all-customers-by-date")
+def export_all_customers_by_date_excel(
+    db: Session = Depends(get_db),
+    date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+    flow_type: Optional[str] = Query(None, description="Filter by flow type"),
+):
+    """
+    Export ALL customers (both pushed and non-pushed) who messaged in the date range.
+    Includes all customer data with peer numbers in a single Excel sheet.
+    Ensures no customers are missing - includes all who messaged in the date range.
+    """
+    try:
+        dt_from = _parse_dt(date_from)
+        dt_to = _parse_dt(date_to)
+        
+        if not dt_from or not dt_to:
+            raise HTTPException(status_code=400, detail="Both date_from and date_to are required (YYYY-MM-DD)")
+        
+        # Ensure dt_to includes the entire day
+        if date_to and len(date_to) == 10:
+            dt_to_upper = dt_to + timedelta(days=1)
+        else:
+            dt_to_upper = dt_to
+        
+        # Get ALL customers who messaged in the date range
+        message_filters = [
+            Message.timestamp >= dt_from,
+            Message.timestamp < dt_to_upper,
+            Message.sender_type == "customer"  # Only customer messages
+        ]
+        
+        # Get all unique customers who messaged in date range
+        customers_with_messages_query = (
+            db.query(Customer.wa_id)
+            .join(Message, Customer.id == Message.customer_id)
+            .filter(and_(*message_filters))
+            .distinct()
+        )
+        customers_with_messages_result = customers_with_messages_query.all()
+        all_wa_ids = [row[0] for row in customers_with_messages_result if row[0]]
+        
+        if not all_wa_ids:
+            raise HTTPException(status_code=404, detail="No customers found for the selected date range.")
+        
+        # Get all customer details
+        customers = db.query(Customer).filter(Customer.wa_id.in_(all_wa_ids)).all()
+        customer_map = {c.wa_id: c for c in customers}
+        
+        # Get message counts and timestamps for each customer in date range
+        message_stats_query = (
+            db.query(
+                Customer.wa_id,
+                func.count(Message.id).label("message_count"),
+                func.min(Message.timestamp).label("first_message"),
+                func.max(Message.timestamp).label("last_message")
+            )
+            .join(Message, Customer.id == Message.customer_id)
+            .filter(Customer.wa_id.in_(all_wa_ids))
+            .filter(and_(*message_filters))
+            .group_by(Customer.wa_id)
+        )
+        message_stats = {row[0]: {
+            'count': row[1],
+            'first': row[2],
+            'last': row[3]
+        } for row in message_stats_query.all()}
+        
+        # Get FlowLog info for customers (if they entered a flow in date range)
+        flow_log_filters = [
+            FlowLog.wa_id.in_(all_wa_ids),
+            FlowLog.created_at >= dt_from,
+            FlowLog.created_at < dt_to_upper
+        ]
+        if flow_type:
+            flow_log_filters.append(FlowLog.flow_type == flow_type)
+        
+        flow_logs_query = db.query(FlowLog).filter(and_(*flow_log_filters))
+        flow_logs = flow_logs_query.all()
+        
+        # Group flow logs by wa_id - get latest flow info for each customer
+        flow_log_map = {}
+        for log in flow_logs:
+            if not log.wa_id:
+                continue
+            if log.wa_id not in flow_log_map:
+                flow_log_map[log.wa_id] = []
+            flow_log_map[log.wa_id].append(log)
+        
+        # Get latest flow log for each customer
+        customer_flow_info = {}
+        for wa_id, logs in flow_log_map.items():
+            latest_log = max(logs, key=lambda x: x.created_at if x.created_at else datetime.min)
+            customer_flow_info[wa_id] = {
+                'flow_type': latest_log.flow_type or "",
+                'step': latest_log.step or "",
+                'status_code': str(latest_log.status_code) if latest_log.status_code else "",
+                'description': latest_log.description or ""
+            }
+        
+        # Get peer numbers for all customers
+        peer_number_map = _get_peer_numbers_for_customers(db, all_wa_ids)
+        
+        # Check which customers are pushed (have Lead entries)
+        pushed_wa_ids_result = (
+            db.query(Lead.wa_id)
+            .filter(Lead.wa_id.in_(all_wa_ids))
+            .distinct()
+            .all()
+        )
+        pushed_wa_ids_set = {row[0] for row in pushed_wa_ids_result if row[0]}
+        
+        # Get Lead info for pushed customers
+        leads_query = db.query(Lead).filter(Lead.wa_id.in_(list(pushed_wa_ids_set)))
+        if dt_from:
+            leads_query = leads_query.filter(Lead.created_at >= dt_from)
+        if dt_to_upper:
+            leads_query = leads_query.filter(Lead.created_at < dt_to_upper)
+        leads = leads_query.all()
+        lead_map = {lead.wa_id: lead for lead in leads}
+        
+        # Create workbook with single sheet
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.title = "All Customers"
+        
+        # Header row
+        worksheet.append([
+            "Status", "Name", "Phone Number", "Email", "WA ID", "Peer Number",
+            "Message Count", "First Message Time", "Last Message Time",
+            "Flow Type", "Last Flow Step", "Flow Status", "Flow Description",
+            "Lead ID", "Lead Source", "Sub Source", "Organization ID"
+        ])
+        
+        rows_written = 0
+        for wa_id in all_wa_ids:
+            customer = customer_map.get(wa_id)
+            if not customer:
+                continue
+            
+            # Get customer name (prioritize Customer.name)
+            name = customer.name if customer.name and customer.name.strip() else "Unknown"
+            phone = customer.phone_1 or wa_id or ""
+            email = customer.email or ""
+            peer_number = peer_number_map.get(wa_id, "") if wa_id else ""
+            
+            # Get message stats
+            stats = message_stats.get(wa_id, {'count': 0, 'first': None, 'last': None})
+            message_count = stats['count']
+            first_message = stats['first']
+            last_message = stats['last']
+            
+            # Get flow info
+            flow_info = customer_flow_info.get(wa_id, {
+                'flow_type': "",
+                'step': "",
+                'status_code': "",
+                'description': ""
+            })
+            
+            # Determine status (Pushed or Non-Pushed)
+            is_pushed = wa_id in pushed_wa_ids_set
+            status = "Pushed" if is_pushed else "Non-Pushed"
+            
+            # Get Lead info if pushed
+            lead_id = ""
+            lead_source = ""
+            sub_source = ""
+            if is_pushed:
+                lead = lead_map.get(wa_id)
+                if lead:
+                    lead_id = lead.zoho_lead_id or ""
+                    lead_source = lead.lead_source or ""
+                    sub_source = lead.sub_source or ""
+            
+            worksheet.append([
+                status,
+                name,
+                phone,
+                email,
+                wa_id,
+                peer_number,
+                message_count,
+                first_message.isoformat() if first_message else "",
+                last_message.isoformat() if last_message else "",
+                flow_info['flow_type'],
+                flow_info['step'],
+                flow_info['status_code'],
+                flow_info['description'],
+                lead_id,
+                lead_source,
+                sub_source,
+                str(customer.organization_id) if customer.organization_id else ""
+            ])
+            rows_written += 1
+        
+        if rows_written == 0:
+            raise HTTPException(status_code=404, detail="No data to export.")
+        
+        output = io.BytesIO()
+        workbook.save(output)
+        output.seek(0)
+        
+        suffix = f"_{date_from}_to_{date_to}" if date_from and date_to else ""
+        if flow_type:
+            suffix += f"_{flow_type}"
+        
+        return StreamingResponse(
+            output,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": f"attachment; filename=all_customers_by_date{suffix}.xlsx"
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to export customers: {str(e)}")
 
 
 @router.get("/export-chats-without-push")
