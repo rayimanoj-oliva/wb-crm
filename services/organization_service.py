@@ -7,44 +7,75 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_, func, and_
 from uuid import UUID
 
-from models.models import Organization, User, Role
+from models.models import Organization, User, Role, WhatsAppNumber
 from schemas.organization_schema import OrganizationCreate, OrganizationUpdate
 
 
 def create_organization(db: Session, organization_data: OrganizationCreate, created_by_user: User) -> Organization:
-    """Create a new organization"""
+    """Create a new organization along with its WhatsApp business numbers (if provided)."""
     # Generate slug if not provided
     slug = organization_data.slug
     if not slug and organization_data.name:
         slug = organization_data.name.lower().replace(" ", "-").replace("_", "-")
         # Remove special characters
         slug = "".join(c if c.isalnum() or c == "-" else "" for c in slug)
-    
+
     # Check if slug already exists
     if slug:
         existing = db.query(Organization).filter(Organization.slug == slug).first()
         if existing:
             raise ValueError(f"Organization with slug '{slug}' already exists")
-    
+
     # Check if code already exists
     code = organization_data.code
     if code:
         existing_code = db.query(Organization).filter(Organization.code == code).first()
         if existing_code:
             raise ValueError(f"Organization with code '{code}' already exists")
-    
+
     organization = Organization(
         name=organization_data.name,
         code=code,
         slug=slug,
         description=organization_data.description,
-        is_active=organization_data.is_active
+        is_active=organization_data.is_active,
     )
-    
-    db.add(organization)
-    db.commit()
-    db.refresh(organization)
-    return organization
+
+    try:
+        # Persist organization first so we have an ID
+        db.add(organization)
+        db.flush()
+
+        # Create linked WhatsApp numbers, if any
+        for wa_number_data in organization_data.whatsapp_numbers or []:
+            # Enforce global uniqueness of phone_number_id
+            existing_wa = (
+                db.query(WhatsAppNumber)
+                .filter(WhatsAppNumber.phone_number_id == wa_number_data.phone_number_id)
+                .first()
+            )
+            if existing_wa:
+                raise ValueError(
+                    f"WhatsApp number with phone_number_id '{wa_number_data.phone_number_id}' already exists"
+                )
+
+            wa_number = WhatsAppNumber(
+                phone_number_id=wa_number_data.phone_number_id,
+                display_number=wa_number_data.display_number or wa_number_data.phone_number_id,
+                access_token=wa_number_data.access_token,
+                webhook_path=wa_number_data.webhook_path,
+                organization_id=organization.id,
+                is_active=True,
+            )
+            db.add(wa_number)
+
+        db.commit()
+        db.refresh(organization)
+        return organization
+    except Exception:
+        db.rollback()
+        # Re-raise so controller can translate into HTTP error
+        raise
 
 
 def get_organization(db: Session, organization_id: UUID) -> Optional[Organization]:
