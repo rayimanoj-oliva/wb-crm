@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from starlette.responses import PlainTextResponse
 import asyncio
 import httpx
+import requests
 from pydantic import BaseModel
 
 from database.db import get_db
@@ -24,28 +25,132 @@ from utils.ws_manager import manager
 # CONFIG
 # =============================================================================
 
-VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "oasis123")
+# VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "")
 
-# Alots.io Configuration for webhook2
-# Map peer (display phone number) to phone_number_id and token
+# Alots.io Configuration (fallback for numbers not in database)
 ALOTS_CONFIG = {
     "917416159696": {
         "phone_number_id": "916824348188229",
-        "token": os.getenv("ALOTS_API_TOKEN", "c0b140ef-a10a-4d2c-a6b0-e5f65668551c"),
+        "token": "c0b140ef-a10a-4d2c-a6b0-e5f65668551c",
+        "api_base_url": "https://alots.io/v22.0",
         "display_name": "Oasis Fertility"
     }
 }
 
-def get_alots_config(peer: str):
-    """Get Alots.io API config for a peer number"""
-    config = ALOTS_CONFIG.get(peer)
-    if not config:
-        raise HTTPException(status_code=400, detail=f"Invalid peer number: {peer}. Valid peers: {list(ALOTS_CONFIG.keys())}")
+def get_whatsapp_config_by_peer(db: Session, peer: str):
+    """
+    Get WhatsApp API config for a peer number (display_number or phone_number_id)
+    Looks up from whatsapp_numbers table, falls back to ALOTS_CONFIG
+    """
+    from services.whatsapp_number_service import get_whatsapp_number_by_phone_id
+    from models.models import WhatsAppNumber
+    import re
+
+    # Normalize peer: remove all non-digits for comparison
+    peer_digits = re.sub(r"\D", "", peer)
+
+    print(f"[webhook2] Looking up peer: {peer} (normalized: {peer_digits})")
+
+    # Check ALOTS_CONFIG first (for alots.io numbers)
+    if peer in ALOTS_CONFIG:
+        config = ALOTS_CONFIG[peer]
+        print(f"[webhook2] Found in ALOTS_CONFIG: {config['display_name']}")
+        return {
+            "api_url": f"{config['api_base_url']}/{config['phone_number_id']}/messages",
+            "media_url": f"{config['api_base_url']}/{config['phone_number_id']}/media",
+            "token": config["token"],
+            "phone_number_id": config["phone_number_id"],
+            "display_name": config.get("display_name", peer)
+        }
+    
+    # Try to find by phone_number_id first (exact match)
+    whatsapp_number = get_whatsapp_number_by_phone_id(db, peer)
+    if whatsapp_number:
+        print(f"[webhook2] Found by phone_number_id: {whatsapp_number.phone_number_id}")
+    
+    # If not found, try to find by display_number
+    if not whatsapp_number:
+        # Try exact match on display_number
+        whatsapp_number = db.query(WhatsAppNumber).filter(
+            WhatsAppNumber.display_number == peer
+        ).first()
+        if whatsapp_number:
+            print(f"[webhook2] Found by exact display_number match: {whatsapp_number.display_number}")
+    
+    # If still not found, try normalized digit match on display_number
+    if not whatsapp_number and peer_digits:
+        # Query ALL numbers first (for debugging and to avoid boolean filter issues)
+        all_numbers = db.query(WhatsAppNumber).all()
+        print(f"[webhook2] Found {len(all_numbers)} total numbers in database, filtering for active ones...")
+        
+        # Filter active numbers in Python (more reliable than SQL boolean comparison)
+        active_numbers = [num for num in all_numbers if num.is_active is True]
+        print(f"[webhook2] Trying normalized match on {len(active_numbers)} active numbers...")
+        
+        for num in active_numbers:
+            if num.display_number:
+                num_digits = re.sub(r"\D", "", num.display_number)
+                print(f"[webhook2] Comparing: peer_digits={peer_digits} vs num_digits={num_digits} (from {num.display_number})")
+                # Try full digit match
+                if num_digits == peer_digits:
+                    whatsapp_number = num
+                    print(f"[webhook2] Found by normalized display_number match: {num.display_number} -> {num.phone_number_id}")
+                    break
+                # Try last 10 digits match (for numbers with country codes)
+                if len(peer_digits) >= 10 and len(num_digits) >= 10:
+                    peer_last10 = peer_digits[-10:]
+                    num_last10 = num_digits[-10:]
+                    if peer_last10 == num_last10:
+                        whatsapp_number = num
+                        print(f"[webhook2] Found by last 10 digits match: {num.display_number} (last10: {num_last10}) -> {num.phone_number_id}")
+                        break
+    
+    # Debug: List all available numbers if still not found
+    if not whatsapp_number:
+        all_numbers = db.query(WhatsAppNumber).all()
+        print(f"[webhook2] DEBUG - All WhatsApp numbers in database:")
+        for num in all_numbers:
+            print(f"  - phone_number_id: {num.phone_number_id}, display_number: {num.display_number}, is_active: {num.is_active}")
+    
+    if not whatsapp_number:
+        all_numbers = db.query(WhatsAppNumber).all()
+        active_numbers = [num for num in all_numbers if num.is_active is True]
+        available_list = ", ".join([f"{num.display_number or num.phone_number_id}" for num in active_numbers[:5]])
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Invalid or inactive peer number: {peer}. Please ensure the WhatsApp number is registered and active in the database. Available numbers: {available_list if available_list else 'None'}"
+        )
+    
+    if not whatsapp_number.is_active:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Inactive peer number: {peer}. The WhatsApp number exists but is marked as inactive."
+        )
+    
+    # Get access token (prefer from whatsapp_number, fallback to latest token)
+    access_token = whatsapp_number.access_token
+    if not access_token:
+        from services.whatsapp_service import get_latest_token
+        token_obj = get_latest_token(db)
+        if token_obj:
+            access_token = token_obj.token
+            print(f"[webhook2] Using fallback token from whatsapp_service")
+    
+    if not access_token:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No access token available for peer: {peer}. Please configure access_token for this WhatsApp number (phone_number_id: {whatsapp_number.phone_number_id})."
+        )
+    
+    phone_number_id = whatsapp_number.phone_number_id
+    print(f"[webhook2] Successfully resolved peer {peer} -> phone_number_id: {phone_number_id}")
+    
     return {
-        "api_url": f"https://alots.io/v22.0/{config['phone_number_id']}/messages",
-        "token": config["token"],
-        "phone_number_id": config["phone_number_id"],
-        "display_name": config.get("display_name", peer)
+        "api_url": f"https://graph.facebook.com/v22.0/{phone_number_id}/messages",
+        "media_url": f"https://graph.facebook.com/v22.0/{phone_number_id}/media",
+        "token": access_token,
+        "phone_number_id": phone_number_id,
+        "display_name": whatsapp_number.display_number or phone_number_id
     }
 
 router = APIRouter(
@@ -445,167 +550,495 @@ async def webhook2_websocket_endpoint(websocket: WebSocket):
 
 
 # =============================================================================
-# WEBHOOK2 SEND MESSAGE (Alots.io API)
+# WEBHOOK2 SEND MESSAGE (Standard WhatsApp API - Organization-based)
 # =============================================================================
 
-class TemplateComponent(BaseModel):
-    type: str
-    parameters: List[dict] = []
+import csv
+import io
+import mimetypes
+import tempfile
+import subprocess
+from pathlib import Path
 
-class SendMessageRequest(BaseModel):
-    wa_id: str
-    type: Literal["text", "template", "image", "document", "audio", "video", "interactive"]
-    body: Optional[str] = None
-    template_name: Optional[str] = None
-    template_language: Optional[str] = "en"
-    template_components: Optional[List[dict]] = None
-    media_url: Optional[str] = None
-    media_caption: Optional[str] = None
-    interactive_data: Optional[dict] = None
+def _coerce_float(value: Optional[str]) -> Optional[float]:
+    """Coerce string to float, return None if invalid"""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    stripped = value.strip()
+    if stripped == "":
+        return None
+    try:
+        return float(stripped)
+    except (ValueError, TypeError):
+        return None
 
+SUPPORTED_AUDIO_MIME_TYPES = {
+    "audio/aac",
+    "audio/mp4",
+    "audio/mpeg",
+    "audio/mp3",
+    "audio/amr",
+    "audio/ogg",
+    "audio/opus",
+}
+
+def _convert_audio_to_supported_format(file_bytes: bytes, filename: str, mime_type: str):
+    """
+    Converts unsupported audio (e.g. video/webm) to MP3 using ffmpeg so that Meta accepts it.
+    """
+    if mime_type in SUPPORTED_AUDIO_MIME_TYPES:
+        return file_bytes, filename, mime_type
+
+    src_suffix = Path(filename).suffix or (mimetypes.guess_extension(mime_type or "") or ".webm")
+    src_path = None
+    dst_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=src_suffix) as temp_src:
+            temp_src.write(file_bytes)
+            temp_src.flush()
+            src_path = temp_src.name
+
+        dst_path = f"{src_path}.mp3"
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            src_path,
+            "-vn",
+            "-acodec",
+            "libmp3lame",
+            dst_path,
+        ]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if result.returncode != 0:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Audio conversion failed: {result.stderr.decode('utf-8', 'ignore')}",
+            )
+
+        with open(dst_path, "rb") as converted_file:
+            converted_bytes = converted_file.read()
+
+        safe_name = Path(filename).stem or "audio"
+        new_filename = f"{safe_name}.mp3"
+        return converted_bytes, new_filename, "audio/mpeg"
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=500,
+            detail="Audio conversion requires ffmpeg to be installed on the server.",
+        )
+    finally:
+        try:
+            if src_path and os.path.exists(src_path):
+                os.remove(src_path)
+        except Exception:
+            pass
+        try:
+            if dst_path and os.path.exists(dst_path):
+                os.remove(dst_path)
+        except Exception:
+            pass
 
 @router2.post("/send-message")
 async def send_message_webhook2(
     peer: str = Form(...),
     wa_id: str = Form(...),
-    type: Literal["text", "template", "image", "document", "audio", "video", "interactive"] = Form(...),
+    type: Literal[
+        "text", "template", "image", "document",
+        "audio", "video", "interactive", "location", "flow"
+    ] = Form(...),
+
+    # Common
     body: Optional[str] = Form(None),
+    language: Optional[str] = Form("en_US"),
+    file: Optional[UploadFile] = File(None),
+
+    # Location
+    latitude: Optional[str] = Form(None),
+    longitude: Optional[str] = Form(None),
+    location_name: Optional[str] = Form(None),
+    location_address: Optional[str] = Form(None),
+
+    # Template
     template_name: Optional[str] = Form(None),
-    template_language: Optional[str] = Form("en"),
-    template_components: Optional[str] = Form(None),  # JSON string
+    template_params: Optional[str] = Form(None),
+    template_button_params: Optional[str] = Form(None),
+    template_button_index: Optional[str] = Form("0"),
+    template_button_sub_type: Optional[str] = Form("url"),
+    template_media_id: Optional[str] = Form(None),
+    template_header_params: Optional[int] = Form(None),
+    template_body_expected: Optional[int] = Form(None),
+    template_enforce_count: Optional[bool] = Form(False),
+
+    # Media (legacy support - prefer file upload)
     media_url: Optional[str] = Form(None),
-    media_caption: Optional[str] = Form(None),
-    interactive_data: Optional[str] = Form(None),  # JSON string
+
+    # Interactive
+    interactive_data: Optional[str] = Form(None),
+
+    # Flow-specific
+    flow_id: Optional[str] = Form(None),
+    flow_cta: Optional[str] = Form("Provide Address"),
+    flow_token: Optional[str] = Form(None),
+    flow_payload_json: Optional[str] = Form(None),
+
     db: Session = Depends(get_db)
 ):
     """
-    Send message via Alots.io API (webhook2 account)
-
-    Args:
-        peer: The sender phone number (e.g., 917416159696)
-        wa_id: The recipient WhatsApp ID
-        type: Message type (text, template, image, etc.)
-
-    Supports:
-    - text: Simple text message
-    - template: WhatsApp template message
-    - image/document/audio/video: Media messages
-    - interactive: Buttons/lists
+    Send message via WhatsApp API (webhook2 - organization-based)
+    
+    Matches the structure of /secret/send-message from whatsapp_controller.py for consistency.
+    Uses organization-based phone number lookup from whatsapp_numbers table.
+    
+    NOTE: Text messages only work within 24-hour window after customer messages you.
+    Use templates to initiate conversations.
     """
     try:
-        # Get Alots.io config for this peer
-        alots_config = get_alots_config(peer)
-
+        # Get WhatsApp config for this peer (looks up from database)
+        whatsapp_config = get_whatsapp_config_by_peer(db, peer)
+        
         headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {alots_config['token']}"
+            "Authorization": f"Bearer {whatsapp_config['token']}"
         }
+        
+        WHATSAPP_API_URL = whatsapp_config['api_url']
+        MEDIA_URL = whatsapp_config['media_url']
+        phone_number_id = whatsapp_config['phone_number_id']
+        from_wa_id = peer  # sender changes based on peer
+        
+        media_id = None
+        caption = None
+        filename = None
+        mime_type = None
+        uploaded_filename = None
+        effective_media_id = None
 
-        # Build payload based on message type
+        # ---------------- Upload media if file is provided ----------------
+        if file:
+            uploaded_filename = file.filename or "upload"
+            mime_type = file.content_type or mimetypes.guess_type(uploaded_filename)[0]
+            if not mime_type:
+                raise HTTPException(status_code=400, detail="Invalid file type")
+            file_bytes = await file.read()
+
+            if type == "audio":
+                file_bytes, uploaded_filename, mime_type = _convert_audio_to_supported_format(
+                    file_bytes, uploaded_filename, mime_type
+                )
+
+            files = {
+                "file": (uploaded_filename, file_bytes, mime_type),
+                "messaging_product": (None, "whatsapp")
+            }
+            upload_res = requests.post(MEDIA_URL, headers=headers, files=files)
+            if upload_res.status_code != 200:
+                raise HTTPException(status_code=500, detail=f"Media upload failed: {upload_res.text}")
+            media_id = upload_res.json().get("id")
+            effective_media_id = media_id
+
         payload = {
             "messaging_product": "whatsapp",
+            "to": wa_id,
             "recipient_type": "individual",
-            "to": wa_id
+            "type": type
         }
 
+        coerced_latitude = _coerce_float(latitude)
+        coerced_longitude = _coerce_float(longitude)
+
+        # ---------------- Text Message ----------------
         if type == "text":
             if not body:
-                raise HTTPException(status_code=400, detail="body is required for text messages")
-            payload["type"] = "text"
-            payload["text"] = {
-                "preview_url": False,
-                "body": body
-            }
+                raise HTTPException(status_code=400, detail="Text body required")
+            payload["text"] = {"body": body, "preview_url": False}
+            print(payload)
+        # ---------------- Image Message ----------------
+        elif type == "image":
+            if not media_id and not media_url and not template_media_id:
+                raise HTTPException(status_code=400, detail="Image upload or media_url is required for image messages")
+            if media_id:
+                payload["image"] = {"id": media_id, "caption": body or ""}
+            else:
+                # Use URL (legacy support)
+                payload["image"] = {"link": media_url or template_media_id}
+                if body:
+                    payload["image"]["caption"] = body
 
-        elif type == "template":
-            if not template_name:
-                raise HTTPException(status_code=400, detail="template_name is required for template messages")
-            payload["type"] = "template"
-            payload["template"] = {
-                "name": template_name,
-                "language": {"code": template_language or "en"}
-            }
-            if template_components:
-                try:
-                    components = json.loads(template_components)
-                    payload["template"]["components"] = components
-                except json.JSONDecodeError:
-                    raise HTTPException(status_code=400, detail="Invalid template_components JSON")
+        # ---------------- Document Message ----------------
+        elif type == "document":
+            if not media_id and not media_url:
+                raise HTTPException(status_code=400, detail="Document upload or media_url is required for document messages")
+            doc_name = uploaded_filename or (file.filename if file else None)
+            if media_id:
+                payload["document"] = {"id": media_id, "caption": body or "", "filename": doc_name}
+            else:
+                payload["document"] = {"link": media_url}
+                if body:
+                    payload["document"]["caption"] = body
 
-        elif type in ["image", "document", "audio", "video"]:
-            if not media_url:
-                raise HTTPException(status_code=400, detail=f"media_url is required for {type} messages")
-            payload["type"] = type
-            payload[type] = {"link": media_url}
-            if media_caption and type in ["image", "document", "video"]:
-                payload[type]["caption"] = media_caption
+        # ---------------- Video Message ----------------
+        elif type == "video":
+            if not media_id and not media_url:
+                raise HTTPException(status_code=400, detail="Video upload or media_url is required for video messages")
+            if media_id:
+                payload["video"] = {"id": media_id}
+                if body:
+                    payload["video"]["caption"] = body
+            else:
+                payload["video"] = {"link": media_url}
+                if body:
+                    payload["video"]["caption"] = body
 
+        # ---------------- Audio Message ----------------
+        elif type == "audio":
+            if not media_id and not media_url:
+                raise HTTPException(status_code=400, detail="Audio upload or media_url is required for audio messages")
+            if media_id:
+                payload["audio"] = {"id": media_id}
+            else:
+                payload["audio"] = {"link": media_url}
+            effective_media_id = media_id
+
+        # ---------------- Location Message ----------------
+        elif type == "location":
+            if coerced_latitude is None or coerced_longitude is None:
+                raise HTTPException(status_code=400, detail="Latitude and Longitude must be numeric for location messages")
+            payload["location"] = {"latitude": str(coerced_latitude), "longitude": str(coerced_longitude)}
+            if location_name:
+                payload["location"]["name"] = location_name
+            if location_address:
+                payload["location"]["address"] = location_address
+            body = f"{location_name or ''} - {location_address or ''}"
+
+        # ---------------- Interactive Message ----------------
         elif type == "interactive":
             if not interactive_data:
-                raise HTTPException(status_code=400, detail="interactive_data is required for interactive messages")
+                raise HTTPException(status_code=400, detail="interactive_data JSON is required")
             try:
                 interactive = json.loads(interactive_data)
-                payload["type"] = "interactive"
                 payload["interactive"] = interactive
             except json.JSONDecodeError:
                 raise HTTPException(status_code=400, detail="Invalid interactive_data JSON")
 
-        print(f"[webhook2] Sending message from {peer} to {wa_id}")
-        print(f"[webhook2] API URL: {alots_config['api_url']}")
+        # ---------------- Template Message ----------------
+        elif type == "template":
+            if not template_name:
+                raise HTTPException(status_code=400, detail="template_name is required")
+
+            components = []
+
+            # Parse template_params (CSV format)
+            if template_params:
+                try:
+                    reader = csv.reader(io.StringIO(template_params))
+                    row = next(reader, [])
+                    param_list = [p.strip() for p in row]
+                except Exception:
+                    param_list = [p.strip() for p in template_params.split(",") if p]
+
+                header_count = int(template_header_params) if template_header_params else 0
+                header_vals = param_list[:header_count] if header_count > 0 else []
+                body_vals = param_list[header_count:] if header_count >= 0 else param_list
+
+                if template_enforce_count and template_body_expected:
+                    expected = int(template_body_expected)
+                    if len(body_vals) < expected:
+                        body_vals += [""] * (expected - len(body_vals))
+                    elif len(body_vals) > expected:
+                        body_vals = body_vals[:expected]
+
+                # Add text header params (only if no media header)
+                if header_vals and not (template_media_id or media_id):
+                    components.append({
+                        "type": "header",
+                        "parameters": [{"type": "text", "text": v} for v in header_vals]
+                    })
+
+                # Add body params
+                if body_vals:
+                    components.append({
+                        "type": "body",
+                        "parameters": [{"type": "text", "text": v} for v in body_vals]
+                    })
+
+            # Button parameters
+            if template_button_params:
+                try:
+                    reader = csv.reader(io.StringIO(template_button_params))
+                    row = next(reader, [])
+                    btn_param_list = [p.strip() for p in row]
+                except Exception:
+                    btn_param_list = [p.strip() for p in template_button_params.split(",") if p]
+
+                if btn_param_list:
+                    try:
+                        button_index_int = int(str(template_button_index or "0").strip())
+                    except (ValueError, AttributeError):
+                        button_index_int = 0
+
+                    components.append({
+                        "type": "button",
+                        "sub_type": str(template_button_sub_type or "url"),
+                        "index": button_index_int,
+                        "parameters": [{"type": "text", "text": v} for v in btn_param_list]
+                    })
+
+            # Image Header (from URL or media ID)
+            effective_media_id = template_media_id or media_id
+            if effective_media_id:
+                is_url = effective_media_id.startswith("http://") or effective_media_id.startswith("https://")
+                is_resumable_handle = effective_media_id.startswith("4:") and len(effective_media_id) > 50
+
+                if is_url:
+                    image_param = {"link": effective_media_id}
+                elif is_resumable_handle:
+                    image_param = {"id": effective_media_id}
+                else:
+                    image_param = {"id": effective_media_id}
+
+                components.insert(0, {
+                    "type": "header",
+                    "parameters": [
+                        {
+                            "type": "image",
+                            "image": image_param
+                        }
+                    ]
+                })
+
+            payload["template"] = {
+                "name": template_name,
+                "language": {"code": language or "en_US"},
+                "components": components
+            }
+
+            body = f"TEMPLATE: {template_name} - Params: {template_params}"
+
+        # ---------------- Flow Interactive (opens native WhatsApp Flow) ----------------
+        elif type == "flow":
+            if not flow_id:
+                raise HTTPException(status_code=400, detail="flow_id is required for type=flow")
+
+            try:
+                action_payload = json.loads(flow_payload_json) if flow_payload_json else {}
+            except Exception:
+                action_payload = {}
+
+            payload["type"] = "interactive"
+            payload["interactive"] = {
+                "type": "flow",
+                "header": {"type": "text", "text": "📍 Address Collection"},
+                "body": {"text": body or "Please provide your delivery address using the form below."},
+                "footer": {"text": "All fields are required for delivery"},
+                "action": {
+                    "name": "flow",
+                    "parameters": {
+                        "flow_message_version": "3",
+                        "flow_id": flow_id,
+                        "flow_cta": flow_cta or "Open",
+                        **({"flow_token": flow_token} if flow_token else {}),
+                        **({"flow_action_payload": action_payload} if action_payload else {})
+                    }
+                }
+            }
+            body = f"FLOW: {flow_id}"
+
+        print(f"[webhook2] Sending {type} from {peer} (phone_id: {phone_number_id}) to {wa_id}")
+        print(f"[webhook2] API URL: {WHATSAPP_API_URL}")
         print(f"[webhook2] Payload: {json.dumps(payload, indent=2)}")
 
-        # Send to Alots.io API
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                alots_config['api_url'],
-                headers=headers,
-                json=payload,
-                timeout=30.0
-            )
+        # Send to WhatsApp API
+        res = requests.post(
+            WHATSAPP_API_URL,
+            json=payload,
+            headers={**headers, "Content-Type": "application/json"}
+        )
 
-        response_data = response.json()
-        print(f"[webhook2] Alots.io response: {response.status_code} - {response_data}")
+        if res.status_code != 200:
+            error_detail = res.text
+            try:
+                error_json = res.json()
+                error_detail = json.dumps(error_json, indent=2)
+            except:
+                pass
+            raise HTTPException(status_code=500, detail=f"Failed to send message: {error_detail}")
 
-        if response.status_code >= 400:
-            return {
-                "status": "failed",
-                "error": response_data,
-                "status_code": response.status_code
-            }
+        response_data = res.json()
+        message_id = response_data.get("messages", [{}])[0].get("id", f"out_{datetime.now().timestamp()}")
+        print(f"[webhook2] Response: {res.status_code} - Message ID: {message_id}")
 
         # Save outgoing message to database
         try:
-            message_id = response_data.get("messages", [{}])[0].get("id", f"out_{datetime.now().timestamp()}")
-            customer = customer_service.get_customer_by_wa_id(db, wa_id)
-            if customer:
-                outgoing_message = MessageCreate(
-                    message_id=message_id,
-                    from_wa_id=peer,
-                    to_wa_id=wa_id,
-                    type=type,
-                    body=body or template_name or media_caption or f"[{type}]",
-                    timestamp=datetime.now(),
-                    customer_id=customer.id
-                )
-                message_service.create_message(db, outgoing_message)
-                db.commit()
-                print(f"[webhook2] Outgoing message saved: {message_id}")
+            # Look up organization from phone_number_id
+            organization_id = None
+            try:
+                from services.whatsapp_number_service import get_organization_by_phone_id
+                organization = get_organization_by_phone_id(db, phone_number_id)
+                if organization:
+                    organization_id = organization.id
+            except Exception as e:
+                print(f"[webhook2] WARNING - Could not look up organization: {e}")
+
+            customer_data = CustomerCreate(wa_id=wa_id, name="")
+            customer = customer_service.get_or_create_customer(db, customer_data, organization_id=organization_id)
+
+            message_data = MessageCreate(
+                message_id=message_id,
+                from_wa_id=from_wa_id,
+                to_wa_id=wa_id,
+                type=type,
+                body=body or "",
+                timestamp=datetime.now(),
+                customer_id=customer.id,
+                media_id=effective_media_id,
+                caption=body if type in ["image", "document", "video"] else None,
+                filename=uploaded_filename if file else None,
+                latitude=coerced_latitude,
+                longitude=coerced_longitude,
+                mime_type=mime_type,
+            )
+            message_service.create_message(db, message_data)
+            db.commit()
+
+            # Broadcast to WebSocket
+            await manager.broadcast({
+                "from": from_wa_id,
+                "to": wa_id,
+                "type": type,
+                "message": body or "",
+                "timestamp": datetime.now().isoformat(),
+                "message_id": message_id,
+                "media_id": effective_media_id,
+                "caption": body if type in ["image", "document", "video"] else None,
+                "filename": uploaded_filename if file else None,
+                "mime_type": mime_type,
+                "source": "webhook2"
+            })
+
+            print(f"[webhook2] Message saved and broadcasted: {message_id}")
         except Exception as e:
-            print(f"[webhook2] WARNING - Could not save outgoing message: {e}")
+            print(f"[webhook2] WARNING - Could not save message: {e}")
+            import traceback
+            traceback.print_exc()
 
         return {
             "status": "success",
-            "message_id": response_data.get("messages", [{}])[0].get("id"),
-            "response": response_data
+            "message_id": message_id,
+            "response": response_data,
+            "media_id": effective_media_id,
+            "mime_type": mime_type,
+            "filename": uploaded_filename
         }
 
     except HTTPException:
         raise
     except Exception as e:
-        print(f"[webhook2] ERROR sending message: {e}")
+        print(f"[webhook2] ERROR: {e}")
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"status": "failed", "error": str(e)}
 
 
 @router2.post("/send-template")
@@ -613,27 +1046,27 @@ async def send_template_webhook2(
     peer: str = Form(...),
     wa_id: str = Form(...),
     template_name: str = Form(...),
-    language: str = Form("en"),
+    language: str = Form("en_US"),
     components: Optional[str] = Form(None),  # JSON string
     db: Session = Depends(get_db)
 ):
     """
-    Quick endpoint to send template messages via Alots.io
+    Quick endpoint to send template messages via WhatsApp API (organization-based)
 
     Args:
-        peer: The sender phone number (e.g., 917416159696)
+        peer: The sender phone number (display_number or phone_number_id)
         wa_id: The recipient WhatsApp ID
         template_name: Name of the WhatsApp template
-        language: Template language code (default: en)
+        language: Template language code (default: en_US)
         components: JSON string of template components
     """
     try:
-        # Get Alots.io config for this peer
-        alots_config = get_alots_config(peer)
+        # Get WhatsApp config for this peer (looks up from database)
+        whatsapp_config = get_whatsapp_config_by_peer(db, peer)
 
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {alots_config['token']}"
+            "Authorization": f"Bearer {whatsapp_config['token']}"
         }
 
         payload = {
@@ -653,30 +1086,39 @@ async def send_template_webhook2(
             except json.JSONDecodeError:
                 raise HTTPException(status_code=400, detail="Invalid components JSON")
 
-        print(f"[webhook2] Sending template '{template_name}' from {peer} to {wa_id}")
+        print(f"[webhook2] Sending template '{template_name}' from {peer} (phone_id: {whatsapp_config['phone_number_id']}) to {wa_id}")
         print(f"[webhook2] Payload: {json.dumps(payload, indent=2)}")
 
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                alots_config['api_url'],
-                headers=headers,
-                json=payload,
-                timeout=30.0
-            )
+        # Send to WhatsApp API
+        res = requests.post(
+            whatsapp_config['api_url'],
+            headers=headers,
+            json=payload
+        )
 
-        response_data = response.json()
-        print(f"[webhook2] Alots.io response: {response.status_code} - {response_data}")
+        if res.status_code != 200:
+            error_detail = res.text
+            try:
+                error_json = res.json()
+                error_detail = json.dumps(error_json, indent=2)
+            except:
+                pass
+            raise HTTPException(status_code=500, detail=f"Failed to send template: {error_detail}")
 
-        if response.status_code >= 400:
-            return {"status": "failed", "error": response_data}
+        response_data = res.json()
+        message_id = response_data.get("messages", [{}])[0].get("id")
+        print(f"[webhook2] WhatsApp API response: {res.status_code} - Message ID: {message_id}")
 
         return {
             "status": "success",
-            "message_id": response_data.get("messages", [{}])[0].get("id"),
+            "message_id": message_id,
             "response": response_data
         }
 
     except HTTPException:
         raise
     except Exception as e:
+        print(f"[webhook2] ERROR: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
