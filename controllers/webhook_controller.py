@@ -158,3 +158,34 @@ async def verify_webhook2(request: Request):
         return PlainTextResponse(content=challenge)
 
     raise HTTPException(status_code=403, detail="Forbidden")
+
+
+@router2.get("/logs")
+async def get_webhook2_logs(limit: int = 20):
+    """View recent webhook2 logs from browser"""
+    try:
+        log_dir = "webhook_logs"
+        if not os.path.exists(log_dir):
+            return {"logs": [], "message": "No logs folder yet"}
+
+        files = [f for f in os.listdir(log_dir) if f.startswith("webhook2_") and "_formatted" in f]
+        files.sort(reverse=True)
+        files = files[:limit]
+
+        logs = []
+        for filename in files:
+            filepath = os.path.join(log_dir, filename)
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    content = json.loads(f.read())
+                    logs.append({
+                        "file": filename,
+                        "timestamp": filename.replace("webhook2_", "").replace("_formatted.json", ""),
+                        "data": content
+                    })
+            except Exception as e:
+                logs.append({"file": filename, "error": str(e)})
+
+        return {"total": len(logs), "logs": logs}
+    except Exception as e:
+        return {"error": str(e)}
