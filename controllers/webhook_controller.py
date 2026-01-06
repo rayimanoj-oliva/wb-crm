@@ -105,18 +105,83 @@ async def verify_webhook(request: Request):
 
     raise HTTPException(status_code=403, detail="Forbidden")
 
+
+@router.get("/logs")
+async def get_webhook_logs(limit: int = 20):
+    """View recent webhook logs from browser"""
+    try:
+        log_dir = "webhook_logs"
+        if not os.path.exists(log_dir):
+            return {"logs": [], "message": "No logs folder yet"}
+
+        files = [f for f in os.listdir(log_dir) if f.startswith("webhook_") and "_formatted" in f]
+        files.sort(reverse=True)
+        files = files[:limit]
+
+        logs = []
+        for filename in files:
+            filepath = os.path.join(log_dir, filename)
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    content = json.loads(f.read())
+                    logs.append({
+                        "file": filename,
+                        "timestamp": filename.replace("webhook_", "").replace("_formatted.json", ""),
+                        "data": content
+                    })
+            except Exception as e:
+                logs.append({"file": filename, "error": str(e)})
+
+        return {"total": len(logs), "logs": logs}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@router.get("/logs/all")
+async def get_all_webhook_logs(limit: int = 50):
+    """View ALL webhook logs (webhook + webhook2)"""
+    try:
+        log_dir = "webhook_logs"
+        if not os.path.exists(log_dir):
+            return {"logs": [], "message": "No logs folder yet"}
+
+        files = [f for f in os.listdir(log_dir) if "_formatted" in f]
+        files.sort(reverse=True)
+        files = files[:limit]
+
+        logs = []
+        for filename in files:
+            filepath = os.path.join(log_dir, filename)
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    content = json.loads(f.read())
+                    logs.append({
+                        "file": filename,
+                        "data": content
+                    })
+            except Exception as e:
+                logs.append({"file": filename, "error": str(e)})
+
+        return {"total": len(logs), "logs": logs}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 # =============================================================================
 # WEBHOOK 2
 # =============================================================================
 
 @router2.post("")
 async def receive_webhook2(request: Request, db: Session = Depends(get_db)):
+    raw_str = ""
     try:
         raw = await request.body()
         raw_str = raw.decode("utf-8", errors="replace")
-        body = json.loads(raw_str)
 
+        # Log raw data FIRST - before any processing
         log_webhook(raw_str, "webhook2")
+
+        body = json.loads(raw_str)
         debug_webhook_payload(body, raw_str)
 
         if "entry" not in body:
@@ -143,21 +208,25 @@ async def receive_webhook2(request: Request, db: Session = Depends(get_db)):
         return {"status": "ok"}
 
     except Exception as e:
+        # Log error with raw data
+        if raw_str:
+            log_webhook(f"ERROR: {str(e)}\nRAW: {raw_str}", "webhook2_error")
         print("[webhook2] ERROR:", e)
         return {"status": "failed", "error": str(e)}
 
 
 @router2.get("")
 async def verify_webhook2(request: Request):
+    # No verify token required - accept all verification requests
     mode = request.query_params.get("hub.mode")
-    token = request.query_params.get("hub.verify_token")
     challenge = request.query_params.get("hub.challenge")
 
-    if mode == "subscribe" and token == VERIFY_TOKEN:
+    if mode == "subscribe" and challenge:
         print("[webhook2] VERIFIED")
         return PlainTextResponse(content=challenge)
 
-    raise HTTPException(status_code=403, detail="Forbidden")
+    # Return simple OK for any other GET request
+    return {"status": "webhook2 is active"}
 
 
 @router2.get("/logs")
@@ -168,7 +237,8 @@ async def get_webhook2_logs(limit: int = 20):
         if not os.path.exists(log_dir):
             return {"logs": [], "message": "No logs folder yet"}
 
-        files = [f for f in os.listdir(log_dir) if f.startswith("webhook2_") and "_formatted" in f]
+        # Include both normal logs and error logs
+        files = [f for f in os.listdir(log_dir) if f.startswith("webhook2")]
         files.sort(reverse=True)
         files = files[:limit]
 
@@ -177,10 +247,13 @@ async def get_webhook2_logs(limit: int = 20):
             filepath = os.path.join(log_dir, filename)
             try:
                 with open(filepath, "r", encoding="utf-8") as f:
-                    content = json.loads(f.read())
+                    content = f.read()
+                    try:
+                        content = json.loads(content)
+                    except:
+                        pass  # Keep as string if not JSON
                     logs.append({
                         "file": filename,
-                        "timestamp": filename.replace("webhook2_", "").replace("_formatted.json", ""),
                         "data": content
                     })
             except Exception as e:
