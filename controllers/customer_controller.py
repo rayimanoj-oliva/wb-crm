@@ -59,7 +59,7 @@ def list_conversations_optimized(
 @router.get("/conversations/by-peer")
 def list_conversations_by_peer(
     skip: int = Query(0, ge=0, description="Number of records to skip"),
-    limit: int = Query(50, ge=1, le=1000, description="Max records to return"),
+    limit: int = Query(50, ge=1, le=200, description="Max records to return"),
     search: Optional[str] = Query(None, description="Search by name, phone, or email"),
     business_number: Optional[str] = Query(None, description="Filter by business number (peer)"),
     user_id: Optional[str] = Query(None, description="Filter by assigned user ID"),

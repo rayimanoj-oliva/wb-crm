@@ -108,10 +108,38 @@ def _convert_audio_to_supported_format(file_bytes: bytes, filename: str, mime_ty
         except Exception:
             pass
 
-def get_urls_by_peer(peer: str):
+def get_urls_by_peer(peer: str, db: Session = None):
+    """
+    Get WhatsApp API URLs and phone_id for a peer number.
+    First checks hardcoded PHONE_ID_MAP, then looks up from database.
+    """
+    # First check hardcoded map (for backward compatibility)
     phone_id = PHONE_ID_MAP.get(peer)
+    
+    # If not found in hardcoded map, try database lookup
+    if not phone_id and db:
+        try:
+            from controllers.webhook_controller import get_whatsapp_config_by_peer
+            config = get_whatsapp_config_by_peer(db, peer)
+            phone_id = config.get("phone_number_id")
+            # Return config with API URLs (works for both Meta and alots.io)
+            return {
+                "messages": config["api_url"],
+                "media": config["media_url"],
+                "phone_id": phone_id,
+                "token": config.get("token")  # Token may be available for alots.io numbers
+            }
+        except HTTPException:
+            # Re-raise HTTPException (e.g., "Invalid peer number")
+            raise
+        except Exception as e:
+            print(f"[whatsapp_controller] Database lookup failed for peer {peer}: {e}")
+            import traceback
+            traceback.print_exc()
+            # Fall through to error if database lookup fails
+    
     if not phone_id:
-        raise HTTPException(status_code=400, detail=f"Invalid peer number: {peer}")
+        raise HTTPException(status_code=400, detail=f"Invalid peer number: {peer}. Please ensure the WhatsApp number is registered in the database.")
 
     return {
         "messages": f"https://graph.facebook.com/v22.0/{phone_id}/messages",
@@ -172,14 +200,20 @@ async def send_whatsapp_message(
     current_user: User = Depends(get_current_user),
 ):
     try:
-        token_obj = whatsapp_service.get_latest_token(db)
-        if not token_obj:
-            raise HTTPException(status_code=400, detail="Token not available")
-        token = token_obj.token
-        headers = {"Authorization": f"Bearer {token}"}
-        urls = get_urls_by_peer(peer)
+        # Get URLs and config - try database lookup first, fallback to hardcoded map
+        urls = get_urls_by_peer(peer, db)
         WHATSAPP_API_URL = urls["messages"]
         MEDIA_URL = urls["media"]
+        
+        # Get token - prefer from database config (for alots.io numbers), fallback to latest token
+        token = urls.get("token")  # For alots.io numbers, token comes from config
+        if not token:
+            token_obj = whatsapp_service.get_latest_token(db)
+            if not token_obj:
+                raise HTTPException(status_code=400, detail="Token not available")
+            token = token_obj.token
+        
+        headers = {"Authorization": f"Bearer {token}"}
         from_wa_id = peer  # sender changes based on peer
         media_id = None
         caption = None
