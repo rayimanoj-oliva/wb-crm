@@ -18,8 +18,9 @@ from controllers.utils.debug_window import debug_webhook_payload
 from services import customer_service, message_service
 from schemas.customer_schema import CustomerCreate
 from schemas.message_schema import MessageCreate
-from models.models import Message
+from models.models import Message, User
 from utils.ws_manager import manager
+from auth import get_current_user
 
 # =============================================================================
 # CONFIG
@@ -453,6 +454,8 @@ async def receive_webhook2(request: Request, db: Session = Depends(get_db)):
                 "timestamp": timestamp.isoformat(),
                 "message_id": message_id,
                 "customer_name": sender_name,
+                "customer_id": str(customer.id),
+                "organization_id": str(organization_id) if organization_id else None,
                 "source": "webhook2"
             })
             print(f"[webhook2] DEBUG - Message broadcasted to WebSocket: {message_id}")
@@ -520,33 +523,10 @@ async def get_webhook2_logs(limit: int = 20):
         return {"error": str(e)}
 
 
-@router2.websocket("/channel")
-async def webhook2_websocket_endpoint(websocket: WebSocket):
-    """
-    WebSocket channel for webhook2 - receives real-time messages
-    Connect to: wss://whatsapp.olivaclinic.com/webhook2/channel
-    """
-    await manager.connect(websocket)
-    print("[webhook2] WebSocket client connected")
-    try:
-        while True:
-            try:
-                # Keep connection alive, receive any client messages (optional)
-                data = await websocket.receive_text()
-                # Echo back or handle client messages if needed
-                if data:
-                    print(f"[webhook2] WebSocket received from client: {data}")
-            except WebSocketDisconnect:
-                break
-            except RuntimeError:
-                break
-            except Exception:
-                await asyncio.sleep(0.5)
-    except WebSocketDisconnect:
-        pass
-    finally:
-        manager.disconnect(websocket)
-        print("[webhook2] WebSocket client disconnected")
+# NOTE: WebSocket endpoint removed - webhook2 broadcasts through the shared
+# /ws/channel endpoint via the same manager instance from utils.ws_manager.
+# This avoids nginx configuration issues and keeps all real-time messages
+# flowing through a single WebSocket connection.
 
 
 # =============================================================================
@@ -1010,6 +990,8 @@ async def send_message_webhook2(
                 "message": body or "",
                 "timestamp": datetime.now().isoformat(),
                 "message_id": message_id,
+                "customer_id": str(customer.id),
+                "organization_id": str(organization_id) if organization_id else None,
                 "media_id": effective_media_id,
                 "caption": body if type in ["image", "document", "video"] else None,
                 "filename": uploaded_filename if file else None,
@@ -1039,6 +1021,58 @@ async def send_message_webhook2(
         import traceback
         traceback.print_exc()
         return {"status": "failed", "error": str(e)}
+
+
+@router2.get("/numbers")
+async def get_organization_numbers(
+    organization_id: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Get active WhatsApp numbers, optionally filtered by organization_id.
+    Used by frontend to populate the "All Numbers" dropdown filter.
+    
+    Args:
+        organization_id: Optional UUID string to filter numbers by organization.
+                        If not provided, returns all active numbers.
+    """
+    try:
+        from models.models import WhatsAppNumber
+        from uuid import UUID
+        
+        # Query active numbers
+        query = db.query(WhatsAppNumber).filter(WhatsAppNumber.is_active == True)
+        
+        # Filter by organization_id if provided
+        if organization_id:
+            try:
+                org_uuid = UUID(organization_id)
+                query = query.filter(WhatsAppNumber.organization_id == org_uuid)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid organization_id format")
+        
+        numbers = query.order_by(WhatsAppNumber.display_number.asc()).all()
+
+        return {
+            "items": [
+                {
+                    "phone_number_id": num.phone_number_id,
+                    "display_number": num.display_number or num.phone_number_id,
+                    "organization_id": str(num.organization_id) if num.organization_id else None,
+                    "organization_name": num.organization.name if num.organization else None,
+                    "is_active": num.is_active
+                }
+                for num in numbers
+            ],
+            "total": len(numbers)
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[webhook2] ERROR getting numbers: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router2.post("/send-template")
