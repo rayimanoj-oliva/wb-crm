@@ -1026,30 +1026,52 @@ async def send_message_webhook2(
 @router2.get("/numbers")
 async def get_organization_numbers(
     organization_id: Optional[str] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
-    Get active WhatsApp numbers, optionally filtered by organization_id.
+    Get active WhatsApp numbers filtered by the logged-in user's organization.
     Used by frontend to populate the "All Numbers" dropdown filter.
     
+    - For regular users: Returns only numbers from their organization
+    - For SUPER_ADMIN: Returns all active numbers (or filtered by organization_id if provided)
+    
     Args:
-        organization_id: Optional UUID string to filter numbers by organization.
-                        If not provided, returns all active numbers.
+        organization_id: Optional UUID string to filter numbers by organization (only for SUPER_ADMIN).
+                        For regular users, this parameter is ignored and their organization is used automatically.
     """
     try:
         from models.models import WhatsAppNumber
         from uuid import UUID
+        from utils.organization_filter import get_user_organization_id
+        
+        # Get user's organization_id
+        user_org_id = get_user_organization_id(current_user)
         
         # Query active numbers
         query = db.query(WhatsAppNumber).filter(WhatsAppNumber.is_active == True)
         
-        # Filter by organization_id if provided
-        if organization_id:
-            try:
-                org_uuid = UUID(organization_id)
-                query = query.filter(WhatsAppNumber.organization_id == org_uuid)
-            except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid organization_id format")
+        # Filter by organization
+        # SUPER_ADMIN can optionally filter by organization_id parameter, otherwise sees all
+        # Regular users always see only their organization's numbers
+        is_super_admin = current_user.role == 'SUPER_ADMIN' or (current_user.role_obj and current_user.role_obj.name == 'SUPER_ADMIN')
+        
+        if is_super_admin:
+            # Super admin: use organization_id parameter if provided, otherwise show all
+            if organization_id:
+                try:
+                    org_uuid = UUID(organization_id)
+                    query = query.filter(WhatsAppNumber.organization_id == org_uuid)
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Invalid organization_id format")
+            # If no organization_id provided, super admin sees all numbers
+        else:
+            # Regular users: always filter by their organization
+            if user_org_id:
+                query = query.filter(WhatsAppNumber.organization_id == user_org_id)
+            else:
+                # User has no organization - return empty list
+                query = query.filter(False)
         
         numbers = query.order_by(WhatsAppNumber.display_number.asc()).all()
 
