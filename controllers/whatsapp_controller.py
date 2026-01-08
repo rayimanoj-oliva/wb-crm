@@ -200,6 +200,11 @@ async def send_whatsapp_message(
     current_user: User = Depends(get_current_user),
 ):
     try:
+        # Validate body for text messages
+        if type == "text":
+            if body is None or (isinstance(body, str) and not body.strip()):
+                raise HTTPException(status_code=400, detail="Text body is required and cannot be empty for text messages")
+        
         # Get URLs and config - try database lookup first, fallback to hardcoded map
         urls = get_urls_by_peer(peer, db)
         WHATSAPP_API_URL = urls["messages"]
@@ -259,9 +264,21 @@ async def send_whatsapp_message(
 
         # ---------------- Text Message ----------------
         if type == "text":
+            # Validate body early
+            if body is None:
+                raise HTTPException(status_code=400, detail="Text body is required for text messages")
+            if not isinstance(body, str):
+                body = str(body) if body else ""
+            body = body.strip()
             if not body:
-                raise HTTPException(status_code=400, detail="Text body required")
-            payload["text"] = {"body": body, "preview_url": False}
+                raise HTTPException(status_code=400, detail="Text body cannot be empty")
+            
+            # Set text payload - this is required by WhatsApp API
+            payload["text"] = {
+                "body": body,
+                "preview_url": False
+            }
+            print(f"[whatsapp_controller] Text message - body: '{body}', payload: {json.dumps(payload, indent=2)}")
 
         # ---------------- Image Message ----------------
         elif type == "image":
@@ -460,6 +477,10 @@ async def send_whatsapp_message(
             body = f"FLOW: {flow_id}"
 
         # ---------------- Send Request ----------------
+        print(f"[whatsapp_controller] Sending {type} message to {wa_id} via {peer}")
+        print(f"[whatsapp_controller] API URL: {WHATSAPP_API_URL}")
+        print(f"[whatsapp_controller] Payload: {json.dumps(payload, indent=2)}")
+        
         res = requests.post(
             WHATSAPP_API_URL,
             json=payload,
@@ -467,6 +488,7 @@ async def send_whatsapp_message(
         )
 
         if res.status_code != 200:
+            print(f"[whatsapp_controller] Error response: {res.status_code} - {res.text}")
             raise HTTPException(status_code=500, detail=f"Failed to send message: {res.text}")
 
         message_id = res.json()["messages"][0]["id"]

@@ -23,11 +23,14 @@ def get_or_create_customer(db: Session, customer_data: CustomerCreate, organizat
     
     customer = db.query(Customer).filter(Customer.wa_id == customer_data.wa_id).first()
     if customer:
-        # Update organization_id if provided and customer doesn't have one
-        if organization_id and not customer.organization_id:
-            customer.organization_id = organization_id
-            db.commit()
-            db.refresh(customer)
+        # Update organization_id if provided (always update to match the organization of the incoming message)
+        # This ensures customers are associated with the organization they're currently messaging
+        if organization_id:
+            if customer.organization_id != organization_id:
+                customer.organization_id = organization_id
+                db.commit()
+                db.refresh(customer)
+                print(f"[customer_service] Updated customer {customer.wa_id} organization_id to {organization_id}")
         # Ensure default phone_1 is set from wa_id if missing
         if not getattr(customer, "phone_1", None):
             try:

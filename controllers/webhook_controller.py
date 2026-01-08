@@ -405,17 +405,39 @@ async def receive_webhook2(request: Request, db: Session = Depends(get_db)):
             print(f"[webhook2] WARN - Could not extract body_text: {e}")
             body_text = f"[{message_type}]"
 
-        # Look up organization from phone_number_id
+        # Look up organization from phone_number_id or display_phone_number
         organization_id = None
         if phone_number_id:
             try:
                 from services.whatsapp_number_service import get_organization_by_phone_id
+                from models.models import Organization
+                import re
+                
+                # First try to find by phone_number_id in database
                 organization = get_organization_by_phone_id(db, str(phone_number_id))
+                
+                # If not found, try to find by display_phone_number (for alots.io numbers)
+                if not organization and to_wa_id:
+                    # Normalize to_wa_id (display_phone_number) to match ALOTS_CONFIG format
+                    to_wa_digits = re.sub(r"\D", "", to_wa_id)
+                    if to_wa_digits in ALOTS_CONFIG:
+                        # Look up organization by name from ALOTS_CONFIG
+                        config_display_name = ALOTS_CONFIG[to_wa_digits].get("display_name", "")
+                        if config_display_name:
+                            # Try to find organization by name (e.g., "Oasis Fertility")
+                            organization = db.query(Organization).filter(
+                                Organization.name.ilike(f"%{config_display_name}%")
+                            ).first()
+                            if organization:
+                                print(f"[webhook2] DEBUG - Found organization by ALOTS_CONFIG display_name: {organization.name} (id: {organization.id})")
+                
                 if organization:
                     organization_id = organization.id
                     print(f"[webhook2] DEBUG - Found organization {organization.name} (id: {organization_id})")
             except Exception as e:
                 print(f"[webhook2] WARNING - Could not look up organization: {e}")
+                import traceback
+                traceback.print_exc()
 
         # Get or create customer
         customer = customer_service.get_or_create_customer(
