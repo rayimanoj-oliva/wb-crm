@@ -746,9 +746,40 @@ def get_conversations_by_peer(
     )
 
     # Filters
-    # Organization filter
+    # Organization filter - filter by organization's WhatsApp numbers (peer_number)
+    # This ensures each organization only sees conversations with their own WhatsApp numbers
     if organization_id is not None:
-        query = query.filter(Customer.organization_id == organization_id)
+        # Get all active WhatsApp numbers for this organization
+        from services.whatsapp_number_service import get_whatsapp_numbers
+        org_numbers, _ = get_whatsapp_numbers(db, organization_id=organization_id, is_active=True, limit=1000)
+        
+        # Build normalized variants for all organization WhatsApp numbers
+        # This handles different formats: +91 77299 92376, 917729992376, 7729992376, etc.
+        org_peer_variants = set()
+        for wn in org_numbers:
+            # Normalize display_number (e.g., "+91 77299 92376" -> multiple variants)
+            if wn.display_number:
+                digits = re.sub(r"\D", "", wn.display_number)
+                last10 = digits[-10:] if len(digits) >= 10 else digits
+                # Add original and normalized variants
+                org_peer_variants.add(wn.display_number)
+                org_peer_variants.add(digits)
+                if last10:
+                    org_peer_variants.add(last10)
+                    org_peer_variants.add(f"91{last10}")
+                    org_peer_variants.add(f"+91{last10}")
+                    org_peer_variants.add(f"+{digits}")
+            
+            # Also add phone_number_id variants (in case it's used as peer_number)
+            if wn.phone_number_id:
+                org_peer_variants.add(wn.phone_number_id)
+        
+        # Filter conversations where peer_number matches one of the organization's numbers
+        if org_peer_variants:
+            query = query.filter(latest_pair_msg.c.peer_number.in_(org_peer_variants))
+        else:
+            # If organization has no WhatsApp numbers configured, return empty result
+            query = query.filter(False)
 
     if search:
         like = f"%{search}%"
